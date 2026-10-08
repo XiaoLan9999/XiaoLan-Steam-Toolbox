@@ -14,6 +14,7 @@ import { APP_NAME_EN, APP_NAME_ZH } from '../shared/branding'
 import { buildLongArtworkScript } from '../shared/artwork'
 import { ARTWORK_SOURCE_URLS, ARTWORK_UPLOAD_URL, type ArtworkSource } from '../shared/artwork-links'
 import { UpdateService } from './update-service'
+import { createUpdateFetch } from './update-fetch'
 import { prepareWindowsUpdate } from './update-installer'
 import { UPDATE_REPOSITORY, type UpdatePreferences, type UpdatePackageKind } from '../shared/update-types'
 import {
@@ -78,7 +79,7 @@ app.whenReady().then(async () => {
     currentVersion: app.getVersion(), packageKind: updatePackageKind,
     cacheDirectory: join(app.getPath('userData'), 'updates'),
     preferences: () => store.getUpdatePreferences(),
-    fetchImpl: (input, init) => net.fetch(input instanceof Request ? input : String(input), { ...init, credentials: 'omit' }),
+    fetchImpl: createUpdateFetch(options => net.request(options)),
     onStateChange: (state) => emit({ type: 'updateChanged', state })
   })
   registerIpcHandlers()

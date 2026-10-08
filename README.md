@@ -84,7 +84,7 @@ Open **Artwork & tools** to preview/copy the long-artwork console script and cro
 
 ## 内置更新与公共镜像
 
-0.4.0 起，设置中的“软件更新”支持检查、下载、取消和确认重启更新。旧版需先安装一次 0.4.0，此后可在软件内获取后续版本。默认启动后检查，并在软件运行期间每 4 小时检查；可以关闭自动检查。检测的是正式 GitHub Release，不会把普通源码提交当作可安装版本。
+0.4.0 起，设置中的“软件更新”支持检查、下载、取消和确认重启更新。0.3.x 及更早版本需先手动安装 0.4.1 或更新版本，此后可在软件内获取后续版本。默认启动后检查，并在软件运行期间每 4 小时检查；可以关闭自动检查。检测的是正式 GitHub Release，不会把普通源码提交当作可安装版本。
 
 内置 GitHub 官方与 10 个公共代理候选：`ghfast.top`、`ghproxy.net`、`gh-proxy.com`、`gh-proxy.org`、`gh.monlor.com`、`ghproxy.imciel.com`、`fastgit.cc`、`github.ednovas.xyz`、`proxy.vvvv.ee`、`ghp.keleyaa.com`。候选来源和匿名校验文件探测记录见 [镜像说明](docs/update-mirrors.md)。这些站点由第三方运营，不代表中国各地均可连接；软件每次按实际响应和延迟检测，下载前只试读最多 64 KiB 来估算线路速度，下载故障会换路并尝试断点续传。
 
@@ -234,6 +234,10 @@ Clicking a friend row now toggles only that friend without clearing other select
 ## 0.4.0 内置更新
 
 新增发布签名、公共镜像线路检测、更新下载/取消/续传和明确的重启更新入口，支持安装版与便携版。公开镜像列表作为运行时候选维护，后续可追加个人镜像。GitHub Release 工作流自动生成并发布签名更新清单。
+
+## 0.4.1 更新线路重定向修复
+
+修复当前 Electron 中 `net.fetch` 手动重定向报错造成的线路误判。改用 Chromium `net.request` 适配更新传输，继续使用系统代理、匿名请求、HTTPS 重定向校验和最多 5 次跳转边界。0.4.0 用户可通过已有可用线路内置升级；新用户直接下载 0.4.1。
 
 ## 当前边界
 
