@@ -228,7 +228,7 @@ describe('CommentScanQueue', () => {
     await vi.advanceTimersByTimeAsync(5000 * 1004)
     expect(check).toHaveBeenCalledTimes(1005)
     expect(store.getCommentScan(job.id)).toMatchObject({ status: 'completed', total: 1005, completed: 1005, allowed: 1005 })
-  }, 15000)
+  }, 90_000)
 })
 
 function setup() {

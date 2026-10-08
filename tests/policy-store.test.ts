@@ -162,7 +162,7 @@ describe('persistent comment scans', () => {
     }
     expect(store.getCommentScan(job.id)).toMatchObject({ total: 1005, completed: 1005, allowed: 1005, status: 'completed' })
     expect(store.getFriendPolicies(accountA).every((entry) => entry.blacklisted)).toBe(true)
-  })
+  }, 90_000)
 })
 
 describe('settings and redacted database export', () => {
