@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { UpdateState } from '../shared/update-types'
 import {
   AppEvent,
   AppSnapshot,
@@ -15,6 +16,12 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<IpcResult<T>> =
   ipcRenderer.invoke(channel, ...args) as Promise<IpcResult<T>>
 
 const api: SteamFriendCommenterApi = {
+  checkForUpdates: () => invoke<UpdateState>('update:check'),
+  downloadUpdate: (routeId) => invoke<UpdateState>('update:download', routeId),
+  cancelUpdate: () => invoke<void>('update:cancel'),
+  installUpdate: () => invoke<void>('update:install'),
+  setUpdatePreferences: (preferences) => invoke<void>('update:preferences', preferences),
+  openUpdateRelease: () => invoke<void>('update:openRelease'),
   copyArtworkScript: () => invoke<void>('artwork:copyScript'),
   openArtworkPage: () => invoke<void>('artwork:openUpload'),
   openArtworkSource: (source) => invoke<void>('artwork:openSource', source),

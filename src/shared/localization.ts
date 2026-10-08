@@ -1,4 +1,5 @@
 const messages = new Map<string, string>([
+  ['更新设置无效，请使用不含账号密码或参数的 HTTPS 代理前缀（最多 5 条）', 'Invalid update settings. Use up to 5 HTTPS proxy prefixes without credentials or query parameters.'],
   ['无法打开未知工具来源', 'Cannot open an unknown tool source.'],
   ['好友同步数据无效，已保留原列表', 'The friend snapshot is invalid. The previous list has been preserved.'],
   ['同步账号不存在', 'The account being synced was not found.'],

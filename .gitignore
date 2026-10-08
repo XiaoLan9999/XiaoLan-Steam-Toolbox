@@ -22,3 +22,6 @@ backups/
 *.exe
 *.zip
 *.7z
+.release-keys/
+*.pem
+*.key

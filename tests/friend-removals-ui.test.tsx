@@ -2,6 +2,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { AppSnapshot, FriendRemovalRecord } from '../src/shared/types'
+import { DEFAULT_UPDATE_PREFERENCES, initialUpdateState } from '../src/shared/update-types'
 import { FriendRemovalsPanel, filterFriendRemovals } from '../src/renderer/src/components/FriendRemovalsPanel'
 import { FriendsPanel } from '../src/renderer/src/components/FriendsPanel'
 import { I18nProvider } from '../src/renderer/src/i18n'
@@ -118,6 +119,7 @@ describe('removed-friend read-only UI', () => {
       friendNameChanges: [],
       friendPolicies: [], commentScan: null, groups: [], emoticons: [], settings: null,
       batches: [], activeBatch: null, dataDirectory: '', language: 'en',
+      updater: initialUpdateState('0.4.0', 'setup'), updatePreferences: DEFAULT_UPDATE_PREFERENCES,
       security: { secretStorageAvailable: true, secretStorageBackend: 'dpapi' }
     }
     const html = renderToStaticMarkup(React.createElement(I18nProvider, {

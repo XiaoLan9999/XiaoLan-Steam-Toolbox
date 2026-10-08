@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag matching package.json (leave empty to use package version)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Audit public source
+        run: node scripts/audit-source.mjs
+      - name: Check release version and existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw 'Invalid package version' }
+          $releaseTag = "v$version"
+          if ($env:REQUESTED_TAG -and $env:REQUESTED_TAG -ne $releaseTag) { throw 'Requested release tag does not match package.json' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne $releaseTag) { throw 'Git tag does not match package.json' }
+          git rev-parse --verify "refs/tags/$releaseTag" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $tagCommit = git rev-list -n 1 $releaseTag
+            $headCommit = git rev-parse HEAD
+            if ($tagCommit -ne $headCommit) { throw 'Existing release tag points to a different source commit' }
+          }
+          "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV
+          $existing = gh release view $releaseTag --json assets,isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $release = $existing | ConvertFrom-Json
+            if (-not $release.isDraft) { throw 'Published releases are immutable; use a new version' }
+            $reserved = @('update-manifest.json', 'SHA256SUMS.txt', "XiaoLan-Steam-Toolbox-Setup-$version-x64.exe", "XiaoLan-Steam-Toolbox-Portable-$version-x64.exe")
+            if ($release.assets | Where-Object { $_.name -in $reserved }) { throw 'Release assets already exist; use a new version instead of overwriting signed packages' }
+          }
+          $global:LASTEXITCODE = 0
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Build Windows packages
+        run: npx electron-builder --win nsis portable --publish never
+      - name: Sign update manifest
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: node scripts/build-update-manifest.mjs --tag $env:RELEASE_TAG
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $assets = @("dist/XiaoLan-Steam-Toolbox-Setup-$version-x64.exe", "dist/XiaoLan-Steam-Toolbox-Portable-$version-x64.exe", 'dist/update-manifest.json', 'dist/SHA256SUMS.txt')
+          gh release view $env:RELEASE_TAG --json isDraft 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --target $env:GITHUB_SHA --title "XiaoLan Steam Toolbox $version" --generate-notes --draft
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release' }
+          }
+          gh release upload $env:RELEASE_TAG @assets
+          if ($LASTEXITCODE -ne 0) { throw 'Could not upload all release assets; release remains a draft' }
+          $uploaded = gh release view $env:RELEASE_TAG --json assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify release assets' }
+          foreach ($asset in $assets) {
+            $localFile = Get-Item -LiteralPath $asset
+            $remoteAsset = @($uploaded.assets | Where-Object { $_.name -eq $localFile.Name })
+            if ($remoteAsset.Count -ne 1 -or $remoteAsset[0].size -ne $localFile.Length) { throw "Release asset verification failed: $($localFile.Name)" }
+          }
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish complete release' }

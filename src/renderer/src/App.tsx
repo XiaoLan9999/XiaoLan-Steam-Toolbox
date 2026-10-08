@@ -58,6 +58,7 @@ export default function App(): React.JSX.Element {
     void refresh()
     return window.steamCommenter.onEvent((event: AppEvent) => {
       if (event.type === 'snapshotChanged' || event.type === 'batchProgress') void refresh()
+      if (event.type === 'updateChanged') setSnapshot((current) => current ? { ...current, updater: event.state } : current)
       if (event.type === 'notice') pushToast(event.message, event.level)
     })
   }, [pushToast, refresh])
@@ -188,7 +189,8 @@ export default function App(): React.JSX.Element {
             title={snapshot.dataDirectory}
             onClick={() => setSettingsOpen(true)}
           >
-            {t('设置 / 语言 / 导出数据', 'Settings / Language / Export')}
+            {t('设置 / 更新 / 语言 / 导出', 'Settings / Updates / Export')}
+            {(snapshot.updater.phase === 'available' || snapshot.updater.phase === 'ready') && <b className="update-sidebar-badge">NEW</b>}
           </button>
           <a
             className="author-watermark"

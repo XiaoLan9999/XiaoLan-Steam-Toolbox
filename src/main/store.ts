@@ -19,6 +19,8 @@ import {
   SteamEmoticon
 } from '../shared/types'
 import { DomainError, validateDelay } from '../shared/domain'
+import type { UpdatePreferences } from '../shared/update-types'
+import { defaultUpdatePreferences, normalizeUpdatePreferences } from '../shared/update-preferences'
 
 export interface SecretCipher {
   isAvailable(): boolean
@@ -185,6 +187,21 @@ export class SqliteStore {
     const row = this.db.prepare("SELECT value FROM app_meta WHERE key = 'ui_language'")
       .get() as unknown as { value: string } | undefined
     return row?.value === 'en' ? 'en' : 'zh-CN'
+  }
+
+  getUpdatePreferences(): UpdatePreferences {
+    const row = this.db.prepare("SELECT value FROM app_meta WHERE key = 'update_preferences'")
+      .get() as unknown as { value: string } | undefined
+    try { return row ? normalizeUpdatePreferences(JSON.parse(row.value)) : defaultUpdatePreferences() }
+    catch { return defaultUpdatePreferences() }
+  }
+
+  setUpdatePreferences(preferences: UpdatePreferences): void {
+    try {
+      this.setMetaInTransaction('update_preferences', JSON.stringify(normalizeUpdatePreferences(preferences)))
+    } catch {
+      throw new DomainError('INVALID_UPDATE_PREFERENCES', '更新设置无效，请使用不含账号密码或参数的 HTTPS 代理前缀（最多 5 条）')
+    }
   }
 
   setLanguage(language: 'zh-CN' | 'en'): void {

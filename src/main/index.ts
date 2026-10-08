@@ -2,7 +2,7 @@ import { basename, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { copyFile, rename, unlink } from 'node:fs/promises'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, net, safeStorage, shell } from 'electron'
 import { BatchQueue } from './batch-queue'
 import { CommentScanQueue } from './comment-scan-queue'
 import { SecretCipher, SqliteStore } from './store'
@@ -13,6 +13,9 @@ import { localizeMessage } from '../shared/localization'
 import { APP_NAME_EN, APP_NAME_ZH } from '../shared/branding'
 import { buildLongArtworkScript } from '../shared/artwork'
 import { ARTWORK_SOURCE_URLS, ARTWORK_UPLOAD_URL, type ArtworkSource } from '../shared/artwork-links'
+import { UpdateService } from './update-service'
+import { prepareWindowsUpdate } from './update-installer'
+import { UPDATE_REPOSITORY, type UpdatePreferences, type UpdatePackageKind } from '../shared/update-types'
 import {
   AppError,
   AppEvent,
@@ -29,6 +32,11 @@ let steam: SteamService
 let queue: BatchQueue
 let commentScans: CommentScanQueue
 let exportInProgress = false
+let installInProgress = false
+let updater: UpdateService
+let startupUpdateTimer: ReturnType<typeof setTimeout> | undefined
+let periodicUpdateTimer: ReturnType<typeof setInterval> | undefined
+const updatePackageKind: UpdatePackageKind = process.env.PORTABLE_EXECUTABLE_FILE ? 'portable' : 'setup'
 
 // Retain the existing account database if Electron uses the renamed product name.
 if ([APP_NAME_ZH, APP_NAME_EN].includes(app.getName())) {
@@ -66,9 +74,25 @@ app.whenReady().then(async () => {
   })
   queue = new BatchQueue(store, steam, emit)
   commentScans = new CommentScanQueue(store, steam, emit)
+  updater = new UpdateService({
+    currentVersion: app.getVersion(), packageKind: updatePackageKind,
+    cacheDirectory: join(app.getPath('userData'), 'updates'),
+    preferences: () => store.getUpdatePreferences(),
+    fetchImpl: (input, init) => net.fetch(input instanceof Request ? input : String(input), { ...init, credentials: 'omit' }),
+    onStateChange: (state) => emit({ type: 'updateChanged', state })
+  })
   registerIpcHandlers()
   createWindow()
   void steam.restoreActiveAccount()
+  const automaticCheck = (): void => {
+    if (app.isPackaged && store.getUpdatePreferences().autoCheck && updater.getState().phase !== 'downloading') {
+      void updater.checkForUpdates()
+    }
+  }
+  startupUpdateTimer = setTimeout(automaticCheck, 8_000)
+  periodicUpdateTimer = setInterval(automaticCheck, 4 * 60 * 60 * 1000)
+  startupUpdateTimer.unref()
+  periodicUpdateTimer.unref()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -80,6 +104,9 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  clearTimeout(startupUpdateTimer)
+  clearInterval(periodicUpdateTimer)
+  updater?.shutdown()
   commentScans?.shutdown()
   store?.close()
 })
@@ -146,6 +173,35 @@ function createWindow(): void {
 }
 
 function registerIpcHandlers(): void {
+  handle('update:check', () => updater.checkForUpdates())
+  handle('update:download', (routeId?: string) => updater.downloadUpdate(routeId))
+  handle('update:cancel', () => updater.cancel())
+  handle('update:preferences', (preferences: UpdatePreferences) => {
+    store.setUpdatePreferences(preferences)
+    mainWindow?.webContents.send('app:event', { type: 'snapshotChanged' })
+  })
+  handle('update:openRelease', () => shell.openExternal(
+    updater.getState().releaseUrl ?? `https://github.com/${UPDATE_REPOSITORY}/releases/latest`
+  ))
+  handle('update:install', async () => {
+    if (!app.isPackaged) throw new DomainError('update.notPackaged', 'update.notPackaged')
+    if (process.platform !== 'win32') throw new DomainError('update.installPlatform', 'update.installPlatform')
+    ensureInstallationIdle()
+    const ready = await updater.getReadyUpdate()
+    const plan = await prepareWindowsUpdate(ready, {
+      packageKind: updatePackageKind, cacheDirectory: join(app.getPath('userData'), 'updates'),
+      portableTarget: process.env.PORTABLE_EXECUTABLE_FILE
+    })
+    ensureInstallationIdle()
+    installInProgress = true
+    try {
+      await plan.launch()
+      setImmediate(() => app.quit())
+    } catch {
+      installInProgress = false
+      throw new DomainError('update.installLaunch', 'update.installLaunch')
+    }
+  })
   handle('artwork:copyScript', () => clipboard.writeText(buildLongArtworkScript()))
   handle('artwork:openUpload', () => shell.openExternal(ARTWORK_UPLOAD_URL))
   handle('artwork:openSource', (source: ArtworkSource) => {
@@ -261,6 +317,16 @@ function registerIpcHandlers(): void {
   handle('batch:cancel', (batchId: string) => queue.cancel(batchId))
 }
 
+function ensureInstallationIdle(): void {
+  const hasActiveWork = store.getAccounts().some((account) => {
+    const batch = store.getActiveBatch(account.id)
+    const scan = store.getLatestCommentScan(account.id)
+    return batch?.status === 'running' || batch?.status === 'queued' ||
+      batch?.deliveries.some((delivery) => delivery.status === 'sending') || scan?.status === 'running'
+  })
+  if (exportInProgress || installInProgress || hasActiveWork) throw new DomainError('update.installBusy', 'update.installBusy')
+}
+
 function getSnapshot(): AppSnapshot {
   const activeAccountId = store.getActiveAccountId()
   const secretInfo = store.getSecretStorageInfo()
@@ -286,6 +352,8 @@ function getSnapshot(): AppSnapshot {
     commentScan: scan ? { ...scan, lastError: translated(scan.lastError) } : null,
     dataDirectory: app.getPath('userData'),
     language,
+    updater: updater.getState(),
+    updatePreferences: store.getUpdatePreferences(),
     security: {
       secretStorageAvailable: secretInfo.available,
       secretStorageBackend: secretInfo.backend
@@ -300,6 +368,9 @@ function handle<TArgs extends unknown[], TResult>(
   ipcMain.handle(channel, async (event, ...args: TArgs): Promise<IpcResult<TResult>> => {
     if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
       return { ok: false, error: { code: 'INVALID_SENDER', message: '拒绝未知页面的请求' } }
+    }
+    if (installInProgress && channel !== 'snapshot:get') {
+      return { ok: false, error: { code: 'update.installBusy', message: 'update.installBusy' } }
     }
     try {
       const data = await operation(...args)

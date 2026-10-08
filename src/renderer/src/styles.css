@@ -355,6 +355,8 @@ code {
   text-decoration: underline;
 }
 
+.update-sidebar-badge { margin-left: 6px; padding: 2px 4px; color: var(--green); border: 1px solid currentColor; border-radius: 3px; font-size: 9px; }
+
 .modal.settings-modal { width: min(680px, 92vw); max-height: 90vh; overflow-y: auto; padding: 30px; }
 .settings-modal h3 { margin: 22px 0 10px; font-size: 15px; }
 .settings-modal p, .settings-modal li, .settings-modal small { color: var(--muted); line-height: 1.7; font-size: 12px; }

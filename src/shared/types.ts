@@ -1,4 +1,5 @@
 import type { ArtworkSource } from './artwork-links'
+import type { UpdatePreferences, UpdateState } from './update-types'
 
 export type SessionState = 'offline' | 'restoring' | 'authenticated' | 'expired' | 'error'
 
@@ -168,6 +169,8 @@ export interface AppSnapshot {
   commentScan: CommentScanJob | null
   dataDirectory: string
   language: 'zh-CN' | 'en'
+  updater: UpdateState
+  updatePreferences: UpdatePreferences
   security: {
     secretStorageAvailable: boolean
     secretStorageBackend: string
@@ -206,6 +209,7 @@ export interface BatchStartInput {
 }
 
 export type AppEvent =
+  | { type: 'updateChanged'; state: UpdateState }
   | { type: 'snapshotChanged' }
   | { type: 'notice'; level: 'info' | 'success' | 'warning' | 'error'; message: string }
   | { type: 'authRemoteInteraction'; loginId: string }
@@ -214,6 +218,12 @@ export type AppEvent =
   | { type: 'batchProgress'; batchId: string }
 
 export interface SteamFriendCommenterApi {
+  checkForUpdates(): Promise<IpcResult<UpdateState>>
+  downloadUpdate(routeId?: string): Promise<IpcResult<UpdateState>>
+  cancelUpdate(): Promise<IpcResult<void>>
+  installUpdate(): Promise<IpcResult<void>>
+  setUpdatePreferences(preferences: UpdatePreferences): Promise<IpcResult<void>>
+  openUpdateRelease(): Promise<IpcResult<void>>
   copyArtworkScript(): Promise<IpcResult<void>>
   openArtworkPage(): Promise<IpcResult<void>>
   openArtworkSource(source: ArtworkSource): Promise<IpcResult<void>>

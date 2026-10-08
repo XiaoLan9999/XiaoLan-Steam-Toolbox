@@ -1,0 +1,59 @@
+.update-panel {
+  margin: 24px 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(4, 10, 16, 0.2);
+}
+
+.update-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-modal .update-panel-heading h3 { margin: 0; }
+.update-phase { color: var(--muted); font-size: 11px; line-height: 1.6; text-align: right; }
+.update-phase-available, .update-phase-ready, .update-verified { color: var(--green); }
+.update-phase-error { color: var(--red); }
+.update-versions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin: 16px 0 0; }
+.update-versions > div:last-child { grid-column: 1 / -1; }
+.update-versions dt { margin-bottom: 4px; color: var(--muted); font-size: 11px; }
+.update-versions dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.update-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+.update-checkbox { display: flex; align-items: center; gap: 9px; margin-top: 12px; font-size: 12px; line-height: 1.5; }
+.update-checkbox input { width: 15px; height: 15px; margin: 0; accent-color: var(--blue-2); }
+.settings-modal .update-mirror-note { font-size: 11px; }
+.update-mirror-note span { color: var(--text); overflow-wrap: anywhere; }
+.update-advanced { margin-top: 16px; font-size: 12px; }
+.update-advanced summary, .update-route-error summary, .update-error summary { cursor: pointer; }
+.update-advanced summary { margin-bottom: 10px; color: var(--blue); }
+.update-advanced label { display: block; margin-bottom: 8px; }
+.update-advanced textarea { display: block; width: 100%; resize: vertical; min-height: 76px; border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.6; }
+.update-advanced > small { display: block; margin-top: 8px; }
+.update-route-list { margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.update-route-headers, .update-route { display: grid; grid-template-columns: minmax(0, 1fr) minmax(145px, 0.8fr); gap: 8px; padding: 10px 12px; }
+.update-route-headers { background: var(--panel-2); color: var(--muted); font-size: 11px; }
+.update-route-headers span:last-child { text-align: right; }
+.update-route { border-top: 1px solid var(--line); font-size: 12px; }
+.update-route-name strong, .update-route-name small, .update-route-result small { display: block; }
+.update-route-name strong { font-weight: 500; overflow-wrap: anywhere; }
+.update-route-name small { color: var(--muted); overflow-wrap: anywhere; }
+.update-route-result { text-align: right; color: var(--muted); }
+.update-route-available .update-route-result > span { color: var(--green); }
+.update-route-failed .update-route-result > span { color: var(--red); }
+.update-route-error { grid-column: 1 / -1; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.update-route-error code, .update-error code { display: block; margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.settings-modal p.update-verified { margin-top: 16px; color: var(--green); font-size: 11px; }
+.update-download-controls label { display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
+.update-download-controls select { width: 100%; padding: 8px 10px; border-radius: 6px; font-size: 12px; }
+.update-progress { margin-top: 16px; }
+.update-progress progress { display: block; width: 100%; height: 9px; overflow: hidden; border: 0; border-radius: 5px; background: var(--panel-3); accent-color: var(--blue-2); }
+.update-progress progress::-webkit-progress-bar { background: var(--panel-3); }
+.update-progress progress::-webkit-progress-value { background: var(--blue-2); }
+.update-progress > div { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.update-progress strong { color: var(--text); }
+.update-ready { margin-top: 12px; }
+.update-error { margin-top: 14px; color: var(--red); font-size: 12px; line-height: 1.6; }
+.settings-modal .update-error p { margin: 0 0 6px; color: var(--red); }

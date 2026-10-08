@@ -21,6 +21,7 @@ Windows 桌面端 Steam 工具箱，由 [XiaoLan9999](https://xiaolan9999.net) �
 - 每个账号独立的“昵称变化”历史，保存旧昵称、新昵称和发现时间
 - 可暂停/继续/取消的只读留言权限检查任务，逐条读取资料页，不发送测试留言
 - 设置中切换中文 / English，并导出不含登录令牌的完整 SQLite 备份
+- 内置 GitHub Release 更新：11 条公共线路检测、换路与续传、发布签名及文件哈希验证、安装版/便携版重启更新
 - 当前账号 `EmoticonList` 表情选择器，点击插入 `:name:` token
 - `{friend}`、`{account}` 个性化占位符
 - 发送前最终确认，冻结账号、收件人和正文快照
@@ -80,6 +81,27 @@ npm.cmd run dist
 ### English
 
 Open **Artwork & tools** to preview/copy the long-artwork console script and crop a local static PNG/JPEG background. Select the image on Steam's upload page first, run the reviewed code before saving, then assign the uploaded artwork to a showcase. Standard artwork uses 506px + 100px with a 9px gap; featured artwork uses 630px. Adjust coordinates for your profile layout. Animated image conversion is available through Steam.Design. These tools also work without signing in to this desktop app.
+
+## 内置更新与公共镜像
+
+0.4.0 起，设置中的“软件更新”支持检查、下载、取消和确认重启更新。旧版需先安装一次 0.4.0，此后可在软件内获取后续版本。默认启动后检查，并在软件运行期间每 4 小时检查；可以关闭自动检查。检测的是正式 GitHub Release，不会把普通源码提交当作可安装版本。
+
+内置 GitHub 官方与 10 个公共代理候选：`ghfast.top`、`ghproxy.net`、`gh-proxy.com`、`gh-proxy.org`、`gh.monlor.com`、`ghproxy.imciel.com`、`fastgit.cc`、`github.ednovas.xyz`、`proxy.vvvv.ee`、`ghp.keleyaa.com`。候选来源和匿名校验文件探测记录见 [镜像说明](docs/update-mirrors.md)。这些站点由第三方运营，不代表中国各地均可连接；软件每次按实际响应和延迟检测，下载前只试读最多 64 KiB 来估算线路速度，下载故障会换路并尝试断点续传。
+
+更新清单必须通过应用内固定公钥的 Ed25519 签名验证，版本、文件名、仓库及下载地址也必须符合规则。更新包的完整大小和 SHA-256 匹配后才会进入“可安装”状态，安装前再次校验。镜像提供传输，不能用自己给出的任意 hash 替代发布者签名。所有更新请求匿名，不发送 Steam Cookie 或账号信息。可关闭公共代理，或在高级设置填写最多 5 条自己的 HTTPS 前缀。
+
+安装更新前请保存工作，停止正在发送的批次、等待在途请求结束，并暂停检查任务、完成数据导出。安装版使用已有 NSIS 更新流程；便携版在退出后原子替换原来的 EXE、保留前一版本备份并重启。账号数据库仍位于原数据目录。更新清单签名与 Windows 商业代码签名是不同机制，本项目暂未配置 Authenticode 商业签名。
+
+### 维护者发布后续版本
+
+1. 修改 `package.json` 与锁文件版本，提交源码。
+2. 推送匹配的 `v<版本号>` 标签，或在 GitHub Actions 的 **Release** 工作流手动触发。
+3. 工作流测试、打包，并从仓库 Secret `UPDATE_SIGNING_PRIVATE_KEY` 读取签名密钥，生成 `update-manifest.json` 和 `SHA256SUMS.txt`。
+4. 完整上传双 EXE、签名清单和校验文件后才发布 latest。已发布版本不覆盖，后续更新使用新版本号。
+
+本机签名私钥保存在 Git 已忽略的 `.release-keys` 目录，只用于维护者发布，请妥善备份；它不会进入源码、安装包或用户数据库。应用固定公钥位于 `src/shared/update-public-key.ts`，勿随意重新生成密钥。用户无需配置任何 GitHub token。维护者也可在本机打包后运行 `node scripts/build-update-manifest.mjs --tag v<版本> --key-file .release-keys/update-signing-private.pem`，将生成的公开文件上传到 Release。
+
+**English:** Settings → Software updates checks signed GitHub releases through the official route and ten public proxy candidates. Routes are measured on the user's connection; a sample request reads at most 64 KiB. Failed downloads can switch routes and resume. Only packages matching the publisher-signed manifest, exact size and SHA-256 are installable. Installation is explicit and restarts the app; portable updates retain the previous EXE backup. Releases are created by the repository's Release workflow, not every source commit.
 
 仅生成未安装目录用于快速检查：
 
@@ -208,6 +230,10 @@ Clicking a friend row now toggles only that friend without clearing other select
 ## 0.3.0 小蓝Steam工具箱
 
 应用更名为“小蓝Steam工具箱”，增加艺术作品长图助手和本地静态背景裁剪。原有账号、分组、黑名单、好友历史、语言和导出功能继续使用原数据目录。作品助手提供上传前代码，实际上传与展柜设置在 Steam 浏览器页面完成。
+
+## 0.4.0 内置更新
+
+新增发布签名、公共镜像线路检测、更新下载/取消/续传和明确的重启更新入口，支持安装版与便携版。公开镜像列表作为运行时候选维护，后续可追加个人镜像。GitHub Release 工作流自动生成并发布签名更新清单。
 
 ## 当前边界
 

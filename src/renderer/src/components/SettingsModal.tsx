@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { AppSnapshot } from '../../../shared/types'
 import { useI18n } from '../i18n'
 import { unwrap } from '../ui'
+import { UpdatePanel } from './UpdatePanel'
 import type { RunAction } from './types'
 
 export function SettingsModal({ snapshot, onClose, runAction }: {
@@ -28,6 +29,7 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
           <option value="zh-CN">中文</option><option value="en">English (ENG)</option>
         </select>
       </label>
+      <UpdatePanel state={snapshot.updater} preferences={snapshot.updatePreferences} runAction={runAction} />
       <h3>{t('数据备份与迁移', 'Backup and migration')}</h3>
       <p>{t('导出为完整的 SQLite 数据备份，包含账号资料、分组、黑名单、解除好友和昵称变化记录、检查任务、草稿和发送记录。不导出密码或自动登录令牌。',
         'Exports a complete SQLite backup of account profiles, groups, blacklists, friendship removal and name change history, checks, drafts and delivery history. Passwords and login tokens are not exported.')}</p>
