@@ -1,0 +1,478 @@
+.friend-management .group-rename-inline {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.group-rename-inline label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.group-rename-inline input {
+  padding: 8px 10px;
+  border-radius: 7px;
+}
+
+.comment-scan-card {
+  padding: 19px 20px 15px;
+}
+
+.comment-scan-card .card-heading {
+  align-items: flex-start;
+}
+
+.comment-scan-card .card-heading p {
+  max-width: 800px;
+  line-height: 1.7;
+}
+
+.scan-readonly-badge {
+  flex-shrink: 0;
+  padding: 5px 9px;
+  border: 1px solid rgba(102, 192, 244, 0.23);
+  border-radius: 15px;
+  color: var(--blue);
+  font-size: 10px;
+}
+
+.comment-scan-controls,
+.comment-scan-controls label,
+.scan-progress-heading,
+.scan-actions,
+.scan-counts,
+.friend-bulk-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.comment-scan-controls {
+  margin-top: 14px;
+}
+
+.comment-scan-controls label,
+.comment-filter {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.comment-scan-controls input {
+  width: 67px;
+  padding: 8px;
+  border-radius: 7px;
+}
+
+.comment-scan-controls small,
+.scan-counts small,
+.scan-background-note,
+.scan-help {
+  color: #7891a5;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.scan-help {
+  margin: 13px 0 0;
+}
+
+.comment-scan-progress {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(3, 9, 14, 0.2);
+}
+
+.scan-progress-heading {
+  justify-content: space-between;
+}
+
+.scan-progress-heading strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.comment-scan-progress progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 12px 0;
+  border: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  accent-color: var(--blue);
+}
+
+.comment-scan-progress progress::-webkit-progress-bar {
+  background: rgba(102, 192, 244, 0.12);
+}
+
+.comment-scan-progress progress::-webkit-progress-value {
+  background: var(--blue);
+}
+
+.scan-counts {
+  gap: 14px;
+}
+
+.scan-counts small {
+  margin-left: auto;
+  max-width: 330px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scan-background-note {
+  display: block;
+  margin-top: 8px;
+}
+
+.scan-error {
+  margin: 10px 0 0;
+  color: #e7b56f;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.friend-view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.friend-view-tabs button {
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+}
+
+.friend-view-tabs button.active {
+  color: var(--blue);
+  border-color: rgba(102, 192, 244, 0.28);
+  background: rgba(102, 192, 244, 0.09);
+}
+
+.friend-view-tabs b {
+  margin-left: 5px;
+  font-size: 10px;
+}
+
+.friend-view-tabs > span {
+  color: #7891a5;
+  font-size: 10px;
+  margin-left: auto;
+}
+
+.friend-management .friend-toolbar {
+  flex-wrap: wrap;
+}
+
+.friend-management .comment-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.comment-filter select {
+  padding: 8px 26px 8px 9px;
+  border-radius: 7px;
+}
+
+.friend-bulk-toolbar {
+  padding: 12px 16px 8px;
+}
+
+.friend-bulk-toolbar > span {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.friend-bulk-toolbar > span strong {
+  color: #b5d3e6;
+}
+
+.friend-selection-help {
+  padding: 0 16px 13px;
+  color: #8095a8;
+  font-size: 10px;
+  line-height: 1.8;
+}
+
+.friend-management .friend-selected-tools {
+  display: grid;
+  grid-template-columns: minmax(95px, 0.8fr) repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 11px 16px;
+  border-top: 1px solid var(--line);
+  background: rgba(26, 159, 255, 0.035);
+}
+
+.friend-management .friend-selected-tools .primary {
+  margin-left: 0;
+}
+
+.friend-management .friend-selected-tools button {
+  height: 42px;
+  padding: 5px 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.friend-management .friend-drag-surface {
+  max-height: min(640px, 65vh);
+  min-height: 180px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--line);
+}
+
+.friend-management .friend-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #10202e;
+  white-space: nowrap;
+}
+
+.friend-management .friend-table td {
+  padding: 10px 12px;
+}
+
+.friend-management .friend-table tbody tr {
+  cursor: default;
+}
+
+.friend-management .friend-table tr.selected td,
+.friend-management .friend-table tr.selected:hover td {
+  background: rgba(26, 159, 255, 0.13);
+}
+
+.friend-management .friend-table tr.selected td:first-child {
+  box-shadow: inset 3px 0 #66c0f4;
+}
+
+.friend-management .is-dragging,
+.friend-management .is-dragging * {
+  cursor: crosshair;
+  user-select: none;
+}
+
+.friend-management .friend-table input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.friend-management .friend-table th:nth-child(5),
+.friend-management .friend-table td:nth-child(5) {
+  display: table-cell;
+}
+
+.friend-management .friend-table td:nth-child(3) {
+  white-space: nowrap;
+}
+
+.friend-name {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.friend-management .friend-name strong {
+  max-width: 180px;
+}
+
+.blacklist-badge {
+  align-self: flex-start;
+  color: #d59b8e;
+  font-size: 9px;
+}
+
+.friend-comment-check {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 165px;
+}
+
+.comment-status {
+  color: #8195a6;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.comment-status.allowed {
+  color: #8dcc91;
+}
+
+.comment-status.blocked {
+  color: #e29488;
+}
+
+.comment-status.unknown {
+  color: #dcbe7a;
+}
+
+.friend-comment-check .check-reason,
+.friend-comment-check time {
+  color: #7890a2;
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.friend-removals-note,
+.friend-name-changes-note {
+  padding: 0 16px 15px;
+  color: #8095a8;
+  font-size: 11px;
+  line-height: 1.8;
+}
+
+.friend-removals-note strong,
+.friend-name-changes-note strong {
+  color: #b5d3e6;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.friend-removals-note p,
+.friend-name-changes-note p {
+  margin: 6px 0 0;
+}
+
+.friend-removals-table-wrap,
+.friend-name-changes-table-wrap {
+  max-height: min(640px, 65vh);
+  min-height: 180px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--line);
+}
+
+.friend-removals-table,
+.friend-name-changes-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.friend-removals-table th,
+.friend-name-changes-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 12px;
+  background: #10202e;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.friend-removals-table td,
+.friend-name-changes-table td {
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.friend-removals-table td:nth-child(2),
+.friend-removals-table time,
+.friend-name-changes-table td:nth-child(2),
+.friend-name-changes-table time,
+.removal-legacy-time {
+  color: #8ca5b9;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.friend-removals-table td:first-child {
+  min-width: 180px;
+}
+
+.friend-removals-table .friend-name strong {
+  max-width: 210px;
+}
+
+.removal-relationship {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.removal-status.removed {
+  color: #dcbe7a;
+}
+
+.removal-status.restored {
+  color: #8dcc91;
+}
+
+.friend-removals-table a,
+.friend-name-changes-table a {
+  display: inline-block;
+  padding: 6px;
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.friend-name-changes-table td:first-child {
+  min-width: 260px;
+}
+
+.friend-name-change {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.friend-old-name,
+.friend-new-name {
+  max-width: 180px;
+  overflow-wrap: anywhere;
+}
+
+.friend-old-name {
+  color: #8ca5b9;
+}
+
+.friend-name-change-arrow {
+  color: var(--blue);
+}
+
+@media (max-width: 1180px) {
+  .friend-management .friend-table th:nth-child(6),
+  .friend-management .friend-table td:nth-child(6) {
+    display: none;
+  }
+
+  .friend-management .friend-name strong {
+    max-width: 145px;
+  }
+
+  .friend-comment-check {
+    width: 140px;
+  }
+
+  .friend-view-tabs > span {
+    margin-left: 0;
+  }
+}
