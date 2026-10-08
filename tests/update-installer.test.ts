@@ -26,20 +26,26 @@ describe.skipIf(process.platform !== 'win32')('Windows update installation', () 
     const launcher = `
       const { prepareWindowsUpdate } = await import(process.argv[1]);
       const plan = await prepareWindowsUpdate(JSON.parse(process.argv[2]), JSON.parse(process.argv[3]));
-      await plan.launch();
+      try { await plan.launch(); } catch (error) {
+        console.error(error.diagnosticCode || 'installer.unknown');
+        process.exit(1);
+      }
       console.log('acknowledged');
       process.exit(0);
     `
     const { stdout } = await run(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', launcher,
       new URL('../src/main/update-installer.ts', import.meta.url).href, JSON.stringify(ready),
-      JSON.stringify({ packageKind: 'portable', cacheDirectory: cache, portableTarget: target })], { windowsHide: true })
+      JSON.stringify({ packageKind: 'portable', cacheDirectory: cache, portableTarget: target })], { windowsHide: true }).catch(error => {
+        const diagnostic = typeof error.stderr === 'string' ? error.stderr.match(/installer\.[A-Za-z]+/u)?.[0] : null
+        throw new Error(`Native portable helper launch failed (${diagnostic ?? 'installer.unknown'})`)
+      })
     expect(stdout.trim()).toBe('acknowledged')
     await until(async () => (await readFile(join(directory, 'started.txt'), 'utf8')) === 'new:--updated')
     expect(await readFile(target)).toEqual(await readFile(source))
     const { readdir } = await import('node:fs/promises')
     const backup = (await readdir(directory)).find(name => name.includes('.previous-') && name.endsWith('.exe'))!
     expect(await readFile(join(directory, backup))).toEqual(oldBytes)
-  }, 30_000)
+  }, 60_000)
 
   it('starts the verified NSIS package with update/restart arguments after the parent exits', async () => {
     const { cache } = await fixture()
@@ -50,7 +56,7 @@ describe.skipIf(process.platform !== 'win32')('Windows update installation', () 
     })
     await plan.launch()
     await until(async () => (await readFile(join(cache, 'started.txt'), 'utf8')) === 'setup:/S|--updated|--force-run')
-  }, 30_000)
+  }, 60_000)
 
   it('rejects files outside the update cache and catches tampering both before and after launch preparation', async () => {
     const { directory, cache } = await fixture()
@@ -70,7 +76,7 @@ describe.skipIf(process.platform !== 'win32')('Windows update installation', () 
     await writeFile(compiled, tamperedBytes)
     await expect(plan.launch()).rejects.toThrow('update.installLaunch')
     await expect(readFile(join(cache, 'started.txt'))).rejects.toThrow()
-  })
+  }, 60_000)
 })
 
 async function fixture() {
@@ -103,7 +109,8 @@ async function readyUpdate(path: string, kind: 'setup' | 'portable'): Promise<Re
 }
 
 async function until(condition: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 60; attempt++) {
+  const restartDeadline = Date.now() + 20_000
+  while (Date.now() < restartDeadline) {
     try { if (await condition()) return } catch { /* Wait for the isolated fixture process. */ }
     await new Promise(done => setTimeout(done, 100))
   }

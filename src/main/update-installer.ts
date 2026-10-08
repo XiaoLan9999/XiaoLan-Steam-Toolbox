@@ -9,6 +9,20 @@ export interface ReadyUpdate { path: string; asset: UpdateAsset; manifest: Updat
 export interface InstallationOptions { packageKind: UpdatePackageKind; cacheDirectory: string; portableTarget?: string; parentPid?: number }
 export interface InstallationPlan { helperPath: string; arguments: string[]; launch(): Promise<void> }
 
+const HELPER_DIAGNOSTICS = new Set([
+  'installer.packageVerification', 'installer.portableMetadata', 'installer.pathCanonicalization',
+  'installer.portableHash', 'installer.parentExit', 'installer.packageChanged', 'installer.setupLaunch',
+  'installer.replacementPath', 'installer.copyVerification', 'installer.atomicReplace', 'installer.restart'
+])
+
+class UpdateLaunchError extends Error {
+  readonly diagnosticCode: string
+  constructor(diagnosticCode: string) {
+    super('update.installLaunch')
+    this.diagnosticCode = diagnosticCode
+  }
+}
+
 export function powershellPath(): string {
   return join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 }
@@ -80,16 +94,21 @@ export async function prepareWindowsUpdate(ready: ReadyUpdate, options: Installa
     const child = spawn(powershellPath(), args, { windowsHide: true, stdio: 'ignore', env: environment })
     try {
       await new Promise<void>((done, fail) => { child.once('spawn', done); child.once('error', fail) })
-    } catch { throw new Error('update.installLaunch') }
+    } catch { throw new UpdateLaunchError('installer.brokerSpawn') }
     child.unref()
-    for (let attempt = 0; attempt < 80; attempt++) {
+    const acknowledgmentDeadline = Date.now() + 30_000
+    while (Date.now() < acknowledgmentDeadline) {
       try { if (await readFile(acknowledgmentPath, 'utf8') === 'ready') return } catch { /* Await the helper's validation. */ }
-      let helperFailed = false
-      try { helperFailed = JSON.parse((await readFile(resultPath, 'utf8')).replace(/^\uFEFF/u, '')).status === 'failed' } catch { /* The helper has not completed. */ }
-      if (helperFailed || (child.exitCode !== null && child.exitCode !== 0) || child.signalCode !== null) throw new Error('update.installLaunch')
+      let helperFailure: string | null = null
+      try {
+        const result = JSON.parse((await readFile(resultPath, 'utf8')).replace(/^\uFEFF/u, '')) as { status?: unknown; code?: unknown }
+        if (result.status === 'failed') helperFailure = typeof result.code === 'string' && HELPER_DIAGNOSTICS.has(result.code) ? result.code : 'installer.helperFailed'
+      } catch { /* The helper has not completed. */ }
+      if (helperFailure) throw new UpdateLaunchError(helperFailure)
+      if ((child.exitCode !== null && child.exitCode !== 0) || child.signalCode !== null) throw new UpdateLaunchError('installer.brokerExit')
       await new Promise(done => setTimeout(done, 100))
     }
-    throw new Error('update.installLaunch')
+    throw new UpdateLaunchError('installer.ackTimeout')
   } }
 }
 
@@ -111,33 +130,62 @@ function Get-VerifiedFileHash([string]$Path) {
   try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
   finally { $algorithm.Dispose(); $stream.Dispose() }
 }
+$failureCode = 'installer.packageVerification'
 try {
   $sourceFile = Get-Item -LiteralPath $Source
   if ($sourceFile.Length -ne $ExpectedSize -or (Get-VerifiedFileHash $Source) -ne $ExpectedHash) { throw 'Package verification failed' }
   if ($Kind -eq 'portable') {
+    $failureCode = 'installer.portableMetadata'
     $targetFile = Get-Item -LiteralPath $Target
     $allowedProducts = @('小蓝Steam工具箱', 'XiaoLan Steam Toolbox', 'Steam Friend Commenter')
     if ($targetFile.VersionInfo.ProductName -notin $allowedProducts -or $targetFile.VersionInfo.CompanyName -ne 'XiaoLan9999') { throw 'Invalid portable program' }
-    $targetDirectory = (Resolve-Path -LiteralPath $targetFile.DirectoryName).Path
-    $resolvedTarget = (Resolve-Path -LiteralPath $Target).Path
-    if ([IO.Path]::GetDirectoryName($resolvedTarget) -ne $targetDirectory -or (Get-VerifiedFileHash $Target) -ne $OriginalHash) { throw 'Portable program changed' }
+    $failureCode = 'installer.pathCanonicalization'
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class XiaoLanUpdatePath {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern uint GetLongPathName(string path, StringBuilder buffer, uint capacity);
+  public static string Canonicalize(string path) {
+    var buffer = new StringBuilder(32768);
+    var length = GetLongPathName(Path.GetFullPath(path), buffer, (uint)buffer.Capacity);
+    if (length == 0 || length >= buffer.Capacity) throw new IOException("Path canonicalization failed");
+    return Path.GetFullPath(buffer.ToString());
+  }
+}
+'@
+    $targetDirectory = [XiaoLanUpdatePath]::Canonicalize((Resolve-Path -LiteralPath $targetFile.DirectoryName).ProviderPath)
+    $resolvedTarget = [XiaoLanUpdatePath]::Canonicalize((Resolve-Path -LiteralPath $Target).ProviderPath)
+    if ([IO.Path]::GetDirectoryName($resolvedTarget) -ne $targetDirectory) { throw 'Portable directory changed' }
+    $Target = $resolvedTarget
+    $failureCode = 'installer.portableHash'
+    if ((Get-VerifiedFileHash $Target) -ne $OriginalHash) { throw 'Portable program changed' }
   }
   [IO.File]::WriteAllText($Acknowledgment, 'ready')
   $parentProcess = $null
   try { $parentProcess = [Diagnostics.Process]::GetProcessById($ParentProcessId) } catch {}
+  $failureCode = 'installer.parentExit'
   if ($parentProcess -and -not $parentProcess.WaitForExit(60000)) { throw 'Application has not exited' }
+  $failureCode = 'installer.packageChanged'
   if ((Get-VerifiedFileHash $Source) -ne $ExpectedHash) { throw 'Package changed before installation' }
   if ($Kind -eq 'setup') {
+    $failureCode = 'installer.setupLaunch'
     Start-Process -FilePath $Source -ArgumentList @('/S','--updated','--force-run') -WindowStyle Hidden
   } else {
+    $failureCode = 'installer.portableHash'
     if ((Get-VerifiedFileHash $Target) -ne $OriginalHash) { throw 'Portable program changed' }
     $suffix = [Guid]::NewGuid().ToString('N')
     $temporaryTarget = Join-Path $targetDirectory ('.xiaolan-update-' + $suffix + '.exe')
     $backupTarget = Join-Path $targetDirectory ([IO.Path]::GetFileNameWithoutExtension($Target) + '.previous-' + $suffix + '.exe')
+    $failureCode = 'installer.replacementPath'
     if ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($temporaryTarget)) -ne $targetDirectory -or [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($backupTarget)) -ne $targetDirectory) { throw 'Invalid replacement path' }
     Copy-Item -LiteralPath $Source -Destination $temporaryTarget
+    $failureCode = 'installer.copyVerification'
     if ((Get-VerifiedFileHash $temporaryTarget) -ne $ExpectedHash) { throw 'Replacement verification failed' }
     $replaced = $false
+    $failureCode = 'installer.atomicReplace'
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
       try {
         if ((Get-VerifiedFileHash $Target) -ne $OriginalHash) { throw 'Portable program changed' }
@@ -145,6 +193,7 @@ try {
       } catch { Start-Sleep -Milliseconds 500 }
     }
     if (-not $replaced) { throw 'Portable replacement failed' }
+    $failureCode = 'installer.restart'
     try { Start-Process -FilePath $Target -ArgumentList @('--updated') } catch {
       if ((Get-VerifiedFileHash $Target) -eq $ExpectedHash -and (Get-VerifiedFileHash $backupTarget) -eq $OriginalHash) { [IO.File]::Replace($backupTarget, $Target, $null, $true) }
       throw
@@ -152,7 +201,7 @@ try {
   }
   @{status='launched';kind=$Kind} | ConvertTo-Json -Compress | Set-Content -LiteralPath $ResultFile -Encoding UTF8
 } catch {
-  @{status='failed';message='update.installLaunch'} | ConvertTo-Json -Compress | Set-Content -LiteralPath $ResultFile -Encoding UTF8
+  @{status='failed';message='update.installLaunch';code=$failureCode} | ConvertTo-Json -Compress | Set-Content -LiteralPath $ResultFile -Encoding UTF8
   exit 1
 }
 `
