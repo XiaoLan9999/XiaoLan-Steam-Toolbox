@@ -7,7 +7,7 @@ Windows 桌面端 Steam 工具箱，由 [XiaoLan9999](https://xiaolan9999.net) �
 ## 已实现
 
 - Steam 手机应用二维码登录
-- 艺术作品长图控制台代码预览、复制和上传页入口
+- 工具箱内置艺术作品上传、展柜配置与一键长图设置，无需外部浏览器或控制台
 - 静态 PNG/JPEG 背景的本地裁剪预览、普通双图与精选作品尺寸预设、PNG 导出
 - 账号密码 + Steam Guard 备用登录（密码和验证码不落盘）
 - Windows DPAPI 加密 refresh token，下次启动自动登录最后使用的账号
@@ -15,7 +15,7 @@ Windows 桌面端 Steam 工具箱，由 [XiaoLan9999](https://xiaolan9999.net) �
 - 好友列表、昵称、头像和在线状态同步
 - 优先一次读取 Steam 好友页资料；缺失项小批补齐，部分失败保留已同步资料和旧缓存
 - 本地好友分组 CRUD 与批量移动
-- 拖动跨行多选、Shift 连选、筛选结果全选/反选
+- 默认保留已有勾选的拖动跨行多选、Shift 连选、筛选结果全选/反选
 - 每个账号独立黑名单，编辑器和实际发送时均排除
 - 每个账号独立的“已解除好友”记录，成功同步后自动记录消失的好友，重新加回时标记恢复
 - 每个账号独立的“昵称变化”历史，保存旧昵称、新昵称和发现时间
@@ -58,29 +58,33 @@ npm.cmd run dist
 
 ## 艺术作品与背景适配
 
-侧栏“艺术作品与小工具”无需登录本应用也可使用。
+侧栏“艺术作品与小工具”的本地裁剪、内置动画工具和来源查看无需登录。上传作品和配置展柜使用工具箱当前已登录的 Steam 账号。
 
 ### 长图上传助手
 
-1. 打开工具内的 Steam 艺术作品上传页，在浏览器登录 Steam。
-2. 选择自己的图片，等待页面读入图片。
-3. 在工具中查看并复制长图代码，在该 Steam 上传页的浏览器控制台执行。
-4. 填写作品信息，确认作者声明并保存。
-5. 上传完成后，在 Steam 个人资料编辑中选择对应艺术作品展柜和作品。
+1. 在工具箱连接自己的 Steam 账号，然后打开“在工具箱内上传”。
+2. 在内置 Steam 表单中选择图片，等待预览加载。
+3. 点击工具箱控制栏的“应用长图设置”，无需打开 F12 或粘贴代码。
+4. 填写标题、可见性等信息，亲自确认作者声明并点击 Steam 的保存按钮。
+5. 点击工具箱中的展柜配置入口，在内置 Steam 页面选择展柜和已上传的作品，再保存。
 
 代码将当前上传表单的 `image_width` / `image_height` 元数据设为 `1000` / `1`，并移除这两个字段的 DOM `id`，避免被页面逻辑覆盖。图片内容保持原尺寸；脚本只操作这两个表单字段，上传和作品信息由你确认。文件大小等限制依然以 Steam 上传页为准。
 
-做法来自 [ASH / MightyG3 的原作者指南](https://steamcommunity.com/sharedfiles/filedetails/?id=748624905&l=english)。这是社区上传流程，尚未代替真实账号完成上传验收；Steam 页面改变时，脚本会在找不到字段或页面错误时停止。
+做法来自 [ASH / MightyG3 的原作者指南](https://steamcommunity.com/sharedfiles/filedetails/?id=748624905&l=english) 及 [Steam.Design 的官方扩展实现](https://github.com/sapic/Steam-Design-Extension/blob/master/src/js/upload.js)。内置页面仍使用 Steam 原表单和文件限制，不自动勾选版权或提交作品；Steam 页面改变时会停止并提示，而不是猜测上传协议。没有使用真实 Steam 账号代替用户上传作品。
+
+Steam 页面运行在工具箱中的隔离 WebContentsView，没有应用 preload、Node 或主进程 API。仅将当前账号必要的 Community 登录 Cookie 放入独立内存会话，不写入磁盘或返回 UI；切账号、删除账号、关闭页面时销毁视图和会话。来源页、动画工具与 Steam 上传页使用隔离会话，不共享 Steam Cookie。设置弹窗打开或离开工具页时隐藏远程视图，避免覆盖本地操作。
+
+内置页面的文件下载使用原生模态保存对话框，在写盘前验证文件类型及最终路径，不重新请求下载资源；请完成或取消保存窗口后继续操作工具箱。
 
 ### 静态背景裁剪
 
 导入本地 PNG/JPEG 背景，选择普通双图或精选作品预设，调整起点和高度，查看裁剪框并导出 PNG。普通主图宽 506、侧图宽 100、内容间隙 9；精选作品宽 630。默认起点为 `x = floor(backgroundWidth / 2) - 467`、`y = 256`。
 
-尺寸和坐标依据 [Steam.Design 的公开实现](https://github.com/sapic/sapic/blob/0abb62f34b47fbc65b22e47950849c28c1946873/src/stores/index.ts)，工具使用自己的本地裁剪实现。预设针对原始大小、居中显示的背景；展柜排列和背景缩放会影响位置，需按自己的页面调整。动画背景和 GIF 处理可从工具打开 [Steam.Design](https://steam.design/)。
+尺寸和坐标依据 [Steam.Design 的公开实现](https://github.com/sapic/sapic/blob/0abb62f34b47fbc65b22e47950849c28c1946873/src/stores/index.ts)，工具使用自己的本地静态裁剪实现。预设针对原始大小、居中显示的背景；展柜排列和背景缩放会影响位置，需按自己的页面调整。动画背景、GIF 和 WebM 使用工具箱内置的 [Steam.Design 在线页面](https://steam.design/)，仍需要联网，不会跳到外部浏览器，也不宣称是离线动画转换。
 
 ### English
 
-Open **Artwork & tools** to preview/copy the long-artwork console script and crop a local static PNG/JPEG background. Select the image on Steam's upload page first, run the reviewed code before saving, then assign the uploaded artwork to a showcase. Standard artwork uses 506px + 100px with a 9px gap; featured artwork uses 630px. Adjust coordinates for your profile layout. Animated image conversion is available through Steam.Design. These tools also work without signing in to this desktop app.
+Open **Artwork & tools** to crop a local static PNG/JPEG background, upload artwork and configure showcases inside the toolbox. Sign in to the app for the embedded Steam forms, select your file, wait for its preview, then apply the long-artwork dimensions with the toolbar button. Confirm ownership and save the artwork yourself. Standard artwork uses 506px + 100px with a 9px gap; featured artwork uses 630px. Animation tools run in an embedded Steam.Design online page without opening an external browser or sharing Steam cookies. Local crops and the animation page are available without signing in.
 
 ## 内置更新与公共镜像
 
@@ -158,7 +162,7 @@ Open **Settings / Language / Export** in the sidebar to choose **English (ENG)**
 
 ## 批量选择、黑名单与检查任务
 
-- 单击好友行或复选框只切换该好友，保留其他勾选。按住并跨行拖动会重新选择范围；Ctrl / Cmd 拖动追加或减选，Shift 选择连续范围，也可筛选后全选或反选。
+- 单击好友行或复选框只切换该好友，保留其他勾选。按住并跨行拖动默认追加范围，保留之前的所有选择；Ctrl / Cmd 从已选行拖动可减选，Shift 连续加选，也可筛选后全选或反选。
 - 黑名单仅是本软件的本地“禁止留言”名单，不会删除 Steam 好友或在 Steam 上拉黑。每个账号独立保存；加入黑名单后，尚未发送的留言会被阻止，已经发出的网络请求无法撤回。
 - 检查任务仅 GET 读取资料页，默认每条间隔 10 秒，可设置 5–60 秒。1000 人可能耗时数小时，可暂停后继续，重启不会自动继续。
 - “页面允许”不保证实际发送一定成功；隐私、好友关系、限流及 Steam 风控都可能变化。“页面禁止”需要明确证据；无法确定的页面显示“未知”，不会自动拉黑。
@@ -238,6 +242,10 @@ Clicking a friend row now toggles only that friend without clearing other select
 ## 0.4.1 更新线路重定向修复
 
 修复当前 Electron 中 `net.fetch` 手动重定向报错造成的线路误判。改用 Chromium `net.request` 适配更新传输，继续使用系统代理、匿名请求、HTTPS 重定向校验和最多 5 次跳转边界。0.4.0 用户可通过已有可用线路内置升级；新用户直接下载 0.4.1。
+
+## 0.5.0 拖选保留与内置艺术作品流程
+
+修复单选部分好友后长按拖动清空原选择的问题，普通拖动默认叠加已有勾选。将上传、展柜配置、动画工具和来源查看放进工具箱内置页面；当前账号隔离登录、一键长图设置和下载保存仍由本地控制栏管理。作品最终提交保持由用户本人确认。
 
 ## 当前边界
 

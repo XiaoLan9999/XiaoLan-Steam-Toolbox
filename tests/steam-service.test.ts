@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   relationships: vi.fn(),
   summaries: vi.fn(),
   profile: vi.fn(),
+  webCookies: vi.fn(),
   instances: [] as Array<{ accountId: string; expire: () => void }>
 }))
 
@@ -21,7 +22,7 @@ vi.mock('steam-session', () => ({
     refreshToken = ''
     loginTimeout = 0
     async getWebCookies(): Promise<string[]> {
-      return ['sessionid=test-session']
+      return mocks.webCookies()
     }
   }
 }))
@@ -51,6 +52,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   mocks.instances.splice(0)
   mocks.profile.mockResolvedValue(null)
+  mocks.webCookies.mockResolvedValue(['sessionid=test-session'])
   mocks.relationships.mockResolvedValue({ [friendA]: 3 })
   mocks.summaries.mockResolvedValue(profileResult([profile(friendA, 'Updated friend')]))
 })
@@ -60,6 +62,51 @@ afterEach(() => {
     store.close()
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+describe('SteamService artwork sessions', () => {
+  it('keeps web cookies in the main process and returns an independent array', async () => {
+    const { service, events } = await createService()
+    const cookies = ['steamLoginSecure=artwork-test', 'sessionid=artwork-session']
+    mocks.webCookies.mockResolvedValueOnce(cookies)
+    const result = await service.getArtworkWebCookies(accountA)
+    expect(result).toEqual(cookies)
+    expect(result).not.toBe(cookies)
+    expect(JSON.stringify(events)).not.toContain('artwork-session')
+    await expect(service.getArtworkWebCookies(accountB)).rejects.toMatchObject({ code: 'WRONG_ACCOUNT' })
+  })
+
+  it('rejects cookies fetched across an account switch or removal', async () => {
+    const { service } = await createService()
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const opening = service.getArtworkWebCookies(accountA)
+    const rejected = expect(opening).rejects.toMatchObject({ code: 'ARTWORK_SESSION_CHANGED' })
+    await service.activateAccount(accountB)
+    pending.resolve(['sessionid=stale-session'])
+    await rejected
+    service.removeAccount(accountB)
+    await expect(service.getArtworkWebCookies(accountB)).rejects.toThrow()
+  })
+
+  it('rejects an old login session even after switching back to the same account', async () => {
+    const { service } = await createService()
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const opening = service.getArtworkWebCookies(accountA)
+    const rejected = expect(opening).rejects.toMatchObject({ code: 'ARTWORK_SESSION_CHANGED' })
+    await service.activateAccount(accountB)
+    await service.activateAccount(accountA)
+    pending.resolve(['sessionid=old-session'])
+    await rejected
+  })
+
+  it('does not expose native cookie or token diagnostics on authentication failure', async () => {
+    const { service } = await createService()
+    mocks.webCookies.mockRejectedValueOnce(new Error('sessionid=private-cookie steamLoginSecure=private-token'))
+    await expect(service.getArtworkWebCookies(accountA)).rejects.toMatchObject({ code: 'ARTWORK_AUTH_FAILED' })
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
 })
 
 describe('SteamService friend synchronization', () => {

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { UpdateState } from '../shared/update-types'
+import type { ArtworkBrowserState } from '../shared/artwork-browser'
 import {
   AppEvent,
   AppSnapshot,
@@ -22,6 +23,12 @@ const api: SteamFriendCommenterApi = {
   installUpdate: () => invoke<void>('update:install'),
   setUpdatePreferences: (preferences) => invoke<void>('update:preferences', preferences),
   openUpdateRelease: () => invoke<void>('update:openRelease'),
+  openArtworkTool: (tool, accountId) => invoke<ArtworkBrowserState>('artwork:openTool', tool, accountId),
+  getArtworkToolState: () => invoke<ArtworkBrowserState>('artwork:state'),
+  setArtworkToolBounds: (bounds) => invoke<void>('artwork:bounds', bounds),
+  applyLongArtwork: () => invoke<void>('artwork:applyLong'),
+  reloadArtworkTool: () => invoke<void>('artwork:reload'),
+  closeArtworkTool: () => invoke<void>('artwork:close'),
   copyArtworkScript: () => invoke<void>('artwork:copyScript'),
   openArtworkPage: () => invoke<void>('artwork:openUpload'),
   openArtworkSource: (source) => invoke<void>('artwork:openSource', source),

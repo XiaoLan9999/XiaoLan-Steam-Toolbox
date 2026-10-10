@@ -23,6 +23,26 @@
 .artwork-heading p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .artwork-heading > button { flex-shrink: 0; }
 
+.artwork-tools-embedded { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 22px; }
+.artwork-tools-embedded > .artwork-heading, .artwork-tools-embedded > .artwork-notice { flex-shrink: 0; }
+.artwork-tools-embedded .artwork-heading { margin-bottom: 16px; }
+.artwork-browser-card { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #0e1b26; }
+.artwork-browser-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: #152a3a; }
+.artwork-browser-title { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.artwork-browser-title strong { font-size: 13px; }
+.artwork-browser-title span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.artwork-browser-toolbar .artwork-actions { flex-shrink: 0; }
+.artwork-browser-account, .artwork-browser-instructions { flex-shrink: 0; margin: 0; padding: 9px 16px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.6; }
+.artwork-browser-account strong { color: var(--text); }
+.artwork-browser-account > span { margin-left: 16px; }
+.artwork-browser-card > .artwork-notice { flex-shrink: 0; margin: 8px 12px; }
+.artwork-browser-host { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: #101822; }
+.artwork-browser-placeholder { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--muted); font-size: 13px; text-align: center; }
+.artwork-account-help { margin: 13px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.artwork-reference-details { margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--line); }
+.artwork-reference-details > summary { color: var(--blue); cursor: pointer; font-size: 12px; }
+.artwork-reference-details .artwork-source-links { padding-top: 0; border: 0; }
+
 .artwork-card {
   margin-bottom: 22px;
   padding: 24px;
@@ -121,4 +141,5 @@
   .artwork-card { padding: 20px; }
   .artwork-crop-layout { grid-template-columns: 250px minmax(0, 1fr); gap: 18px; }
   .artwork-heading { align-items: flex-start; }
+  .artwork-browser-toolbar { flex-wrap: wrap; }
 }

@@ -318,6 +318,21 @@ export class SteamService {
     return this.runtime?.accountId === accountId
   }
 
+  async getArtworkWebCookies(accountId: string): Promise<string[]> {
+    this.requireActiveCommunity(accountId)
+    const runtime = this.runtime!
+    let cookies: string[]
+    try {
+      cookies = await runtime.loginSession.getWebCookies()
+    } catch {
+      throw new DomainError('ARTWORK_AUTH_FAILED', '无法准备 Steam 艺术作品会话，请确认网络后重新登录')
+    }
+    if (this.runtime !== runtime || this.store.getActiveAccountId() !== accountId) {
+      throw new DomainError('ARTWORK_SESSION_CHANGED', '账号或登录会话已变更，请重新打开艺术作品工具')
+    }
+    return [...cookies]
+  }
+
   private createLoginSession(): LoginSession {
     const session = new LoginSession(EAuthTokenPlatformType.WebBrowser)
     session.loginTimeout = 5 * 60 * 1000

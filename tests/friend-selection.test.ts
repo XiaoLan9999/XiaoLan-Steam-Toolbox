@@ -61,8 +61,18 @@ describe('friend range selection', () => {
     expect([...invertFriendSelection(['a', 'b', 'b'], new Set(['a', 'hidden']))]).toEqual(['hidden', 'b'])
   })
 
-  it('uses modifier and origin state to choose add, remove or replace', () => {
-    expect(selectionMode(false, false, true)).toBe('replace')
+  it('adds an unmodified dragged range whether its origin is already selected or not', () => {
+    expect(selectionMode(false, false, false)).toBe('add')
+    expect(selectionMode(false, false, true)).toBe('add')
+    for (const originSelected of [false, true]) {
+      const initial = new Set(['e', 'hidden', ...(originSelected ? ['b'] : [])])
+      const next = selectFriendRange(ids, initial, 1, 3, selectionMode(false, false, originSelected))
+      expect([...initial].every((id) => next.has(id))).toBe(true)
+      expect(next).toEqual(new Set(['b', 'c', 'd', 'e', 'hidden']))
+    }
+  })
+
+  it('uses modifier and origin state to choose additive or subtractive dragging', () => {
     expect(selectionMode(true, false, false)).toBe('add')
     expect(selectionMode(true, false, true)).toBe('remove')
     expect(selectionMode(false, true, true)).toBe('add')

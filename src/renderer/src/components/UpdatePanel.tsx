@@ -26,6 +26,7 @@ const updateErrors: Record<string, [string, string]> = {
   'update.redirectLimit': ['线路重定向次数过多，请换一条线路。', 'This route redirected too many times. Try another route.'],
   'update.storageError': ['无法保存更新文件，请检查可用磁盘空间后重试。', 'The update could not be saved. Check free disk space and try again.'],
   'update.installBusy': ['请先暂停发送及检查任务，等待当前操作和数据导出完成后更新。', 'Pause comment and check tasks, then wait for current operations and data exports to finish before updating.'],
+  'update.installArtworkBusy': ['请先保存作品并关闭内置艺术作品页面，再安装更新。', 'Save your artwork and close the embedded artwork page before installing the update.'],
   'update.notPackaged': ['请使用正式安装版或便携版进行内置更新。', 'Use an installed or portable release to update within the app.'],
   'update.installPlatform': ['内置安装更新目前仅支持 Windows。', 'Installing updates within the app currently supports Windows only.'],
   'update.installLaunch': ['无法启动更新，请打开版本说明页下载新版并手动安装。', 'The update could not be started. Open the release notes to download and install it manually.'],

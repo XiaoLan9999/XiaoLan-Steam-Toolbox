@@ -12,7 +12,10 @@ import { isAllowedExternalUrl } from './external-links'
 import { localizeMessage } from '../shared/localization'
 import { APP_NAME_EN, APP_NAME_ZH } from '../shared/branding'
 import { buildLongArtworkScript } from '../shared/artwork'
-import { ARTWORK_SOURCE_URLS, ARTWORK_UPLOAD_URL, type ArtworkSource } from '../shared/artwork-links'
+import { ARTWORK_SOURCE_URLS, type ArtworkSource } from '../shared/artwork-links'
+import { ArtworkBrowser } from './artwork-browser'
+import { AccountTransition } from './account-transition'
+import type { ArtworkBounds, ArtworkTool } from '../shared/artwork-browser'
 import { UpdateService } from './update-service'
 import { createUpdateFetch } from './update-fetch'
 import { prepareWindowsUpdate } from './update-installer'
@@ -34,7 +37,9 @@ let queue: BatchQueue
 let commentScans: CommentScanQueue
 let exportInProgress = false
 let installInProgress = false
+const accountTransition = new AccountTransition()
 let updater: UpdateService
+let artworkBrowser: ArtworkBrowser | null = null
 let startupUpdateTimer: ReturnType<typeof setTimeout> | undefined
 let periodicUpdateTimer: ReturnType<typeof setInterval> | undefined
 const updatePackageKind: UpdatePackageKind = process.env.PORTABLE_EXECUTABLE_FILE ? 'portable' : 'setup'
@@ -63,6 +68,7 @@ app.whenReady().then(async () => {
   )
   const emit = (event: AppEvent): void => {
     if (event.type === 'authFinished') {
+      void artworkBrowser?.close()
       for (const account of store.getAccounts()) commentScans?.pauseForAccount(account.id)
     }
     const displayEvent = 'message' in event
@@ -70,6 +76,7 @@ app.whenReady().then(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:event', displayEvent)
   }
   steam = new SteamService(store, emit, (accountId) => {
+    if (artworkBrowser?.getState().accountId === accountId) void artworkBrowser.close()
     queue?.pauseForSessionExpiry(accountId)
     commentScans?.pauseForAccount(accountId)
   })
@@ -108,6 +115,7 @@ app.on('will-quit', () => {
   clearTimeout(startupUpdateTimer)
   clearInterval(periodicUpdateTimer)
   updater?.shutdown()
+  artworkBrowser?.shutdown()
   commentScans?.shutdown()
   store?.close()
 })
@@ -122,6 +130,7 @@ app.on('before-quit', (event) => {
 })
 
 function createWindow(): void {
+  artworkBrowser?.shutdown()
   mainWindow = new BrowserWindow({
     width: 1320,
     height: 860,
@@ -137,6 +146,19 @@ function createWindow(): void {
       sandbox: true
     }
   })
+
+  const artworkWindow = mainWindow
+  const browser = new ArtworkBrowser({
+    parent: artworkWindow,
+    getSessionCookies: (accountId) => steam.getArtworkWebCookies(accountId),
+    isAccountCurrent: (accountId) => !accountTransition.active && store.getActiveAccountId() === accountId && steam.isAuthenticated(accountId),
+    language: () => store.getLanguage(),
+    onStateChange: (state) => {
+      if (!artworkWindow.isDestroyed()) artworkWindow.webContents.send('app:event', { type: 'artworkChanged', state } satisfies AppEvent)
+    }
+  })
+  artworkBrowser = browser
+  artworkWindow.once('closed', () => browser.shutdown())
 
   mainWindow.once('ready-to-show', () => mainWindow?.show())
   mainWindow.webContents.session.on('will-download', (_event, item, contents) => {
@@ -204,15 +226,24 @@ function registerIpcHandlers(): void {
     }
   })
   handle('artwork:copyScript', () => clipboard.writeText(buildLongArtworkScript()))
-  handle('artwork:openUpload', () => shell.openExternal(ARTWORK_UPLOAD_URL))
-  handle('artwork:openSource', (source: ArtworkSource) => {
+  handle('artwork:state', () => requireArtworkBrowser().getState())
+  handle('artwork:openTool', (tool: ArtworkTool, accountId?: string) => requireArtworkBrowser().open(tool, accountId))
+  handle('artwork:bounds', (bounds: ArtworkBounds | null) => requireArtworkBrowser().setBounds(bounds))
+  handle('artwork:applyLong', () => requireArtworkBrowser().applyLongArtwork())
+  handle('artwork:reload', () => requireArtworkBrowser().reload())
+  handle('artwork:close', () => requireArtworkBrowser().close())
+  handle('artwork:openUpload', async () => {
+    await requireArtworkBrowser().open('upload', store.getActiveAccountId() ?? undefined)
+  })
+  handle('artwork:openSource', async (source: ArtworkSource) => {
     if (!Object.hasOwn(ARTWORK_SOURCE_URLS, source)) {
       throw new DomainError('INVALID_SOURCE', '无法打开未知工具来源')
     }
-    return shell.openExternal(ARTWORK_SOURCE_URLS[source])
+    await requireArtworkBrowser().open(source === 'steam-design' ? 'design' : source)
   })
   handle('snapshot:get', () => getSnapshot())
-  handle('account:activate', async (accountId: string) => {
+  handle('account:activate', (accountId: string) => accountTransition.run(async () => {
+    await artworkBrowser?.close()
     const previousId = store.getActiveAccountId()
     if (previousId && previousId !== accountId) {
       commentScans.pauseForAccount(previousId)
@@ -223,15 +254,16 @@ function registerIpcHandlers(): void {
     }
     await steam.activateAccount(accountId)
     return getSnapshot()
-  })
-  handle('account:remove', (accountId: string) => {
+  }))
+  handle('account:remove', (accountId: string) => accountTransition.run(async () => {
     const batch = store.getActiveBatch(accountId)
     if (batch) {
       throw new DomainError('ACCOUNT_HAS_ACTIVE_BATCH', '请先取消这个账号的未完成批次')
     }
+    if (artworkBrowser?.getState().accountId === accountId) await artworkBrowser.close()
     commentScans.pauseForAccount(accountId)
     steam.removeAccount(accountId)
-  })
+  }))
   handle('auth:startQr', () => steam.startQrLogin())
   handle('auth:startCredentials', (accountName: string, password: string) =>
     steam.startCredentialsLogin(accountName, password)
@@ -319,6 +351,7 @@ function registerIpcHandlers(): void {
 }
 
 function ensureInstallationIdle(): void {
+  if (artworkBrowser?.getState().tool) throw new DomainError('update.installArtworkBusy', 'update.installArtworkBusy')
   const hasActiveWork = store.getAccounts().some((account) => {
     const batch = store.getActiveBatch(account.id)
     const scan = store.getLatestCommentScan(account.id)
@@ -326,6 +359,11 @@ function ensureInstallationIdle(): void {
       batch?.deliveries.some((delivery) => delivery.status === 'sending') || scan?.status === 'running'
   })
   if (exportInProgress || installInProgress || hasActiveWork) throw new DomainError('update.installBusy', 'update.installBusy')
+}
+
+function requireArtworkBrowser(): ArtworkBrowser {
+  if (!artworkBrowser) throw new DomainError('ARTWORK_UNAVAILABLE', '艺术作品工具暂时不可用，请重新打开软件')
+  return artworkBrowser
 }
 
 function getSnapshot(): AppSnapshot {
@@ -367,7 +405,7 @@ function handle<TArgs extends unknown[], TResult>(
   operation: (...args: TArgs) => TResult | Promise<TResult>
 ): void {
   ipcMain.handle(channel, async (event, ...args: TArgs): Promise<IpcResult<TResult>> => {
-    if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id || event.senderFrame !== mainWindow.webContents.mainFrame) {
       return { ok: false, error: { code: 'INVALID_SENDER', message: '拒绝未知页面的请求' } }
     }
     if (installInProgress && channel !== 'snapshot:get') {

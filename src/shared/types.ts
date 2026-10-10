@@ -1,4 +1,5 @@
 import type { ArtworkSource } from './artwork-links'
+import type { ArtworkBounds, ArtworkBrowserState, ArtworkTool } from './artwork-browser'
 import type { UpdatePreferences, UpdateState } from './update-types'
 
 export type SessionState = 'offline' | 'restoring' | 'authenticated' | 'expired' | 'error'
@@ -209,6 +210,7 @@ export interface BatchStartInput {
 }
 
 export type AppEvent =
+  | { type: 'artworkChanged'; state: ArtworkBrowserState }
   | { type: 'updateChanged'; state: UpdateState }
   | { type: 'snapshotChanged' }
   | { type: 'notice'; level: 'info' | 'success' | 'warning' | 'error'; message: string }
@@ -224,6 +226,12 @@ export interface SteamFriendCommenterApi {
   installUpdate(): Promise<IpcResult<void>>
   setUpdatePreferences(preferences: UpdatePreferences): Promise<IpcResult<void>>
   openUpdateRelease(): Promise<IpcResult<void>>
+  openArtworkTool(tool: ArtworkTool, accountId?: string): Promise<IpcResult<ArtworkBrowserState>>
+  getArtworkToolState(): Promise<IpcResult<ArtworkBrowserState>>
+  setArtworkToolBounds(bounds: ArtworkBounds | null): Promise<IpcResult<void>>
+  applyLongArtwork(): Promise<IpcResult<void>>
+  reloadArtworkTool(): Promise<IpcResult<void>>
+  closeArtworkTool(): Promise<IpcResult<void>>
   copyArtworkScript(): Promise<IpcResult<void>>
   openArtworkPage(): Promise<IpcResult<void>>
   openArtworkSource(source: ArtworkSource): Promise<IpcResult<void>>

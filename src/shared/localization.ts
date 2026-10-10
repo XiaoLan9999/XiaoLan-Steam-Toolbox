@@ -1,4 +1,8 @@
 const messages = new Map<string, string>([
+  ['账号正在切换，请稍候', 'The account is being switched. Please wait.'],
+  ['无法准备 Steam 艺术作品会话，请确认网络后重新登录', 'The Steam artwork session could not be prepared. Check your connection and sign in again.'],
+  ['账号或登录会话已变更，请重新打开艺术作品工具', 'The account or login session changed. Open the artwork tool again.'],
+  ['艺术作品工具暂时不可用，请重新打开软件', 'The artwork tool is unavailable. Restart the app.'],
   ['更新设置无效，请使用不含账号密码或参数的 HTTPS 代理前缀（最多 5 条）', 'Invalid update settings. Use up to 5 HTTPS proxy prefixes without credentials or query parameters.'],
   ['无法打开未知工具来源', 'Cannot open an unknown tool source.'],
   ['好友同步数据无效，已保留原列表', 'The friend snapshot is invalid. The previous list has been preserved.'],

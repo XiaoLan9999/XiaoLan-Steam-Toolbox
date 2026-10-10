@@ -48,7 +48,7 @@ export function selectionMode(
   originSelected: boolean
 ): RangeSelectionMode {
   if (range) return 'add'
-  if (!additive) return 'replace'
+  if (!additive) return 'add'
   return originSelected ? 'remove' : 'add'
 }
 

@@ -211,7 +211,7 @@ export default function App(): React.JSX.Element {
               <div><h1>{t('艺术作品与小工具', 'Artwork & tools')}</h1><p>{t('长图上传助手 · 背景裁剪预览', 'Long artwork assistant · Background crop preview')}</p></div>
               <button className="ghost" onClick={() => setTab('friends')}>{t('返回', 'Back')}</button>
             </header>
-            <section className="content"><ArtworkToolsPanel /></section>
+            <section className="content"><ArtworkToolsPanel account={activeAccount} visible={!settingsOpen && !loginOpen && !busy} /></section>
           </>
         ) : activeAccount ? (
           <>
