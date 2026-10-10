@@ -51,6 +51,7 @@ const api: SteamFriendCommenterApi = {
     invoke<void>('friends:blacklist', accountId, friendSteamIds, blacklisted),
   startCommentScan: (input) => invoke<CommentScanJob>('commentScan:start', input),
   pauseCommentScan: (jobId) => invoke<void>('commentScan:pause', jobId),
+  updateCommentScanDelay: (jobId, delayMs) => invoke<void>('commentScan:updateDelay', jobId, delayMs),
   resumeCommentScan: (jobId) => invoke<void>('commentScan:resume', jobId),
   cancelCommentScan: (jobId) => invoke<void>('commentScan:cancel', jobId),
   openDataDirectory: () => invoke<void>('storage:openDirectory'),

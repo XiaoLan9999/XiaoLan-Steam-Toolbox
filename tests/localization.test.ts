@@ -74,8 +74,6 @@ describe('localizeMessage', () => {
 
   it.each([
     ['留言最多 1000 个字符', 'Comments can contain at most 1000 characters.'],
-    ['单次最多选择 30 位好友，请拆分批次', 'Select at most 30 friends per batch. Split the selection into smaller batches.'],
-    ['单次最多处理 5000 位好友', 'At most 5000 friends can be processed at a time.'],
     ['分组名称最多 40 个字符', 'Group names can contain at most 40 characters.'],
     ['已同步 1005 位好友及资料', 'Synced 1005 friends and their profile details.']
   ])('translates numeric templates: %s', (message, expected) => {

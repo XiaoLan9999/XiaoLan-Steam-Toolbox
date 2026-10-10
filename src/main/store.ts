@@ -595,6 +595,18 @@ export class SqliteStore {
     ).run(now(), jobId)
   }
 
+  setCommentScanDelay(jobId: string, delayMs: number): void {
+    const job = this.requireCommentScan(jobId)
+    if (job.status !== 'paused') {
+      throw new DomainError('SCAN_NOT_PAUSED', '请先暂停检查再修改间隔')
+    }
+    if (!Number.isFinite(delayMs)) throw new DomainError('INVALID_DELAY', '检查间隔无效')
+    const delay = Math.max(MIN_DELAY_MS, Math.min(60_000, Math.round(delayMs)))
+    this.db.prepare(
+      "UPDATE comment_scan_jobs SET delay_ms = ?, updated_at = ? WHERE id = ? AND status = 'paused'"
+    ).run(delay, now(), jobId)
+  }
+
   pauseCommentScan(jobId: string, reason?: string): void {
     const job = this.requireCommentScan(jobId)
     if (!['paused', 'running'].includes(job.status)) return
@@ -1027,9 +1039,6 @@ export class SqliteStore {
     if (!this.getAccount(accountId)) throw new DomainError('ACCOUNT_NOT_FOUND', '账号不存在')
     if (!Array.isArray(friendSteamIds) || friendSteamIds.length === 0) {
       throw new DomainError('NO_RECIPIENTS', '请至少选择一位好友')
-    }
-    if (friendSteamIds.length > 5_000) {
-      throw new DomainError('TOO_MANY_FRIENDS', '单次最多处理 5000 位好友')
     }
     if (friendSteamIds.some((id) => typeof id !== 'string' || !/^7656119\d{10}$/.test(id))) {
       throw new DomainError('INVALID_FRIEND', '好友 Steam ID 无效')

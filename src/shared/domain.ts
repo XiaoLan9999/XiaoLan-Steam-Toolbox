@@ -1,7 +1,6 @@
 export const MAX_COMMENT_LENGTH = 1000
 export const MIN_DELAY_MS = 100
 export const MAX_DELAY_MS = 300_000
-export const MAX_BATCH_RECIPIENTS = 30
 
 export class DomainError extends Error {
   constructor(
@@ -66,12 +65,6 @@ export function validateBatchSize(ids: string[]): string[] {
   const uniqueIds = uniqueSteamIds(ids)
   if (uniqueIds.length === 0) {
     throw new DomainError('NO_RECIPIENTS', '请至少选择一位好友')
-  }
-  if (uniqueIds.length > MAX_BATCH_RECIPIENTS) {
-    throw new DomainError(
-      'TOO_MANY_RECIPIENTS',
-      `单次最多选择 ${MAX_BATCH_RECIPIENTS} 位好友，请拆分批次`
-    )
   }
   return uniqueIds
 }

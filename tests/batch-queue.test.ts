@@ -13,7 +13,6 @@ vi.mock('node:timers/promises', () => ({
 }))
 
 const accountId = '76561198000000001'
-const friendIds = ['76561198000000101', '76561198000000102', '76561198000000103']
 const fixtures: Array<{ directory: string; store: SqliteStore; queue: BatchQueue }> = []
 const cipher: SecretCipher = {
   isAvailable: () => false, backend: () => 'fixture',
@@ -85,16 +84,71 @@ describe('persistent sending queue', () => {
     expect(events).toContainEqual(expect.objectContaining({ type: 'notice', level: 'success' }))
   })
 
-  it('rejects an oversized selection and a duplicate active batch before another request', async () => {
+  it('still rejects a duplicate active batch before another request', async () => {
     const { queue, post, input } = fixture(2)
-    expect(() => queue.start({ ...input, friendSteamIds: Array.from({ length: 31 }, (_, i) => String(76561198000001000n + BigInt(i))) }))
-      .toThrowError(/单次最多/)
     expect(post).not.toHaveBeenCalled()
     queue.start(input)
     expect(() => queue.start(input)).toThrowError(/已有未完成批次/)
     await vi.advanceTimersByTimeAsync(0)
     expect(post).toHaveBeenCalledTimes(1)
   })
+
+  it('persists all 1200 valid recipients and their frozen messages without truncating a batch', async () => {
+    const { queue, store, post, input } = fixture(1200)
+    const batch = queue.start({ ...input, friendSteamIds: [...input.friendSteamIds,
+      input.friendSteamIds[0]!, 'invalid', ` ${input.friendSteamIds.at(-1)} `], delayMs: 100 })
+    queue.pause(batch.id)
+    await vi.advanceTimersByTimeAsync(0)
+    const persisted = store.getBatch(batch.id)!
+    expect(persisted).toMatchObject({ status: 'paused', total: 1200, completed: 1 })
+    expect(persisted.deliveries).toHaveLength(1200)
+    expect(new Set(persisted.deliveries.map((delivery) => delivery.friendSteamId)))
+      .toEqual(new Set(input.friendSteamIds))
+    expect(persisted.deliveries.find((delivery) => delivery.friendSteamId === input.friendSteamIds[0]))
+      .toMatchObject({ friendName: 'Friend 0', renderedMessage: 'Hello Friend 0 from Sender' })
+    expect(persisted.deliveries.find((delivery) => delivery.friendSteamId === input.friendSteamIds.at(-1)))
+      .toMatchObject({ friendName: 'Friend 1199', renderedMessage: 'Hello Friend 1199 from Sender' })
+    expect(post).toHaveBeenCalledTimes(1)
+
+    const resource = fixtures.find((item) => item.store === store)!
+    store.close()
+    const recovered = new SqliteStore(join(resource.directory, 'fixture.sqlite3'), cipher)
+    resource.store = recovered
+    resource.queue = new BatchQueue(recovered, {
+      isAuthenticated: () => true, postProfileComment: post
+    } as unknown as SteamService, () => undefined)
+    expect(recovered.getBatch(batch.id)).toMatchObject({ status: 'paused', total: 1200,
+      completed: 1, deliveries: persisted.deliveries })
+    expect(post).toHaveBeenCalledTimes(1)
+  }, 90_000)
+
+  it('sends every member of a batch over 30 sequentially and preserves pending recipients across pause/resume', async () => {
+    const { queue, store, post, input } = fixture(40)
+    let active = 0
+    let peak = 0
+    post.mockImplementation(async () => {
+      active += 1
+      peak = Math.max(peak, active)
+      await Promise.resolve()
+      active -= 1
+      return { commentId: 'synthetic-comment' }
+    })
+    const batch = queue.start({ ...input, delayMs: 100 })
+    const persistedOrder = store.getBatch(batch.id)!.deliveries.map((delivery) => delivery.friendSteamId)
+    await vi.advanceTimersByTimeAsync(900)
+    expect(post).toHaveBeenCalledTimes(10)
+    queue.pause(batch.id)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(post).toHaveBeenCalledTimes(10)
+    expect(store.getBatch(batch.id)).toMatchObject({ status: 'paused', total: 40, completed: 10 })
+    queue.resume(batch.id)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(post.mock.calls.map((call) => call[1])).toEqual(persistedOrder)
+    expect(new Set(post.mock.calls.map((call) => call[1])).size).toBe(40)
+    expect(peak).toBe(1)
+    expect(store.getBatch(batch.id)).toMatchObject({ status: 'completed', total: 40,
+      completed: 40, succeeded: 40, failed: 0 })
+  }, 60_000)
 
   it('records fetch failures as uncertain, surfaces them, and only resumes pending recipients', async () => {
     const { queue, store, post, events, input } = fixture(2)
@@ -187,7 +241,8 @@ function fixture(count: number) {
     id: accountId, steamId: accountId, accountName: 'synthetic', displayName: 'Sender', avatarUrl: '',
     createdAt: new Date().toISOString(), lastLoginAt: null, lastFriendSyncAt: null, lastEmoticonSyncAt: null
   })
-  store.replaceFriends(accountId, friendIds.slice(0, count).map((steamId, index) => ({
+  const friendIds = Array.from({ length: count }, (_, index) => String(76561198000000101n + BigInt(index)))
+  store.replaceFriends(accountId, friendIds.map((steamId, index) => ({
     accountId, steamId, displayName: `Friend ${index}`, avatarUrl: '',
     profileUrl: `https://steamcommunity.com/profiles/${steamId}`, onlineState: 'offline', syncedAt: new Date().toISOString()
   })))
@@ -198,7 +253,7 @@ function fixture(count: number) {
   const queue = new BatchQueue(store, steam as unknown as SteamService, (event) => events.push(event))
   fixtures.push({ directory, store, queue })
   const input: BatchStartInput = {
-    accountId, friendSteamIds: friendIds.slice(0, count), messageTemplate: 'Hello {friend} from {account}', delayMs: 1000
+    accountId, friendSteamIds: friendIds, messageTemplate: 'Hello {friend} from {account}', delayMs: 1000
   }
   return { queue, store, post, events, input }
 }

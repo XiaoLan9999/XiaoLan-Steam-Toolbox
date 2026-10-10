@@ -64,7 +64,7 @@ describe('friend policies', () => {
     expect(store.isBlacklisted(accountA, friendA)).toBe(false)
   })
 
-  it('rejects unsynced, malformed, cross-account, empty, and oversized selections atomically', () => {
+  it('rejects unsynced, malformed, cross-account, and empty selections atomically', () => {
     const { store } = setup()
     store.upsertAccount(account(accountB))
     expect(() => store.setBlacklist(accountB, [friendA], true)).toThrow(/已同步/)
@@ -72,12 +72,55 @@ describe('friend policies', () => {
     expect(store.isBlacklisted(accountA, friendA)).toBe(false)
     expect(() => store.setBlacklist(accountA, ['bad-id'], true)).toThrow(/Steam ID/)
     expect(() => store.setBlacklist(accountA, [], true)).toThrow(/至少/)
-    expect(() => store.setBlacklist(accountA, Array(5001).fill(friendA), true)).toThrow(/5000/)
     expect(() => store.setBlacklist(accountA, [friendA], 1 as unknown as boolean)).toThrow(/状态/)
+  })
+
+  it('deduplicates 5001 repeated identifiers before updating policies or creating check items', () => {
+    const { store } = setup()
+    const repeated = Array<string>(5001).fill(friendA)
+    store.setBlacklist(accountA, repeated, true)
+    expect(store.getFriendPolicies(accountA).filter((entry) => entry.blacklisted))
+      .toMatchObject([{ steamId: friendA }])
+    const job = store.createCommentScan(accountA, repeated, 100)
+    expect(job).toMatchObject({ total: 1, completed: 0 })
+    const item = store.takeNextCommentScanItem(job.id)!
+    expect(item.steamId).toBe(friendA)
+    store.completeCommentScanItem(job.id, item, { status: 'allowed', reason: 'fixture form' })
+    expect(store.getCommentScan(job.id)).toMatchObject({ total: 1, completed: 1, status: 'completed' })
+    expect(store.takeNextCommentScanItem(job.id)).toBeNull()
   })
 })
 
 describe('persistent comment scans', () => {
+  it('persists all 5001 distinct check recipients and blacklist entries without an artificial ceiling', () => {
+    const fixture = setup()
+    const ids = Array.from({ length: 5001 }, (_, index) => String(76561198001000000n + BigInt(index)))
+    fixture.store.replaceFriends(accountA, ids.map((id) => friend(accountA, id)))
+    fixture.store.setBlacklist(accountA, ids, true)
+    const job = fixture.store.createCommentScan(accountA, [...ids, ids[0]!], 100)
+    expect(job).toMatchObject({ status: 'running', total: 5001, completed: 0 })
+    expect(fixture.store.getFriendPolicies(accountA).filter((entry) => entry.blacklisted)).toHaveLength(5001)
+
+    fixture.close()
+    const persisted = new DatabaseSync(fixture.path, { readOnly: true })
+    try {
+      expect(persisted.prepare(
+        'SELECT COUNT(*) AS count, MIN(position) AS first, MAX(position) AS last FROM comment_scan_items WHERE job_id = ?'
+      ).get(job.id)).toMatchObject({ count: 5001, first: 0, last: 5000 })
+      expect(persisted.prepare(
+        'SELECT friend_steam_id FROM comment_scan_items WHERE job_id = ? AND position = 5000'
+      ).get(job.id)?.friend_steam_id).toBe(ids.at(-1))
+      expect(persisted.prepare(
+        'SELECT COUNT(*) AS count FROM friend_policies WHERE account_id = ? AND blacklisted = 1'
+      ).get(accountA)?.count).toBe(5001)
+    } finally { persisted.close() }
+    const recovered = fixture.reopen()
+    expect(recovered.getCommentScan(job.id)).toMatchObject({ status: 'paused', total: 5001, completed: 0 })
+    expect(recovered.getFriendPolicies(accountA).every((entry) => entry.blacklisted)).toBe(true)
+    recovered.setCommentScanRunning(job.id)
+    expect(recovered.takeNextCommentScanItem(job.id)?.steamId).toBe(ids[0])
+  }, 90_000)
+
   it('persists results and counters, keeps blacklist, and rejects a second unfinished job', () => {
     const { store } = setup()
     store.setBlacklist(accountA, [friendA], true)
@@ -126,6 +169,62 @@ describe('persistent comment scans', () => {
     expect(store.takeNextCommentScanItem(job.id)).toBeNull()
     store.setCommentScanRunning(job.id)
     expect(store.takeNextCommentScanItem(job.id)?.steamId).toBe(friendB)
+  })
+
+  it('persists a changed paused interval without losing results, pending items, or the pause reason', () => {
+    const fixture = setup()
+    const job = fixture.store.createCommentScan(accountA, [friendA, friendB], 10_000)
+    const first = fixture.store.takeNextCommentScanItem(job.id)!
+    fixture.store.completeCommentScanItem(job.id, first, { status: 'allowed', reason: 'form' })
+    const stale = fixture.store.takeNextCommentScanItem(job.id)!
+    fixture.store.pauseCommentScan(job.id, 'retained pause reason')
+    const before = fixture.store.getCommentScan(job.id)!
+    const policies = fixture.store.getFriendPolicies(accountA)
+    fixture.store.setCommentScanDelay(job.id, 100)
+    expect(fixture.store.getCommentScan(job.id)).toEqual({
+      ...before, delayMs: 100, updatedAt: expect.any(String)
+    })
+    expect(fixture.store.getFriendPolicies(accountA)).toEqual(policies)
+    const reopened = fixture.reopen()
+    expect(reopened.getCommentScan(job.id)).toMatchObject({
+      status: 'paused', delayMs: 100, total: 2, completed: 1, allowed: 1,
+      blocked: 0, unknown: 0, currentSteamId: null, lastError: 'retained pause reason'
+    })
+    expect(reopened.completeCommentScanItem(job.id, stale, { status: 'blocked', reason: 'late' })).toBe(false)
+    reopened.setCommentScanRunning(job.id)
+    expect(reopened.takeNextCommentScanItem(job.id)?.steamId).toBe(friendB)
+  })
+
+  it.each([1, 100.49, 100.51, 999999])
+  ('normalizes a paused interval %s with the same range and rounding as new jobs', (delayMs) => {
+    const { store } = setup()
+    const job = store.createCommentScan(accountA, [friendA], 5000)
+    store.pauseCommentScan(job.id)
+    store.setCommentScanDelay(job.id, delayMs)
+    expect(store.getCommentScan(job.id)?.delayMs).toBe(Math.max(100, Math.min(60_000, Math.round(delayMs))))
+  })
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])
+  ('rejects a non-finite paused interval %s without changing the job', (delayMs) => {
+    const { store } = setup()
+    const job = store.createCommentScan(accountA, [friendA], 5000)
+    store.pauseCommentScan(job.id, 'retained')
+    const before = store.getCommentScan(job.id)
+    expect(() => store.setCommentScanDelay(job.id, delayMs)).toThrow(/间隔无效/)
+    expect(store.getCommentScan(job.id)).toEqual(before)
+  })
+
+  it.each(['running', 'completed', 'cancelled'] as const)
+  ('does not edit the interval of a %s task', (status) => {
+    const { store } = setup()
+    const job = store.createCommentScan(accountA, [friendA], 5000)
+    if (status === 'completed') {
+      store.completeCommentScanItem(job.id, store.takeNextCommentScanItem(job.id)!, { status: 'allowed', reason: 'form' })
+    } else if (status === 'cancelled') store.cancelCommentScan(job.id)
+    const before = store.getCommentScan(job.id)
+    expect(() => store.setCommentScanDelay(job.id, 100)).toThrow(/暂停/)
+    expect(store.getCommentScan(job.id)).toEqual(before)
+    expect(() => store.setCommentScanDelay('missing', 100)).toThrow(/不存在/)
   })
 
   it('migrates a v1 database without changing accounts, tokens, groups, or old batches', () => {

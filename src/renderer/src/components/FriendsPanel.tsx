@@ -3,6 +3,7 @@ import { MIN_DELAY_MS } from '../../../shared/domain'
 import { AppSnapshot, CommentEligibility, FriendGroup, FriendPolicy, FriendRecord } from '../../../shared/types'
 import { invertFriendSelection } from '../friend-selection'
 import { useFriendSelection } from '../use-friend-selection'
+import { savePausedScanDelay } from '../comment-scan-actions'
 import { useI18n } from '../i18n'
 import { avatarFallback, formatDate, unwrap } from '../ui'
 import { RunAction } from './types'
@@ -39,6 +40,8 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   const [scanDelay, setScanDelay] = useState(() =>
     snapshot.commentScan?.accountId === snapshot.activeAccountId ? snapshot.commentScan.delayMs / 1000 : 10)
   const [scanSubmitting, setScanSubmitting] = useState(false)
+  const [scanUpdating, setScanUpdating] = useState(false)
+  const scanUpdatePending = useRef<symbol | null>(null)
   const account = snapshot.accounts.find((item) => item.id === snapshot.activeAccountId)!
   const accountIdRef = useRef(account.id)
   accountIdRef.current = account.id
@@ -68,6 +71,8 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
     setRenamingGroup(null)
     setScanDelay(snapshot.commentScan?.accountId === account.id ? snapshot.commentScan.delayMs / 1000 : 10)
     setScanSubmitting(false)
+    setScanUpdating(false)
+    scanUpdatePending.current = null
   }, [account.id])
 
   useEffect(() => {
@@ -103,9 +108,35 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   const scan = snapshot.commentScan
   const scanActive = scan?.status === 'running' || scan?.status === 'paused'
   const scanBusy = scanActive || scanSubmitting
+  const scanIntervalLocked = scan?.status === 'running' || scanSubmitting || scanUpdating
   const canScan = account.sessionState === 'authenticated' && !scanBusy && Number.isFinite(scanDelay)
   const safeScanDelay = Math.min(60, Math.max(MIN_DELAY_MS / 1000, Number.isFinite(scanDelay) ? scanDelay : 10))
   const currentScanFriend = scan?.currentSteamId ? snapshot.friends.find((friend) => friend.steamId === scan.currentSteamId) : null
+
+  useEffect(() => {
+    if (scan?.accountId === account.id) setScanDelay(scan.delayMs / 1000)
+  }, [account.id, scan?.id, scan?.delayMs])
+
+  const updatePausedScan = async (resume: boolean): Promise<void> => {
+    if (!scan || scan.status !== 'paused' || !Number.isFinite(scanDelay) || scanUpdatePending.current) return
+    const id = account.id
+    const intent = Symbol('scan-interval')
+    scanUpdatePending.current = intent
+    setScanUpdating(true)
+    const delay = Math.round(safeScanDelay * 1000)
+    try {
+      const result = await runAction(resume ? t('正在保存间隔并继续检查', 'Saving interval and resuming check') : t('正在保存检查间隔', 'Saving check interval'),
+        () => savePausedScanDelay(window.steamCommenter, scan.id, delay, resume,
+          () => accountIdRef.current === id && scanUpdatePending.current === intent),
+        resume ? undefined : t('检查间隔已保存，任务保持暂停', 'Interval saved; the check remains paused'))
+      if (result !== null && accountIdRef.current === id && scanUpdatePending.current === intent) setScanDelay(delay / 1000)
+    } finally {
+      if (scanUpdatePending.current === intent) {
+        scanUpdatePending.current = null
+        setScanUpdating(false)
+      }
+    }
+  }
 
   useEffect(() => {
     if (headerCheckbox.current) headerCheckbox.current.indeterminate = selectedVisibleCount > 0 && !allVisibleSelected
@@ -194,7 +225,8 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
       {!readOnlyView && <section className="card comment-scan-card" aria-label={t('留言权限检查任务', 'Comment availability check')}>
         <div className="card-heading"><div><h2>{t('留言权限检查', 'Comment availability check')}</h2><p>{t('按顺序读取好友资料页，不会测试发送留言。页面可留言不代表一定投递成功；无法判断不会自动拉黑。', 'Reads profile pages one at a time, without posting test comments. An available form does not guarantee delivery. Unknown results are never automatically blacklisted.')}</p></div><span className="scan-readonly-badge">{t('只读检查', 'Read only')}</span></div>
         <div className="comment-scan-controls">
-          <label>{t('检查间隔', 'Interval')}<input type="number" min={MIN_DELAY_MS / 1000} max={60} step={0.1} value={Number.isFinite(scanDelay) ? scanDelay : ''} disabled={scanBusy} onChange={(event) => setScanDelay(event.target.valueAsNumber)} onBlur={() => setScanDelay(safeScanDelay)} />{t('秒 / 人', 'sec / friend')}</label>
+          <label>{t('检查间隔', 'Interval')}<input type="number" min={MIN_DELAY_MS / 1000} max={60} step={0.1} value={Number.isFinite(scanDelay) ? scanDelay : ''} disabled={scanIntervalLocked} onChange={(event) => setScanDelay(event.target.valueAsNumber)} onBlur={() => setScanDelay(safeScanDelay)} />{t('秒 / 人', 'sec / friend')}</label>
+          {scan?.status === 'paused' && <button className="ghost" disabled={scanUpdating || !Number.isFinite(scanDelay)} onClick={() => void updatePausedScan(false)}>{t('保存检查间隔', 'Save check interval')}</button>}
           <button className="ghost" disabled={!canScan || visibleIds.length === 0} onClick={() => void startScan(visibleIds)}>{t(`检查当前筛选 · ${visibleIds.length} 人`, `Check filtered · ${visibleIds.length}`)}</button>
           <button className="ghost" disabled={!canScan || selected.size === 0} onClick={() => void startScan([...selected])}>{t(`检查已选 · ${selected.size} 人`, `Check selected · ${selected.size}`)}</button>
           <small>{t(`0.1–60 秒；当前筛选至少约 ${scanMinutes} 分钟`, `0.1–60 sec; filtered list takes at least ~${scanMinutes} min`)}</small>
@@ -202,12 +234,13 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
         {scan && <div className="comment-scan-progress" aria-live="polite">
           <div className="scan-progress-heading"><strong>{t(...scanStatusLabels[scan.status])} · {scan.completed} / {scan.total}</strong><div className="scan-actions">
             {scan.status === 'running' && <button className="ghost" onClick={() => void runAction(t('正在暂停检查', 'Pausing check'), async () => unwrap(await window.steamCommenter.pauseCommentScan(scan.id)))}>{t('暂停', 'Pause')}</button>}
-            {scan.status === 'paused' && <button className="ghost" disabled={account.sessionState !== 'authenticated'} onClick={() => void runAction(t('正在继续检查', 'Resuming check'), async () => unwrap(await window.steamCommenter.resumeCommentScan(scan.id)))}>{t('继续', 'Resume')}</button>}
-            {scanActive && <button className="ghost danger-text" onClick={() => void runAction(t('正在取消检查', 'Cancelling check'), async () => unwrap(await window.steamCommenter.cancelCommentScan(scan.id)))}>{t('取消任务', 'Cancel task')}</button>}
+            {scan.status === 'paused' && <button className="ghost" disabled={account.sessionState !== 'authenticated' || scanUpdating || !Number.isFinite(scanDelay)} onClick={() => void updatePausedScan(true)}>{t('继续', 'Resume')}</button>}
+            {scanActive && <button className="ghost danger-text" disabled={scanUpdating} onClick={() => void runAction(t('正在取消检查', 'Cancelling check'), async () => unwrap(await window.steamCommenter.cancelCommentScan(scan.id)))}>{t('取消任务', 'Cancel task')}</button>}
           </div></div>
           <progress max={scan.total || 1} value={scan.completed} aria-label={t('留言权限检查进度', 'Comment check progress')} />
           <div className="scan-counts"><span className="comment-status allowed">{t('可留言', 'Available')} {scan.allowed}</span><span className="comment-status blocked">{t('不可留言', 'Unavailable')} {scan.blocked}</span><span className="comment-status unknown">{t('无法判断', 'Unknown')} {scan.unknown}</span><small>{scan.currentSteamId ? t(`正在检查：${currentScanFriend?.displayName ?? scan.currentSteamId}`, `Checking: ${currentScanFriend?.displayName ?? scan.currentSteamId}`) : t(`每人间隔 ${scan.delayMs / 1000} 秒`, `${scan.delayMs / 1000} seconds per friend`)}</small></div>
           {scan.lastError && <p className="scan-error">{scan.lastError}</p>}
+          {scan.status === 'paused' && <small className="scan-background-note">{t('暂停时可修改间隔；单独保存会保持暂停，点击继续会先保存新间隔。', 'Edit the interval while paused. Saving keeps it paused; Resume saves the interval first.')}</small>}
           {scanActive && <small className="scan-background-note">{t('任务在后台运行，可以继续操作。暂停或取消不会撤销已完成的检查。', 'Runs in the background. Pausing or cancelling keeps completed results.')}</small>}
         </div>}
         <p className="scan-help">{t('检查后可筛选“页面不可留言” → 全选筛选结果 → 加入黑名单。检查结果和黑名单仅属于当前账号。', 'After checking: filter Comments unavailable → Select filtered → Add to blacklist. Results and the blacklist belong only to this account.')}</p>

@@ -1,4 +1,5 @@
 const messages = new Map<string, string>([
+  ['请先暂停检查再修改间隔', 'Pause the check before changing its interval.'],
   ['账号正在切换，请稍候', 'The account is being switched. Please wait.'],
   ['无法准备 Steam 艺术作品会话，请确认网络后重新登录', 'The Steam artwork session could not be prepared. Check your connection and sign in again.'],
   ['账号或登录会话已变更，请重新打开艺术作品工具', 'The account or login session changed. Open the artwork tool again.'],
@@ -106,10 +107,6 @@ export function localizeMessage(message: string, language: 'zh-CN' | 'en'): stri
   if (match) return `Comments can contain at most ${match[1]} characters.`
   match = /^为 ([\s\S]*) 生成的留言超过 (\d+) 个字符$/.exec(message)
   if (match) return `The comment generated for ${match[1]} exceeds ${match[2]} characters.`
-  match = /^单次最多选择 (\d+) 位好友，请拆分批次$/.exec(message)
-  if (match) return `Select at most ${match[1]} friends per batch. Split the selection into smaller batches.`
-  match = /^单次最多处理 (\d+) 位好友$/.exec(message)
-  if (match) return `At most ${match[1]} friends can be processed at a time.`
   match = /^分组名称最多 (\d+) 个字符$/.exec(message)
   if (match) return `Group names can contain at most ${match[1]} characters.`
   match = /^已同步 (\d+) 位好友及资料$/.exec(message)

@@ -1,8 +1,8 @@
 import {
-  countCharacters, MAX_BATCH_RECIPIENTS, MAX_COMMENT_LENGTH, MAX_DELAY_MS, MIN_DELAY_MS
+  countCharacters, MAX_COMMENT_LENGTH, MAX_DELAY_MS, MIN_DELAY_MS
 } from './domain'
 
-export type ComposerIssueCode = 'login' | 'noRecipients' | 'blacklisted' | 'tooManyRecipients' |
+export type ComposerIssueCode = 'login' | 'noRecipients' | 'blacklisted' |
   'emptyMessage' | 'messageTooLong' | 'renderedMessageTooLong' | 'invalidDelay' | 'activeBatch'
 
 export interface ComposerIssue {
@@ -24,7 +24,6 @@ export function composerIssues(input: {
   if (input.recipients.length === 0) {
     issues.push({ code: input.excludedCount ? 'blacklisted' : 'noRecipients' })
   }
-  if (input.recipients.length > MAX_BATCH_RECIPIENTS) issues.push({ code: 'tooManyRecipients' })
   const normalized = input.message.replace(/\r\n/g, '\n').trim()
   if (!normalized) issues.push({ code: 'emptyMessage' })
   if (countCharacters(normalized) > MAX_COMMENT_LENGTH) issues.push({ code: 'messageTooLong' })

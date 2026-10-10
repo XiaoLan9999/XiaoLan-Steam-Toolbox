@@ -252,6 +252,7 @@ export interface SteamFriendCommenterApi {
   setBlacklist(accountId: string, friendSteamIds: string[], blacklisted: boolean): Promise<IpcResult<void>>
   startCommentScan(input: CommentScanStartInput): Promise<IpcResult<CommentScanJob>>
   pauseCommentScan(jobId: string): Promise<IpcResult<void>>
+  updateCommentScanDelay(jobId: string, delayMs: number): Promise<IpcResult<void>>
   resumeCommentScan(jobId: string): Promise<IpcResult<void>>
   cancelCommentScan(jobId: string): Promise<IpcResult<void>>
   openDataDirectory(): Promise<IpcResult<void>>

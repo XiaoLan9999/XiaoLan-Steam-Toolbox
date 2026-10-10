@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   DomainError,
-  MAX_BATCH_RECIPIENTS,
   countCharacters,
   normalizeEmoticonToken,
   renderMessageTemplate,
@@ -60,14 +59,13 @@ describe('composer readiness feedback', () => {
     hasActiveBatch: false
   }
 
-  it('explains why a thousand selected friends cannot start instead of silently disabling', () => {
-    expect(composerIssues({ ...valid, recipients: Array.from({ length: 1000 }, () => ({ displayName: 'Friend' })) }))
-      .toEqual([{ code: 'tooManyRecipients' }])
+  it.each([31, 1005, 1200])('allows all %i selected friends without an artificial batch ceiling', (count) => {
+    expect(composerIssues({ ...valid, recipients: Array.from({ length: count }, () => ({ displayName: 'Friend' })) }))
+      .toEqual([])
   })
 
-  it('accepts a permitted selection and a one-second base interval', () => {
+  it('accepts a valid selection and a one-second base interval', () => {
     expect(composerIssues(valid)).toEqual([])
-    expect(composerIssues({ ...valid, recipients: Array.from({ length: 30 }, () => ({ displayName: 'Friend' })) })).toEqual([])
   })
 
   it.each([100, 300, 1234, 300_000])('accepts supported %i ms base intervals', (delayMs) => {
@@ -110,12 +108,17 @@ describe('recipient and emoticon validation', () => {
     expect(uniqueSteamIds([first, first, 'invalid', second])).toEqual([first, second])
   })
 
-  it('enforces the batch recipient ceiling', () => {
+  it('accepts a large batch while retaining stable order and deduplicating valid identifiers', () => {
     const ids = Array.from(
-      { length: MAX_BATCH_RECIPIENTS + 1 },
+      { length: 1200 },
       (_, index) => `7656119${String(index).padStart(10, '0')}`
     )
-    expect(() => validateBatchSize(ids)).toThrowError(/单次最多/)
+    expect(validateBatchSize([...ids, ids[0]!, 'invalid', ` ${ids.at(-1)!} `])).toEqual(ids)
+  })
+
+  it('still requires at least one valid recipient', () => {
+    expect(() => validateBatchSize([])).toThrowError(/至少选择/)
+    expect(() => validateBatchSize(['invalid', '7656119'])).toThrowError(/至少选择/)
   })
 
   it('accepts only complete Steam emoticon tokens', () => {

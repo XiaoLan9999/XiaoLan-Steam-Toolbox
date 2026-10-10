@@ -26,6 +26,16 @@ afterEach(() => {
 })
 
 describe('blacklist enforcement on delivery', () => {
+  it('still rejects a blacklisted recipient beyond the former 30-person boundary', () => {
+    const { store, queue, post } = fixture(31)
+    const recipients = store.getFriends(owner).map((item) => item.steamId)
+    store.setBlacklist(owner, [recipients.at(-1)!], true)
+    expect(() => queue.start({ accountId: owner, friendSteamIds: recipients,
+      messageTemplate: 'hello', delayMs: 100 })).toThrow(/黑名单/)
+    expect(store.getRecentBatches(owner)).toHaveLength(0)
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('rejects a blacklisted recipient before creating any delivery', () => {
     const { store, queue, post } = fixture()
     store.setBlacklist(owner, [friend], true)
@@ -60,6 +70,17 @@ describe('blacklist enforcement on delivery', () => {
 })
 
 describe('friendship removal enforcement on delivery', () => {
+  it('still rejects an absent friend in a large selection before any partial batch is created', () => {
+    const { store, queue, post } = fixture(31)
+    const friends = store.getFriends(owner)
+    const recipients = friends.map((item) => item.steamId)
+    store.replaceFriends(owner, friends.slice(0, -1))
+    expect(() => queue.start({ accountId: owner, friendSteamIds: recipients,
+      messageTemplate: 'hello', delayMs: 100 })).toThrow(/已同步的好友/)
+    expect(store.getRecentBatches(owner)).toHaveLength(0)
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('rejects a recipient absent from the current account before creating a delivery', () => {
     const { store, queue, post } = fixture()
     store.replaceFriends(owner, [])
@@ -114,7 +135,7 @@ describe('friendship removal enforcement on delivery', () => {
   })
 })
 
-function fixture() {
+function fixture(count = 1) {
   const directory = mkdtempSync(join(tmpdir(), 'sfc-blacklist-test-'))
   const store = new SqliteStore(join(directory, 'test.sqlite3'), cipher)
   resources.push({ directory, store })
@@ -123,9 +144,12 @@ function fixture() {
       avatarUrl: '', createdAt: new Date().toISOString(), lastLoginAt: null,
       lastFriendSyncAt: null, lastEmoticonSyncAt: null }
     store.upsertAccount(account)
-    store.replaceFriends(id, [{ accountId: id, steamId: friend, displayName: 'Friend',
-      avatarUrl: '', profileUrl: `https://steamcommunity.com/profiles/${friend}`,
-      onlineState: 'offline', syncedAt: new Date().toISOString() }])
+    store.replaceFriends(id, Array.from({ length: count }, (_, index) => {
+      const steamId = String(BigInt(friend) + BigInt(index))
+      return { accountId: id, steamId, displayName: 'Friend',
+        avatarUrl: '', profileUrl: `https://steamcommunity.com/profiles/${steamId}`,
+        onlineState: 'offline' as const, syncedAt: new Date().toISOString() }
+    }))
   }
   const post = vi.fn(async () => ({ commentId: 'test-comment' }))
   const steam = { isAuthenticated: () => true, postProfileComment: post } as unknown as SteamService

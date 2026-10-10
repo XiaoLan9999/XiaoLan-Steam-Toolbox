@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  MAX_BATCH_RECIPIENTS,
   MAX_COMMENT_LENGTH,
   MAX_DELAY_MS,
   MIN_DELAY_MS,
@@ -212,14 +211,6 @@ export function ComposerPanel({
             {selectedRecords.length > 12 && <b>{t(`另有 ${selectedRecords.length - 12} 人`, `${selectedRecords.length - 12} more`)}</b>}
           </div>
           {excludedCount > 0 && <div className="inline-warning">{t(`已排除 ${excludedCount} 位黑名单好友，不会发送留言。`, `${excludedCount} blacklisted friends excluded. No comments will be sent to them.`)}</div>}
-          {selectedRecords.length > MAX_BATCH_RECIPIENTS && (
-            <div className="inline-warning">
-              {t(`单次最多 ${MAX_BATCH_RECIPIENTS} 人；当前选择 ${selectedRecords.length} 人，请拆分批次。`, `A batch allows ${MAX_BATCH_RECIPIENTS} recipients; ${selectedRecords.length} are selected. Split the selection into batches.`)}
-              {' '}<button onClick={() => onSelectedChange(new Set(selectedRecords.slice(0, MAX_BATCH_RECIPIENTS).map((friend) => friend.steamId)))}>
-                {t(`仅保留前 ${MAX_BATCH_RECIPIENTS} 位`, `Keep first ${MAX_BATCH_RECIPIENTS} only`)}
-              </button>
-            </div>
-          )}
         </section>
 
         <section className="card message-card">
@@ -494,7 +485,6 @@ function issueText(issue: ComposerIssue, t: Translate): string {
     case 'login': return t('当前账号尚未登录，请先登录或恢复会话。', 'Sign in to the current account or restore its session first.')
     case 'noRecipients': return t('请至少选择一位已同步的好友。', 'Select at least one synced friend.')
     case 'blacklisted': return t('选中的好友均在黑名单中；请选择其他好友。', 'All selected friends are blacklisted. Choose other friends.')
-    case 'tooManyRecipients': return t(`已超过单批 ${MAX_BATCH_RECIPIENTS} 人上限。可点击“仅保留前 ${MAX_BATCH_RECIPIENTS} 位”。`, `More than ${MAX_BATCH_RECIPIENTS} recipients selected. Use “Keep first ${MAX_BATCH_RECIPIENTS} only”.`)
     case 'emptyMessage': return t('留言正文不能为空。', 'Enter a comment message.')
     case 'messageTooLong': return t(`留言正文超过 ${MAX_COMMENT_LENGTH} 字符。`, `The message exceeds ${MAX_COMMENT_LENGTH} characters.`)
     case 'renderedMessageTooLong': return t(`替换昵称后，给“${issue.friendName}”的留言超过 ${MAX_COMMENT_LENGTH} 字符。`, `After inserting names, the comment for “${issue.friendName}” exceeds ${MAX_COMMENT_LENGTH} characters.`)

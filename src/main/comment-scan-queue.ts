@@ -19,6 +19,7 @@ export class CommentScanQueue {
   private pumping = false
   private stopped = false
   private nextCheckAt = 0
+  private lastCheck: { jobId: string; finishedAt: number } | null = null
   private readonly revisions = new Map<string, number>()
   private inFlight: InFlightCheck | null = null
   private wake: (() => void) | null = null
@@ -52,8 +53,22 @@ export class CommentScanQueue {
     if (!job) throw new DomainError('SCAN_NOT_FOUND', '检查任务不存在')
     this.requireReady(job.accountId)
     this.store.setCommentScanRunning(jobId)
+    this.rebaseDelay(job)
     this.changed()
     this.kick()
+  }
+
+  updateDelay(jobId: string, delayMs: number): void {
+    this.requireOpen()
+    const job = this.store.getCommentScan(jobId)
+    if (!job) throw new DomainError('SCAN_NOT_FOUND', '检查任务不存在')
+    if (this.store.getActiveAccountId() !== job.accountId) {
+      throw new DomainError('ACCOUNT_NOT_ACTIVE', '请先切换到要检查的账号')
+    }
+    this.store.setCommentScanDelay(jobId, delayMs)
+    this.rebaseDelay(this.store.getCommentScan(jobId)!)
+    this.wake?.()
+    this.changed()
   }
 
   cancel(jobId: string): void {
@@ -117,6 +132,12 @@ export class CommentScanQueue {
     this.wake?.()
   }
 
+  private rebaseDelay(job: CommentScanJob): void {
+    if (this.lastCheck?.jobId === job.id) {
+      this.nextCheckAt = this.lastCheck.finishedAt + job.delayMs
+    }
+  }
+
   private runningJob(): CommentScanJob | null {
     const accountId = this.store.getActiveAccountId()
     if (!accountId) return null
@@ -170,8 +191,13 @@ export class CommentScanQueue {
         pauseReason = publicErrorMessage(error)
         result = { status: 'unknown', reason: pauseReason }
       }
-      this.nextCheckAt = Date.now() + job.delayMs
       if (this.stopped) return
+      // A paused job can change its interval while this serial GET is still pending.
+      const currentJob = this.store.getCommentScan(job.id)
+      this.lastCheck = { jobId: job.id, finishedAt: Date.now() }
+      this.nextCheckAt = this.lastCheck.finishedAt + (
+        currentJob && ['paused', 'running'].includes(currentJob.status) ? currentJob.delayMs : job.delayMs
+      )
       if (flight.revision !== this.revision(job.id)) {
         this.inFlight = null
         continue

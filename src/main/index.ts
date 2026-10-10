@@ -325,6 +325,7 @@ function registerIpcHandlers(): void {
   })
   handle('commentScan:start', (input: CommentScanStartInput) => commentScans.start(input))
   handle('commentScan:pause', (jobId: string) => commentScans.pause(jobId))
+  handle('commentScan:updateDelay', (jobId: string, delayMs: number) => commentScans.updateDelay(jobId, delayMs))
   handle('commentScan:resume', (jobId: string) => commentScans.resume(jobId))
   handle('commentScan:cancel', (jobId: string) => commentScans.cancel(jobId))
   handle('storage:openDirectory', async () => {

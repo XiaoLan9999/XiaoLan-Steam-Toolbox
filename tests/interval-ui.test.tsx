@@ -95,6 +95,27 @@ describe('fractional-second interval controls', () => {
     expect(html).toContain('每人间隔 0.1 秒')
   })
 
+  it('allows a paused check interval to be saved without starting another task', () => {
+    const state = snapshot()
+    state.commentScan = { ...scan(300), status: 'paused', total: 3, completed: 1 }
+    const html = renderPanel('friends', state)
+    expect(html).toMatch(/type="number" min="0\.1" max="60" step="0\.1" value="0\.3"/)
+    expect(html).not.toMatch(/type="number"[^>]*disabled=""/)
+    expect(html).toContain('<button class="ghost">保存检查间隔</button>')
+    expect(html).toContain('点击继续会先保存新间隔')
+    expect(html).toMatch(/disabled=""[^>]*>检查当前筛选/)
+  })
+
+  it('allows offline paused interval editing while keeping Resume disabled', () => {
+    const state = snapshot()
+    state.accounts[0]!.sessionState = 'offline'
+    state.commentScan = { ...scan(100), status: 'paused' }
+    const html = renderPanel('friends', state, 'en')
+    expect(html).not.toMatch(/type="number"[^>]*disabled=""/)
+    expect(html).toContain('<button class="ghost">Save check interval</button>')
+    expect(html).toMatch(/disabled=""[^>]*>Resume/)
+  })
+
   it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])
   ('rejects non-finite saved intervals %s instead of enabling submission', (value) => {
     const state = snapshot(value, value)
