@@ -306,11 +306,11 @@ export function ComposerPanel({
               <span>
                 <input
                   type="number"
-                  min={1}
+                  min={MIN_DELAY_MS / 1000}
                   max={300}
-                  step={1}
-                  value={delaySeconds}
-                  onChange={(event) => setDelaySeconds(Number(event.target.value))}
+                  step={0.1}
+                  value={Number.isFinite(delaySeconds) ? delaySeconds : ''}
+                  onChange={(event) => setDelaySeconds(event.target.valueAsNumber)}
                 />
                 {t('秒', 'seconds')}
               </span>
@@ -498,7 +498,7 @@ function issueText(issue: ComposerIssue, t: Translate): string {
     case 'emptyMessage': return t('留言正文不能为空。', 'Enter a comment message.')
     case 'messageTooLong': return t(`留言正文超过 ${MAX_COMMENT_LENGTH} 字符。`, `The message exceeds ${MAX_COMMENT_LENGTH} characters.`)
     case 'renderedMessageTooLong': return t(`替换昵称后，给“${issue.friendName}”的留言超过 ${MAX_COMMENT_LENGTH} 字符。`, `After inserting names, the comment for “${issue.friendName}” exceeds ${MAX_COMMENT_LENGTH} characters.`)
-    case 'invalidDelay': return t('基础间隔必须在 1–300 秒之间。', 'The base interval must be between 1 and 300 seconds.')
+    case 'invalidDelay': return t('基础间隔必须在 0.1–300 秒之间。', 'The base interval must be between 0.1 and 300 seconds.')
     case 'activeBatch': return t('当前账号有未完成批次，请在右侧继续或取消后再创建。', 'This account has an unfinished batch. Resume or cancel it on the right first.')
   }
 }

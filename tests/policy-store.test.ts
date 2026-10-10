@@ -82,7 +82,7 @@ describe('persistent comment scans', () => {
     const { store } = setup()
     store.setBlacklist(accountA, [friendA], true)
     const job = store.createCommentScan(accountA, [friendA, friendB, friendA], 1)
-    expect(job).toMatchObject({ total: 2, completed: 0, delayMs: 5000 })
+    expect(job).toMatchObject({ total: 2, completed: 0, delayMs: 100 })
     expect(() => store.createCommentScan(accountA, [friendA], 5000)).toThrow(/未完成/)
     const first = store.takeNextCommentScanItem(job.id)!
     expect(first.steamId).toBe(friendA)
@@ -166,6 +166,25 @@ describe('persistent comment scans', () => {
 })
 
 describe('settings and redacted database export', () => {
+  it('persists fractional-second delivery settings and the latest scan interval across reopen', () => {
+    const fixture = setup()
+    fixture.store.updateSettings(accountA, 'decimal interval', 0.1 * 1000)
+    const job = fixture.store.createCommentScan(accountA, [friendA], 0.3 * 1000)
+    fixture.store.cancelCommentScan(job.id)
+    const reopened = fixture.reopen()
+    expect(reopened.getSettings(accountA)).toMatchObject({ draft: 'decimal interval', delayMs: 100 })
+    expect(reopened.getLatestCommentScan(accountA)?.delayMs).toBe(300)
+  })
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])
+  ('rejects non-finite interval %s without creating jobs or overwriting settings', (delayMs) => {
+    const { store } = setup()
+    expect(() => store.createCommentScan(accountA, [friendA], delayMs)).toThrow(/间隔无效/)
+    expect(store.getLatestCommentScan(accountA)).toBeNull()
+    expect(() => store.updateSettings(accountA, 'invalid', delayMs)).toThrow(/间隔无效/)
+    expect(store.getSettings(accountA)).toMatchObject({ draft: '', delayMs: 15_000 })
+  })
+
   it('stores the supported UI languages persistently and rejects other values', () => {
     const fixture = setup()
     expect(fixture.store.getLanguage()).toBe('zh-CN')

@@ -31,11 +31,21 @@ describe('message domain', () => {
     expect(() => validateMessageTemplate('  ')).toThrowError(DomainError)
   })
 
-  it('supports the requested one-second minimum without changing the default', () => {
+  it('supports a tenth-second minimum without changing the default', () => {
+    expect(validateDelay(100)).toBe(100)
     expect(validateDelay(1_000)).toBe(1_000)
-    expect(validateDelay(0)).toBe(1_000)
+    expect(validateDelay(0)).toBe(100)
     expect(validateDelay(15_000)).toBe(15_000)
     expect(validateDelay(999_999)).toBe(300_000)
+  })
+
+  it('keeps decimal seconds accurate to milliseconds and rejects non-finite delays', () => {
+    expect(validateDelay(0.1 * 1000)).toBe(100)
+    expect(validateDelay(0.3 * 1000)).toBe(300)
+    expect(validateDelay(1.2345 * 1000)).toBe(1235)
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(() => validateDelay(value)).toThrowError(/间隔无效/)
+    }
   })
 })
 
@@ -58,6 +68,15 @@ describe('composer readiness feedback', () => {
   it('accepts a permitted selection and a one-second base interval', () => {
     expect(composerIssues(valid)).toEqual([])
     expect(composerIssues({ ...valid, recipients: Array.from({ length: 30 }, () => ({ displayName: 'Friend' })) })).toEqual([])
+  })
+
+  it.each([100, 300, 1234, 300_000])('accepts supported %i ms base intervals', (delayMs) => {
+    expect(composerIssues({ ...valid, delayMs })).toEqual([])
+  })
+
+  it.each([99, 0, 300_001, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])
+  ('rejects out-of-range or non-finite %s ms intervals before sending', (delayMs) => {
+    expect(composerIssues({ ...valid, delayMs })).toEqual([{ code: 'invalidDelay' }])
   })
 
   it('reports all applicable blockers', () => {

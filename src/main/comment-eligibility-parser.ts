@@ -33,7 +33,8 @@ export function parseCommentEligibility(html: string, steamId: string): CommentC
     (node): node is HtmlElement =>
       isElement(node) &&
       attribute(node, 'id') === `${prefix}_submit` &&
-      (node.tagName === 'button' || node.tagName === 'a' ||
+      // Steam binds CCommentThread.OnSubmit to the id, including its styled span button.
+      (node.tagName === 'button' || node.tagName === 'a' || node.tagName === 'span' ||
         (node.tagName === 'input' && /^(submit|button)$/i.test(attribute(node, 'type'))))
   )
   if (
@@ -94,7 +95,7 @@ function hasUnavailableAncestor(node: HtmlNode, conditionalSubmitContainer?: str
     if (isElement(current)) {
       if (current.attrs.some(({ name }) => ['hidden', 'disabled', 'readonly', 'inert'].includes(name))) return true
       if (attribute(current, 'aria-hidden') === 'true' || attribute(current, 'aria-disabled') === 'true') return true
-      if (hasClass(current, 'disabled') || hasClass(current, 'hidden')) return true
+      if (hasClass(current, 'disabled') || hasClass(current, 'btn_disabled') || hasClass(current, 'hidden')) return true
       const style = attribute(current, 'style')
       if (/(?:^|;)\s*(?:visibility\s*:\s*(?:hidden|collapse)|content-visibility\s*:\s*hidden)(?:\s*!important)?\s*(?:;|$)/i.test(style)) return true
       // Steam's CCommentThread reveals this specific container only after text input.

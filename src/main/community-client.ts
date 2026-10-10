@@ -3,6 +3,8 @@ import { DomainError, normalizeEmoticonToken } from '../shared/domain'
 import { CommentCheckResult, FriendRecord, SteamEmoticon } from '../shared/types'
 import { parseFriendPage } from './friend-page-parser'
 import { parseCommentEligibility } from './comment-eligibility-parser'
+import { extractCommunityPageIdentity, extractProfileWebApiToken, getProfileBackgroundCatalog } from './profile-backgrounds'
+import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 
 export interface CommunityProfileSummary {
   steamId: string
@@ -209,6 +211,11 @@ export class SteamCommunityClient {
         this.notifyExpired()
         throw new DomainError('SESSION_EXPIRED', 'Steam Community 会话已失效')
       }
+      const identity = extractCommunityPageIdentity(html)
+      if (identity === 'guest' || (identity && identity !== this.accountId)) {
+        this.notifyExpired()
+        throw new DomainError('SESSION_EXPIRED', 'Steam Community 会话已失效')
+      }
       return parseCommentEligibility(html, steamId)
     } catch (error) {
       if (error instanceof DomainError) throw error
@@ -218,6 +225,63 @@ export class SteamCommunityClient {
       }
       return { status: 'unknown', reason: '资料页面请求失败，暂时无法确定留言权限' }
     }
+  }
+
+  async getProfileBackgrounds(isCurrent: () => boolean = () => true): Promise<ProfileBackgroundCatalog> {
+    const assertCurrent = (): void => {
+      if (!isCurrent()) throw new DomainError('ARTWORK_SESSION_CHANGED', '账号或登录会话已变更，请重新打开艺术作品工具')
+    }
+    const scopedText = async (path: string): Promise<string> => {
+      assertCurrent()
+      const text = await this.requestText(path, {}, 3, false, assertCurrent)
+      assertCurrent()
+      return text
+    }
+    let tokenPromise: Promise<string> | null = null
+    return getProfileBackgroundCatalog(this.accountId, {
+      requestText: scopedText,
+      requestJson: async (path) => JSON.parse(await scopedText(path)) as unknown,
+      requestPlayerJson: async (method, input) => {
+        tokenPromise ??= scopedText(`/profiles/${this.accountId}/edit/info`).then(html => {
+          const token = extractProfileWebApiToken(html, this.accountId)
+          if (!token) throw new Error('BACKGROUND_OWNED_UNAVAILABLE')
+          return token
+        })
+        const token = await tokenPromise
+        assertCurrent()
+        const url = new URL(`https://api.steampowered.com/IPlayerService/${method}/v1/`)
+        url.searchParams.set('access_token', token)
+        url.searchParams.set('input_json', JSON.stringify(input))
+        try {
+          const response = await fetch(url, { method: 'GET', redirect: 'error', credentials: 'omit',
+            signal: AbortSignal.timeout(20_000), headers: { Accept: 'application/json' } })
+          if (!isCurrent()) { await response.body?.cancel(); assertCurrent() }
+          if (!response.ok || Number(response.headers.get('content-length')) > MAX_RESPONSE_BYTES) {
+            await response.body?.cancel()
+            throw new Error('BACKGROUND_OWNED_UNAVAILABLE')
+          }
+          const reader = response.body?.getReader()
+          const chunks: Uint8Array[] = []
+          let bytes = 0
+          if (reader) {
+            for (;;) {
+              if (!isCurrent()) { await reader.cancel(); assertCurrent() }
+              const chunk = await reader.read()
+              if (!isCurrent()) { await reader.cancel(); assertCurrent() }
+              if (chunk.done) break
+              bytes += chunk.value.byteLength
+              if (bytes > MAX_RESPONSE_BYTES) { await reader.cancel(); throw new Error('BACKGROUND_OWNED_UNAVAILABLE') }
+              chunks.push(chunk.value)
+            }
+          }
+          assertCurrent()
+          return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+        } catch {
+          assertCurrent()
+          throw new Error('BACKGROUND_OWNED_UNAVAILABLE')
+        }
+      }
+    })
   }
 
   private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -233,8 +297,10 @@ export class SteamCommunityClient {
     path: string,
     init: RequestInit = {},
     redirectsRemaining = 0,
-    forbiddenMeansExpired = true
+    forbiddenMeansExpired = true,
+    assertCurrent: () => void = () => undefined
   ): Promise<string> {
+    assertCurrent()
     const url = new URL(path, COMMUNITY_ORIGIN)
     const response = await fetch(url, {
       ...init,
@@ -249,6 +315,7 @@ export class SteamCommunityClient {
         ...(init.headers as Record<string, string> | undefined)
       }
     })
+    try { assertCurrent() } catch (error) { await response.body?.cancel(); throw error }
     const location = response.headers.get('location') ?? ''
     const redirectedToLogin =
       response.status >= 300 &&
@@ -267,7 +334,8 @@ export class SteamCommunityClient {
         !target.username && !target.password
       ) {
         await response.body?.cancel()
-        return this.requestText(`${target.pathname}${target.search}`, init, redirectsRemaining - 1, forbiddenMeansExpired)
+        assertCurrent()
+        return this.requestText(`${target.pathname}${target.search}`, init, redirectsRemaining - 1, forbiddenMeansExpired, assertCurrent)
       }
       throw new Error('Steam 好友页面重定向到了不受信任的地址')
     }
@@ -275,6 +343,7 @@ export class SteamCommunityClient {
     const contentLength = Number(response.headers.get('content-length') || 0)
     if (contentLength > MAX_RESPONSE_BYTES) throw new Error('Steam response exceeded the size limit')
     const text = await response.text()
+    assertCurrent()
     if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
       throw new Error('Steam response exceeded the size limit')
     }

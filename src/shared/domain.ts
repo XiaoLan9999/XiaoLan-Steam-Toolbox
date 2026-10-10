@@ -1,5 +1,5 @@
 export const MAX_COMMENT_LENGTH = 1000
-export const MIN_DELAY_MS = 1_000
+export const MIN_DELAY_MS = 100
 export const MAX_DELAY_MS = 300_000
 export const MAX_BATCH_RECIPIENTS = 30
 

@@ -37,11 +37,11 @@ afterEach(() => {
 describe('CommentScanQueue', () => {
   it('checks serially with the minimum interval and publishes progress', async () => {
     const { store, queue, check, emit } = setup()
-    const job = queue.start({ accountId: accountA, friendSteamIds: [friendA, friendB], delayMs: 1 })
+    const job = queue.start({ accountId: accountA, friendSteamIds: [friendA, friendB], delayMs: 100 })
     expect(check).toHaveBeenCalledTimes(1)
     await flush()
     expect(store.getCommentScan(job.id)).toMatchObject({ completed: 1, allowed: 1, status: 'running' })
-    await vi.advanceTimersByTimeAsync(4999)
+    await vi.advanceTimersByTimeAsync(99)
     expect(check).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(check).toHaveBeenCalledTimes(2)

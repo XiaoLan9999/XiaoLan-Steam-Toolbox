@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { MIN_DELAY_MS } from '../../../shared/domain'
 import { AppSnapshot, CommentEligibility, FriendGroup, FriendPolicy, FriendRecord } from '../../../shared/types'
 import { invertFriendSelection } from '../friend-selection'
 import { useFriendSelection } from '../use-friend-selection'
@@ -35,7 +36,8 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   const [assignment, setAssignment] = useState('')
   const [renamingGroup, setRenamingGroup] = useState<FriendGroup | null>(null)
   const [renamedValue, setRenamedValue] = useState('')
-  const [scanDelay, setScanDelay] = useState(10)
+  const [scanDelay, setScanDelay] = useState(() =>
+    snapshot.commentScan?.accountId === snapshot.activeAccountId ? snapshot.commentScan.delayMs / 1000 : 10)
   const [scanSubmitting, setScanSubmitting] = useState(false)
   const account = snapshot.accounts.find((item) => item.id === snapshot.activeAccountId)!
   const accountIdRef = useRef(account.id)
@@ -64,7 +66,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
     setAssignment('')
     setNewGroupName('')
     setRenamingGroup(null)
-    setScanDelay(10)
+    setScanDelay(snapshot.commentScan?.accountId === account.id ? snapshot.commentScan.delayMs / 1000 : 10)
     setScanSubmitting(false)
   }, [account.id])
 
@@ -101,8 +103,8 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   const scan = snapshot.commentScan
   const scanActive = scan?.status === 'running' || scan?.status === 'paused'
   const scanBusy = scanActive || scanSubmitting
-  const canScan = account.sessionState === 'authenticated' && !scanBusy
-  const safeScanDelay = Math.min(60, Math.max(5, Number.isFinite(scanDelay) ? scanDelay : 10))
+  const canScan = account.sessionState === 'authenticated' && !scanBusy && Number.isFinite(scanDelay)
+  const safeScanDelay = Math.min(60, Math.max(MIN_DELAY_MS / 1000, Number.isFinite(scanDelay) ? scanDelay : 10))
   const currentScanFriend = scan?.currentSteamId ? snapshot.friends.find((friend) => friend.steamId === scan.currentSteamId) : null
 
   useEffect(() => {
@@ -192,10 +194,10 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
       {!readOnlyView && <section className="card comment-scan-card" aria-label={t('留言权限检查任务', 'Comment availability check')}>
         <div className="card-heading"><div><h2>{t('留言权限检查', 'Comment availability check')}</h2><p>{t('按顺序读取好友资料页，不会测试发送留言。页面可留言不代表一定投递成功；无法判断不会自动拉黑。', 'Reads profile pages one at a time, without posting test comments. An available form does not guarantee delivery. Unknown results are never automatically blacklisted.')}</p></div><span className="scan-readonly-badge">{t('只读检查', 'Read only')}</span></div>
         <div className="comment-scan-controls">
-          <label>{t('检查间隔', 'Interval')}<input type="number" min={5} max={60} step={1} value={scanDelay} disabled={scanBusy} onChange={(event) => setScanDelay(Number(event.target.value))} onBlur={() => setScanDelay(safeScanDelay)} />{t('秒 / 人', 'sec / friend')}</label>
+          <label>{t('检查间隔', 'Interval')}<input type="number" min={MIN_DELAY_MS / 1000} max={60} step={0.1} value={Number.isFinite(scanDelay) ? scanDelay : ''} disabled={scanBusy} onChange={(event) => setScanDelay(event.target.valueAsNumber)} onBlur={() => setScanDelay(safeScanDelay)} />{t('秒 / 人', 'sec / friend')}</label>
           <button className="ghost" disabled={!canScan || visibleIds.length === 0} onClick={() => void startScan(visibleIds)}>{t(`检查当前筛选 · ${visibleIds.length} 人`, `Check filtered · ${visibleIds.length}`)}</button>
           <button className="ghost" disabled={!canScan || selected.size === 0} onClick={() => void startScan([...selected])}>{t(`检查已选 · ${selected.size} 人`, `Check selected · ${selected.size}`)}</button>
-          <small>{t(`5–60 秒；当前筛选至少约 ${scanMinutes} 分钟`, `5–60 sec; filtered list takes at least ~${scanMinutes} min`)}</small>
+          <small>{t(`0.1–60 秒；当前筛选至少约 ${scanMinutes} 分钟`, `0.1–60 sec; filtered list takes at least ~${scanMinutes} min`)}</small>
         </div>
         {scan && <div className="comment-scan-progress" aria-live="polite">
           <div className="scan-progress-heading"><strong>{t(...scanStatusLabels[scan.status])} · {scan.completed} / {scan.total}</strong><div className="scan-actions">

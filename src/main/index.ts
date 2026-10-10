@@ -15,6 +15,9 @@ import { buildLongArtworkScript } from '../shared/artwork'
 import { ARTWORK_SOURCE_URLS, type ArtworkSource } from '../shared/artwork-links'
 import { ArtworkBrowser } from './artwork-browser'
 import { AccountTransition } from './account-transition'
+import { ArtworkUploadService } from './artwork-upload'
+import { BackgroundMediaService } from './background-media'
+import type { ArtworkUploadDraft } from '../shared/profile-backgrounds'
 import type { ArtworkBounds, ArtworkTool } from '../shared/artwork-browser'
 import { UpdateService } from './update-service'
 import { createUpdateFetch } from './update-fetch'
@@ -40,6 +43,8 @@ let installInProgress = false
 const accountTransition = new AccountTransition()
 let updater: UpdateService
 let artworkBrowser: ArtworkBrowser | null = null
+let artworkUploads: ArtworkUploadService | null = null
+let backgroundMedia: BackgroundMediaService | null = null
 let startupUpdateTimer: ReturnType<typeof setTimeout> | undefined
 let periodicUpdateTimer: ReturnType<typeof setInterval> | undefined
 const updatePackageKind: UpdatePackageKind = process.env.PORTABLE_EXECUTABLE_FILE ? 'portable' : 'setup'
@@ -68,6 +73,8 @@ app.whenReady().then(async () => {
   )
   const emit = (event: AppEvent): void => {
     if (event.type === 'authFinished') {
+      artworkUploads?.invalidate()
+      backgroundMedia?.invalidate()
       void artworkBrowser?.close()
       for (const account of store.getAccounts()) commentScans?.pauseForAccount(account.id)
     }
@@ -76,6 +83,8 @@ app.whenReady().then(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:event', displayEvent)
   }
   steam = new SteamService(store, emit, (accountId) => {
+    artworkUploads?.invalidate()
+    backgroundMedia?.invalidate()
     if (artworkBrowser?.getState().accountId === accountId) void artworkBrowser.close()
     queue?.pauseForSessionExpiry(accountId)
     commentScans?.pauseForAccount(accountId)
@@ -116,6 +125,8 @@ app.on('will-quit', () => {
   clearInterval(periodicUpdateTimer)
   updater?.shutdown()
   artworkBrowser?.shutdown()
+  artworkUploads?.invalidate()
+  backgroundMedia?.invalidate()
   commentScans?.shutdown()
   store?.close()
 })
@@ -130,6 +141,8 @@ app.on('before-quit', (event) => {
 })
 
 function createWindow(): void {
+  artworkUploads?.invalidate()
+  backgroundMedia?.invalidate()
   artworkBrowser?.shutdown()
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -154,11 +167,20 @@ function createWindow(): void {
     isAccountCurrent: (accountId) => !accountTransition.active && store.getActiveAccountId() === accountId && steam.isAuthenticated(accountId),
     language: () => store.getLanguage(),
     onStateChange: (state) => {
+      if (!state.tool) artworkUploads?.invalidate()
       if (!artworkWindow.isDestroyed()) artworkWindow.webContents.send('app:event', { type: 'artworkChanged', state } satisfies AppEvent)
     }
   })
   artworkBrowser = browser
-  artworkWindow.once('closed', () => browser.shutdown())
+  const isAccountCurrent = (accountId: string): boolean => !accountTransition.active && store.getActiveAccountId() === accountId && steam.isAuthenticated(accountId)
+  artworkUploads = new ArtworkUploadService({ directory: join(app.getPath('userData'), 'artwork-upload-temp'),
+    browser: () => browser, isAccountCurrent })
+  backgroundMedia = new BackgroundMediaService({ fetchImpl: createUpdateFetch(options => net.request(options)), isAccountCurrent })
+  artworkWindow.once('closed', () => {
+    artworkUploads?.invalidate()
+    backgroundMedia?.invalidate()
+    browser.shutdown()
+  })
 
   mainWindow.once('ready-to-show', () => mainWindow?.show())
   mainWindow.webContents.session.on('will-download', (_event, item, contents) => {
@@ -226,12 +248,31 @@ function registerIpcHandlers(): void {
     }
   })
   handle('artwork:copyScript', () => clipboard.writeText(buildLongArtworkScript()))
+  handle('backgrounds:list', async (accountId: string) => {
+    const catalog = await steam.getProfileBackgrounds(accountId, () => !accountTransition.active)
+    if (!backgroundMedia) throw new DomainError('BACKGROUND_SESSION_CHANGED', 'BACKGROUND_SESSION_CHANGED')
+    backgroundMedia.setCatalog(catalog)
+    return catalog
+  })
+  handle('backgrounds:load', (accountId: string, backgroundId: string) => {
+    if (!backgroundMedia) throw new DomainError('BACKGROUND_SESSION_CHANGED', 'BACKGROUND_SESSION_CHANGED')
+    return backgroundMedia.load(accountId, backgroundId)
+  })
+  handle('backgrounds:cancel', () => backgroundMedia?.cancel())
+  handle('artwork:prepareUpload', (accountId: string, draft: ArtworkUploadDraft) => {
+    if (!artworkUploads) throw new DomainError('ARTWORK_UNAVAILABLE', 'ARTWORK_UNAVAILABLE')
+    return artworkUploads.prepare(accountId, draft)
+  })
   handle('artwork:state', () => requireArtworkBrowser().getState())
   handle('artwork:openTool', (tool: ArtworkTool, accountId?: string) => requireArtworkBrowser().open(tool, accountId))
   handle('artwork:bounds', (bounds: ArtworkBounds | null) => requireArtworkBrowser().setBounds(bounds))
   handle('artwork:applyLong', () => requireArtworkBrowser().applyLongArtwork())
   handle('artwork:reload', () => requireArtworkBrowser().reload())
-  handle('artwork:close', () => requireArtworkBrowser().close())
+  handle('artwork:close', async () => {
+    artworkUploads?.invalidate()
+    await requireArtworkBrowser().close()
+    artworkUploads?.invalidate()
+  })
   handle('artwork:openUpload', async () => {
     await requireArtworkBrowser().open('upload', store.getActiveAccountId() ?? undefined)
   })
@@ -243,6 +284,8 @@ function registerIpcHandlers(): void {
   })
   handle('snapshot:get', () => getSnapshot())
   handle('account:activate', (accountId: string) => accountTransition.run(async () => {
+    artworkUploads?.invalidate()
+    backgroundMedia?.invalidate()
     await artworkBrowser?.close()
     const previousId = store.getActiveAccountId()
     if (previousId && previousId !== accountId) {
@@ -260,6 +303,8 @@ function registerIpcHandlers(): void {
     if (batch) {
       throw new DomainError('ACCOUNT_HAS_ACTIVE_BATCH', '请先取消这个账号的未完成批次')
     }
+    artworkUploads?.invalidate()
+    backgroundMedia?.invalidate()
     if (artworkBrowser?.getState().accountId === accountId) await artworkBrowser.close()
     commentScans.pauseForAccount(accountId)
     steam.removeAccount(accountId)

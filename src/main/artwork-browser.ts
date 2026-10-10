@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { basename, join } from 'node:path'
+import { lstatSync } from 'node:fs'
+import { basename, isAbsolute, join } from 'node:path'
 import { app, dialog, session, WebContentsView, type BrowserWindow, type Cookie, type DownloadItem, type Session, type WebContents } from 'electron'
 import { DomainError } from '../shared/domain'
 import {
@@ -61,7 +62,7 @@ export class ArtworkBrowser {
     return { ...this.state }
   }
 
-  async open(tool: ArtworkTool, accountId?: string): Promise<ArtworkBrowserState> {
+  async open(tool: ArtworkTool, accountId?: string, options?: { reload?: boolean }): Promise<ArtworkBrowserState> {
     if (!isArtworkTool(tool)) throw artworkError('ARTWORK_INVALID_TOOL')
     if (this.stopped || this.options.parent.isDestroyed()) throw artworkError('ARTWORK_NOT_OPEN')
     const steamTool = isSteamArtworkTool(tool)
@@ -74,7 +75,7 @@ export class ArtworkBrowser {
     const reusable = !!previous && previous.prepared && !previous.contents.isDestroyed() &&
       ((steamTool && isSteamArtworkTool(previous.tool) && previous.accountId === owner) ||
        (!steamTool && previous.tool === tool))
-    if (reusable && previous.tool === tool) {
+    if (reusable && previous.tool === tool && options?.reload !== true) {
       this.assertCurrentAccount(previous)
       this.applyBounds(previous)
       return this.getState()
@@ -141,6 +142,109 @@ export class ArtworkBrowser {
       'ARTWORK_UPLOAD_PAGE_REQUIRED', 'ARTWORK_FORM_UNAVAILABLE', 'ARTWORK_FILE_REQUIRED', 'ARTWORK_IMAGE_LOADING'
     ].includes(result)) throw artworkError(result)
     throw artworkError('ARTWORK_APPLY_FAILED')
+  }
+
+  async prepareUploadFile(accountId: string, filePath: string): Promise<void> {
+    const record = this.requireCurrent()
+    const generation = this.generation
+    const assertUpload = (allowLoading = false): void => {
+      if (!this.isCurrent(record, generation) || record.accountId !== accountId) {
+        throw artworkError('ARTWORK_SESSION_CHANGED')
+      }
+      const currentUrl = record.contents.getURL()
+      if (record.tool !== 'upload' || !isArtworkUploadUrl(currentUrl) ||
+          new URL(currentUrl).pathname !== new URL(ARTWORK_TOOL_URLS.upload).pathname) {
+        throw artworkError('ARTWORK_UPLOAD_PAGE_REQUIRED')
+      }
+      if (!allowLoading && (this.state.phase !== 'ready' || record.contents.isLoadingMainFrame())) {
+        throw artworkError('ARTWORK_IMAGE_LOADING')
+      }
+    }
+    const verifyOwner = async (): Promise<void> => {
+      assertUpload()
+      const cookies = await record.session.cookies.get({ url: 'https://steamcommunity.com/', name: 'steamLoginSecure' })
+      assertUpload()
+      if (cookies.length !== 1 || !artworkCookieAccountMatches(cookies[0]!.value, accountId)) {
+        throw artworkError('ARTWORK_SESSION_CHANGED')
+      }
+    }
+    assertUpload(true)
+    const loadingDeadline = Date.now() + 10_000
+    while (this.state.phase === 'loading' || record.contents.isLoadingMainFrame()) {
+      assertUpload(true)
+      if (Date.now() >= loadingDeadline) throw artworkError('ARTWORK_IMAGE_LOADING')
+      await new Promise<void>(done => setTimeout(done, 25))
+    }
+    assertUpload()
+    try {
+      const info = lstatSync(filePath)
+      if (!isAbsolute(filePath) || !/\.png$/i.test(filePath) || !info.isFile() || info.isSymbolicLink()) {
+        throw artworkError('ARTWORK_INVALID_UPLOAD')
+      }
+    } catch { throw artworkError('ARTWORK_INVALID_UPLOAD') }
+    await verifyOwner()
+    const debuggerApi = record.contents.debugger
+    if (debuggerApi.isAttached()) throw artworkError('ARTWORK_UPLOAD_BUSY')
+    let attached = false
+    const onDetach = (): void => { attached = false }
+    debuggerApi.on('detach', onDetach)
+    try {
+      debuggerApi.attach('1.3')
+      attached = true
+      assertUpload()
+      const document = await debuggerApi.sendCommand('DOM.getDocument', { depth: 0 })
+      assertUpload()
+      const inputs = await debuggerApi.sendCommand('DOM.querySelectorAll', {
+        nodeId: document.root.nodeId, selector: 'form input[type="file"]'
+      })
+      assertUpload()
+      if (!Array.isArray(inputs.nodeIds) || inputs.nodeIds.length !== 1) {
+        throw artworkError('ARTWORK_FORM_UNAVAILABLE')
+      }
+      // A previous preview must not make a newly selected file appear ready prematurely.
+      await record.contents.executeJavaScriptInIsolatedWorld(1001, [{ code: `(() => {
+        const preview = document.getElementById('PreviewImage');
+        if (!(preview instanceof HTMLImageElement)) return;
+        if (globalThis.__xiaolanArtworkPreviewListener) {
+          preview.removeEventListener('load', globalThis.__xiaolanArtworkPreviewListener);
+        }
+        globalThis.__xiaolanArtworkPreviewLoaded = false;
+        globalThis.__xiaolanArtworkPreviewListener = () => { globalThis.__xiaolanArtworkPreviewLoaded = true; };
+        preview.addEventListener('load', globalThis.__xiaolanArtworkPreviewListener, { once: true });
+        preview.removeAttribute('src');
+      })()` }])
+      assertUpload()
+      await debuggerApi.sendCommand('DOM.setFileInputFiles', { nodeId: inputs.nodeIds[0], files: [filePath] })
+      assertUpload()
+    } catch (error) {
+      if (error instanceof DomainError) throw error
+      throw artworkError('ARTWORK_UPLOAD_PREPARE_FAILED')
+    } finally {
+      if (attached && debuggerApi.isAttached()) {
+        try { debuggerApi.detach() } catch { /* The page may have closed during preparation. */ }
+      }
+      debuggerApi.removeListener('detach', onDetach)
+    }
+    const deadline = Date.now() + 10_000
+    while (true) {
+      assertUpload()
+      const loaded = await record.contents.executeJavaScriptInIsolatedWorld(1001, [{ code: `(() => {
+        const preview = document.getElementById('PreviewImage');
+        return globalThis.__xiaolanArtworkPreviewLoaded === true && preview instanceof HTMLImageElement &&
+          preview.complete && preview.naturalWidth > 0;
+      })()` }])
+      assertUpload()
+      try {
+        if (loaded !== true) throw artworkError('ARTWORK_IMAGE_LOADING')
+        await this.applyLongArtwork()
+        break
+      }
+      catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'ARTWORK_IMAGE_LOADING' || Date.now() >= deadline) throw error
+        await new Promise<void>(done => setTimeout(done, 100))
+      }
+    }
+    await verifyOwner()
   }
 
   reload(): void {

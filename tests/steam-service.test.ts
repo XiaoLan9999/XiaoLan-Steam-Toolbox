@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   summaries: vi.fn(),
   profile: vi.fn(),
   webCookies: vi.fn(),
+  backgrounds: vi.fn(),
   instances: [] as Array<{ accountId: string; expire: () => void }>
 }))
 
@@ -35,6 +36,7 @@ vi.mock('../src/main/community-client', () => ({
     getFriendRelationships = mocks.relationships
     getProfileSummaries = mocks.summaries
     getProfileSummary = mocks.profile
+    getProfileBackgrounds = mocks.backgrounds
   }
 }))
 
@@ -53,6 +55,7 @@ beforeEach(() => {
   mocks.instances.splice(0)
   mocks.profile.mockResolvedValue(null)
   mocks.webCookies.mockResolvedValue(['sessionid=test-session'])
+  mocks.backgrounds.mockResolvedValue({ accountId: accountA, items: [], issues: [], ownedComplete: true, fetchedAt: new Date().toISOString() })
   mocks.relationships.mockResolvedValue({ [friendA]: 3 })
   mocks.summaries.mockResolvedValue(profileResult([profile(friendA, 'Updated friend')]))
 })
@@ -65,6 +68,25 @@ afterEach(() => {
 })
 
 describe('SteamService artwork sessions', () => {
+  it('reads backgrounds only from the active account and enforces the transition guard', async () => {
+    const { service } = await createService()
+    await expect(service.getProfileBackgrounds(accountB)).rejects.toMatchObject({ code: 'WRONG_ACCOUNT' })
+    await expect(service.getProfileBackgrounds(accountA, () => false)).rejects.toMatchObject({ code: 'ARTWORK_SESSION_CHANGED' })
+    expect(mocks.backgrounds).not.toHaveBeenCalled()
+    expect((await service.getProfileBackgrounds(accountA)).accountId).toBe(accountA)
+  })
+
+  it('rejects old background results even after returning to the same account', async () => {
+    const { service } = await createService()
+    const pending = deferred<unknown>()
+    mocks.backgrounds.mockReturnValueOnce(pending.promise)
+    const opening = service.getProfileBackgrounds(accountA)
+    const rejected = expect(opening).rejects.toMatchObject({ code: 'ARTWORK_SESSION_CHANGED' })
+    await service.activateAccount(accountB)
+    await service.activateAccount(accountA)
+    pending.resolve({ accountId: accountA, items: [], issues: [], ownedComplete: true, fetchedAt: new Date().toISOString() })
+    await rejected
+  })
   it('keeps web cookies in the main process and returns an independent array', async () => {
     const { service, events } = await createService()
     const cookies = ['steamLoginSecure=artwork-test', 'sessionid=artwork-session']

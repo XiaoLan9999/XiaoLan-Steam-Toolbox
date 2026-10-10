@@ -60,6 +60,18 @@ describe('delivery error classification', () => {
 })
 
 describe('persistent sending queue', () => {
+  it('keeps the requested 0.1-second base interval sequential without removing jitter', async () => {
+    const { queue, store, post, input } = fixture(2)
+    const batch = queue.start({ ...input, delayMs: 0.1 * 1000 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(post).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(99)
+    expect(post).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(store.getBatch(batch.id)).toMatchObject({ status: 'completed', delayMs: 100, succeeded: 2 })
+  })
+
   it('sends a valid one-second batch sequentially and completes it', async () => {
     const { queue, store, post, events, input } = fixture(2)
     const batch = queue.start(input)

@@ -31,6 +31,38 @@ describe('read-only profile comment eligibility parser', () => {
     ), friendId).status).toBe('allowed')
   })
 
+  it('recognizes the current Steam styled span submit instead of requiring a native button', () => {
+    expect(parseCommentEligibility(steamCommentEntry(), friendId)).toEqual({
+      status: 'allowed', reason: '页面当前提供留言入口；不保证实际发送成功'
+    })
+  })
+
+  it.each(['disabled', 'hidden', 'aria-disabled="true"', 'class="disabled"', 'class="btn_green_white_innerfade btn_disabled"'])
+  ('does not accept a Steam span submit marked %s', (attribute) => {
+    expect(parseCommentEligibility(profile(
+      `<textarea id="${prefix}_textarea"></textarea>` +
+      `<div id="${prefix}_submit_container" style="display: none">` +
+      `<span id="${prefix}_submit" ${attribute}><span>Post Comment</span></span></div>`
+    ), friendId).status).toBe('unknown')
+  })
+
+  it('rejects a hidden entry even if its submit container is conditionally hidden', () => {
+    expect(parseCommentEligibility(steamCommentEntry('style="display: none"'), friendId).status).toBe('unknown')
+  })
+
+  it('does not use the bootstrap alone as permission or let user comments forge an entry', () => {
+    const html = steamCommentBootstrap() + profile(
+      `<div class="commentthread_comments">${steamCommentEntry()}</div>`
+    )
+    expect(parseCommentEligibility(html, friendId).status).toBe('unknown')
+  })
+
+  it('does not accept a duplicated styled span submit', () => {
+    const duplicate = `<span id="${prefix}_submit"><span>Post Comment</span></span>`
+    expect(parseCommentEligibility(steamCommentEntry().replace('</form>', `${duplicate}</form>`), friendId).status)
+      .toBe('unknown')
+  })
+
   it('does not label an enabled form as blocked when a friends-only notice is also present', () => {
     const html = profile('<div>Only friends can post comments.</div>' + controls())
     expect(parseCommentEligibility(html, friendId).status).toBe('unknown')
@@ -110,6 +142,17 @@ describe('read-only profile comment eligibility requests', () => {
     expect(init.method).toBeUndefined()
     expect(init.body).toBeUndefined()
     expect(init.headers).toMatchObject({ Cookie: expect.stringContaining('steamLoginSecure=') })
+  })
+
+  it('recognizes the Steam span submission form from an authenticated read-only response', async () => {
+    const fetchMock = vi.fn(async () => new Response(steamCommentEntry()))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new SteamCommunityClient(accountId, cookies, vi.fn())
+    expect((await client.checkCommentEligibility(friendId)).status).toBe('allowed')
+    const [, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit]
+    expect(init.method).toBeUndefined()
+    expect(init.body).toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('follows bounded same-origin vanity redirects without losing target validation', async () => {
@@ -220,6 +263,30 @@ function controls(id = friendId): string {
 
 function profile(content: string, id = friendId): string {
   return `<div class="commentthread_area" id="commentthread_Profile_${id}_area">${content}</div>`
+}
+
+function steamCommentBootstrap(): string {
+  return `<script>$J(function() {
+    InitializeCommentThread("Profile", "Profile_${friendId}",
+      {"feature":"-1","feature2":-1,"owner":"${friendId}","commentthreadid":"1234","total_count":0,
+       "start":0,"pagesize":6,"has_upvoted":0,"upvotes":0,"votecountid":null,"voteupid":null,
+       "commentcountid":null,"subscribed":false}, 'https://steamcommunity.com/comment/Profile/', 40);
+  });</script>`
+}
+
+function steamCommentEntry(entryAttributes = ''): string {
+  return steamCommentBootstrap() + profile(`<form id="${prefix}_form">
+    <div class="commentthread_entry" ${entryAttributes}>
+      <div class="commentthread_entry_quotebox">
+        <textarea rows="3" class="commentthread_textarea" id="${prefix}_textarea"
+          placeholder="Add a comment" style="overflow: hidden; height: 20px;"></textarea>
+      </div>
+      <div class="commentthread_entry_submitlink" id="${prefix}_submit_container" style="display: none">
+        <span class="emoticon_container"><span class="emoticon_button small"></span></span>
+        <span class="btn_green_white_innerfade btn_small" id="${prefix}_submit"><span>Post Comment</span></span>
+      </div>
+    </div>
+  </form>`)
 }
 
 function serviceFixture() {

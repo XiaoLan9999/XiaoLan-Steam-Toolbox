@@ -18,7 +18,7 @@ import {
   FriendRemovalRecord,
   SteamEmoticon
 } from '../shared/types'
-import { DomainError, validateDelay } from '../shared/domain'
+import { DomainError, MIN_DELAY_MS, validateDelay } from '../shared/domain'
 import type { UpdatePreferences } from '../shared/update-types'
 import { defaultUpdatePreferences, normalizeUpdatePreferences } from '../shared/update-preferences'
 
@@ -543,7 +543,7 @@ export class SqliteStore {
   createCommentScan(accountId: string, friendSteamIds: string[], delayMs: number): CommentScanJob {
     const ids = this.validatePolicyFriends(accountId, friendSteamIds)
     if (!Number.isFinite(delayMs)) throw new DomainError('INVALID_DELAY', '检查间隔无效')
-    const delay = Math.max(5_000, Math.min(60_000, Math.round(delayMs)))
+    const delay = Math.max(MIN_DELAY_MS, Math.min(60_000, Math.round(delayMs)))
     const id = randomUUID()
     const timestamp = now()
     this.transaction(() => {

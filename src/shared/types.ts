@@ -1,5 +1,6 @@
 import type { ArtworkSource } from './artwork-links'
 import type { ArtworkBounds, ArtworkBrowserState, ArtworkTool } from './artwork-browser'
+import type { ArtworkUploadDraft, ProfileBackgroundCatalog, ProfileBackgroundImage } from './profile-backgrounds'
 import type { UpdatePreferences, UpdateState } from './update-types'
 
 export type SessionState = 'offline' | 'restoring' | 'authenticated' | 'expired' | 'error'
@@ -220,6 +221,10 @@ export type AppEvent =
   | { type: 'batchProgress'; batchId: string }
 
 export interface SteamFriendCommenterApi {
+  getProfileBackgrounds(accountId: string): Promise<IpcResult<ProfileBackgroundCatalog>>
+  loadProfileBackground(accountId: string, backgroundId: string): Promise<IpcResult<ProfileBackgroundImage>>
+  cancelProfileBackgroundLoad(): Promise<IpcResult<void>>
+  prepareArtworkUpload(accountId: string, draft: ArtworkUploadDraft): Promise<IpcResult<ArtworkBrowserState>>
   checkForUpdates(): Promise<IpcResult<UpdateState>>
   downloadUpdate(routeId?: string): Promise<IpcResult<UpdateState>>
   cancelUpdate(): Promise<IpcResult<void>>

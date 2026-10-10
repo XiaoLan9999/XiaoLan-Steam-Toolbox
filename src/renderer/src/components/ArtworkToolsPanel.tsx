@@ -11,6 +11,7 @@ import {
   type ArtworkErrorCode
 } from '../../../shared/artwork'
 import type { ArtworkBounds, ArtworkBrowserState, ArtworkTool } from '../../../shared/artwork-browser'
+import type { ProfileBackgroundCatalog, ProfileBackgroundIssue, SteamProfileBackground } from '../../../shared/profile-backgrounds'
 import type { AccountView, IpcResult } from '../../../shared/types'
 import { useI18n, type Translate } from '../i18n'
 import './artwork-tools.css'
@@ -21,6 +22,16 @@ interface LocalArtwork {
   width: number
   height: number
   fileName: string
+  accountId: string | null
+  authenticated: boolean
+}
+
+export interface ArtworkCropDraft {
+  blob: Blob
+  fileName: string
+  name: ArtworkCropRect['name']
+  width: number
+  height: number
 }
 
 function errorMessage(code: ArtworkErrorCode, t: Translate): string {
@@ -43,6 +54,112 @@ function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
     if (blob) resolve(blob)
     else reject(new ArtworkError('invalidImage'))
   }, 'image/png'))
+}
+
+export async function createArtworkCropPngs(
+  asset: Pick<LocalArtwork, 'image' | 'width' | 'height' | 'fileName'>,
+  crop: ArtworkCropInput,
+  createCanvas: () => HTMLCanvasElement = () => document.createElement('canvas')
+): Promise<ArtworkCropDraft[]> {
+  const rectangles = artworkCropRects(asset.width, asset.height, crop)
+  const baseName = asset.fileName.replace(/\.[^.]+$/, '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 96) || 'steam-background'
+  const outputs: ArtworkCropDraft[] = []
+  for (const rectangle of rectangles) {
+    const canvas = createCanvas()
+    try {
+      canvas.width = rectangle.width
+      canvas.height = rectangle.height
+      const context = canvas.getContext('2d')
+      if (!context) throw new ArtworkError('invalidImage')
+      context.drawImage(asset.image, rectangle.x, rectangle.y, rectangle.width, rectangle.height, 0, 0, rectangle.width, rectangle.height)
+      const blob = await canvasBlob(canvas)
+      if (blob.size > MAX_ARTWORK_FILE_BYTES) throw new ArtworkError('fileTooLarge')
+      outputs.push({ blob, fileName: `${baseName}-${rectangle.name}.png`, name: rectangle.name, width: rectangle.width, height: rectangle.height })
+    } finally {
+      canvas.width = 0
+      canvas.height = 0
+    }
+  }
+  return outputs
+}
+
+export async function artworkBlobBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  if (bytes.length > MAX_ARTWORK_FILE_BYTES) throw new ArtworkError('fileTooLarge')
+  let binary = ''
+  for (let index = 0; index < bytes.length; index += 16_384) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 16_384))
+  }
+  return btoa(binary)
+}
+
+export function ArtworkCropUploadButtons({ drafts, busy, authenticated, onPrepare }: {
+  drafts: Pick<ArtworkCropDraft, 'name' | 'width' | 'height'>[]
+  busy: boolean
+  authenticated: boolean
+  onPrepare: (name: ArtworkCropRect['name']) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  return <div className="artwork-actions artwork-crop-upload-actions">
+    {drafts.map(draft => <button key={draft.name} disabled={busy || !authenticated} onClick={() => onPrepare(draft.name)}>
+      {draft.name === 'main' ? t('准备主图上传', 'Prepare main upload') : draft.name === 'side' ? t('准备侧图上传', 'Prepare side upload') : t('准备精选图上传', 'Prepare featured upload')}
+      <small>{draft.width} × {draft.height} PNG</small>
+    </button>)}
+  </div>
+}
+
+export function profileBackgroundError(code: string, t: Translate): string {
+  switch (code) {
+    case 'NOT_AUTHENTICATED': case 'BACKGROUND_NOT_AUTHENTICATED': return t('请先登录当前 Steam 账号，再获取背景。', 'Sign in to the current Steam account before loading its backgrounds.')
+    case 'BACKGROUND_SESSION_CHANGED': case 'BACKGROUND_ACCOUNT_CHANGED': case 'WRONG_ACCOUNT': return t('账号会话已变化，请重新获取当前账号的背景。', 'The account session changed. Load the current account backgrounds again.')
+    case 'BACKGROUND_ANIMATED': return t('该背景是动画，请使用工具箱内置动画背景工具，不会把封面当成完整动画。', 'This is an animated background. Use the embedded animation tool; its cover is not treated as the full animation.')
+    case 'BACKGROUND_NOT_FOUND': case 'BACKGROUND_IMAGE_UNAVAILABLE': return t('未获取到该背景的原始静态图片地址，不能使用缩略图替代。', 'The original static image URL is unavailable. A thumbnail cannot be used as a replacement.')
+    case 'BACKGROUND_CANCELLED': case 'ARTWORK_BACKGROUND_CANCELLED': return t('已取消获取背景。', 'Background loading cancelled.')
+    case 'BACKGROUND_FILE_TOO_LARGE': return t('背景图片超过 30 MiB，无法在本地裁剪。', 'The background exceeds 30 MiB and cannot be cropped locally.')
+    case 'RATE_LIMITED': return t('Steam 暂时限制了请求，请稍后再获取背景。', 'Steam is temporarily limiting requests. Try loading backgrounds again later.')
+    default: return t('获取 Steam 背景失败，请检查网络后重试。', 'Steam backgrounds could not be loaded. Check your connection and retry.')
+  }
+}
+
+function backgroundIssueMessage(issue: ProfileBackgroundIssue, t: Translate): string {
+  switch (issue) {
+    case 'profileUnavailable': return t('当前装备背景未能获取。', 'The equipped background could not be loaded.')
+    case 'ownedUnavailable': return t('已拥有的个人资料物品未能获取。', 'Owned profile items could not be loaded.')
+    case 'inventoryUnavailable': return t('库存背景未能获取。', 'Inventory backgrounds could not be loaded.')
+    case 'inventoryPartial': return t('库存仅获取了部分页面，背景列表可能不完整。', 'Only part of the inventory was loaded; the background list may be incomplete.')
+    case 'unsupportedItems': return t('部分背景没有可用原图地址，未以缩略图代替。', 'Some backgrounds have no usable original image URL. Thumbnails were not substituted.')
+  }
+}
+
+export function ProfileBackgroundPicker({ catalog, authenticated, loading, imageLoading, selectedId, busy = false, onRefresh, onSelect, onCancel }: {
+  catalog: ProfileBackgroundCatalog | null
+  authenticated: boolean
+  loading: boolean
+  imageLoading: boolean
+  selectedId: string | null
+  busy?: boolean
+  onRefresh: () => void
+  onSelect: (background: SteamProfileBackground) => void
+  onCancel: () => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const [filter, setFilter] = useState('')
+  const items = catalog?.items.filter(item => item.title.toLocaleLowerCase().includes(filter.toLocaleLowerCase())) ?? []
+  return <section className="artwork-account-backgrounds" aria-label={t('当前账号的 Steam 背景', 'Current account Steam backgrounds')}>
+    <div className="artwork-background-heading"><div><h4>{t('当前账号的 Steam 背景', 'Current account Steam backgrounds')}</h4><p>{t('获取已装备及已拥有的背景。选择静态原图后自动生成主图和侧图，无需先下载到本地。', 'Load equipped and owned backgrounds. Choosing an original static image automatically creates the main and side crops without a manual download.')}</p></div>
+      <div className="artwork-actions"><button disabled={!authenticated || busy || loading || imageLoading} onClick={onRefresh}>{loading ? t('正在获取背景…', 'Loading backgrounds…') : catalog ? t('刷新账号背景', 'Refresh account backgrounds') : t('获取账号背景', 'Load account backgrounds')}</button>
+        {(loading || imageLoading) && <button onClick={onCancel}>{t('取消获取', 'Cancel loading')}</button>}
+      </div>
+    </div>
+    {!authenticated && <p className="artwork-help">{t('获取账号背景需要当前账号已登录；仍可导入本地图片裁剪。', 'The current account must be signed in to load its backgrounds. You can still import and crop a local image.')}</p>}
+    {catalog && <>
+      <div className="artwork-background-summary"><span>{t(`已获取 ${catalog.items.length} 个背景`, `${catalog.items.length} backgrounds loaded`)}{!catalog.ownedComplete && t(' · 拥有列表可能不完整', ' · Owned list may be incomplete')}</span><input type="search" aria-label={t('搜索账号背景', 'Search account backgrounds')} placeholder={t('搜索背景名称', 'Search background names')} value={filter} onChange={event => setFilter(event.target.value)} /></div>
+      {catalog.issues.length > 0 && <ul className="artwork-background-issues">{catalog.issues.map(issue => <li key={issue}>{backgroundIssueMessage(issue, t)}</li>)}</ul>}
+      {items.length > 0 ? <div className="artwork-background-grid">{items.map(background => <button key={background.id} className={`artwork-background-choice${selectedId === background.id ? ' selected' : ''}`} aria-pressed={selectedId === background.id} disabled={busy || loading || imageLoading || !authenticated || (background.kind === 'static' && !background.imageUrl)} onClick={() => onSelect(background)}>
+        <span className="artwork-background-icon" aria-hidden="true">{background.kind === 'animated' ? '▷' : '▧'}</span><strong>{background.title}</strong><span className="artwork-background-tags">{background.equipped && <span>{t('正在使用', 'Equipped')}</span>}<span>{background.kind === 'animated' ? t('动画 · 打开内置工具', 'Animated · Open embedded tool') : background.imageUrl ? t('静态原图 · 自动裁剪', 'Original static image · Auto crop') : t('原图暂不可用', 'Original image unavailable')}</span></span>
+      </button>)}</div> : <p className="artwork-help">{filter ? t('没有匹配的背景。', 'No matching backgrounds.') : t('没有获取到可用背景，可刷新重试或导入本地原图。', 'No usable backgrounds were loaded. Refresh to retry or import a local original image.')}</p>}
+    </>}
+  </section>
 }
 
 function saveLocalPng(blob: Blob, name: string): void {
@@ -94,6 +211,9 @@ export function artworkBrowserError(code: string, t: Translate): string {
     case 'ARTWORK_DOWNLOAD_FAILED': return t('未能保存该文件，请重新点击页面中的下载按钮。', 'The file could not be saved. Click the page download button again.')
     case 'ARTWORK_NOT_OPEN': return t('当前没有打开内置工具，请重新打开。', 'No embedded tool is currently open. Open it again.')
     case 'ARTWORK_INVALID_TOOL': case 'ARTWORK_INVALID_BOUNDS': return t('内置工具参数无效，请关闭后重新打开。', 'The embedded tool received invalid parameters. Close it and open it again.')
+    case 'ARTWORK_INVALID_DRAFT': case 'ARTWORK_INVALID_IMAGE': case 'ARTWORK_INVALID_UPLOAD': case 'ARTWORK_UPLOAD_INVALID_IMAGE': case 'ARTWORK_UPLOAD_TOO_LARGE': return t('生成的上传图片无效或过大，请重新裁剪。', 'The generated upload image is invalid or too large. Crop it again.')
+    case 'ARTWORK_UPLOAD_BUSY': return t('内置上传页面正在处理其他操作，请稍后重试。', 'The embedded upload page is handling another operation. Please retry shortly.')
+    case 'ARTWORK_UPLOAD_PREPARE_FAILED': case 'ARTWORK_FILE_INPUT_FAILED': return t('图片未能载入内置上传页面，请重新准备上传或手动选择已导出的 PNG。', 'The image could not be loaded into the embedded upload page. Prepare the upload again or manually choose an exported PNG.')
     default: return t('内置工具操作失败，请重新载入后重试。', 'The embedded tool operation failed. Reload it and retry.')
   }
 }
@@ -126,40 +246,82 @@ export function ArtworkBrowserToolbar({ state, busy, onApply, onReload, onClose,
 
 export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): React.JSX.Element {
   const { t } = useI18n()
-  const [asset, setAsset] = useState<LocalArtwork | null>(null)
+  const [storedAsset, setAsset] = useState<LocalArtwork | null>(null)
+  const asset = storedAsset?.accountId === (account?.id ?? null) && (!storedAsset.authenticated || account?.sessionState === 'authenticated') ? storedAsset : null
   const [crop, setCrop] = useState<ArtworkCropInput>({ preset: 'standard', x: 493, y: 256, height: 824 })
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [generatingCrops, setGeneratingCrops] = useState(false)
+  const [generatedCrops, setGeneratedCrops] = useState<{ asset: LocalArtwork; crop: ArtworkCropInput; drafts: ArtworkCropDraft[] } | null>(null)
+  const [backgroundCatalog, setBackgroundCatalog] = useState<ProfileBackgroundCatalog | null>(null)
+  const [backgroundsLoading, setBackgroundsLoading] = useState(false)
+  const [selectedBackgroundId, setSelectedBackgroundId] = useState<string | null>(null)
   const [ipcBusy, setIpcBusy] = useState(false)
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [imageError, setImageError] = useState<ArtworkErrorCode | null>(null)
   const [browser, setBrowser] = useState<ArtworkBrowserState>(CLOSED_BROWSER)
   const generation = useRef(0)
+  const cropGeneration = useRef(0)
+  const backgroundGeneration = useRef(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const browserHost = useRef<HTMLDivElement>(null)
   const accountId = useRef(account?.id ?? null)
+  const accountSession = useRef(account?.sessionState ?? null)
+  const currentAccount = useRef({ id: account?.id ?? null, authenticated: account?.sessionState === 'authenticated' })
+  currentAccount.current = { id: account?.id ?? null, authenticated: account?.sessionState === 'authenticated' }
   const operationInFlight = useRef(false)
   const operationSerial = useRef(0)
   const toolGeneration = useRef(0)
   const closingTool = useRef(false)
+  const imageRevision = useRef({ asset, crop })
+  imageRevision.current = { asset, crop }
   const script = useMemo(buildLongArtworkScript, [])
   const cropResult = useMemo((): { rectangles: ArtworkCropRect[]; error: ArtworkErrorCode | null } => {
     if (!asset) return { rectangles: [], error: null }
     try { return { rectangles: artworkCropRects(asset.width, asset.height, crop), error: null } }
     catch (error) { return { rectangles: [], error: error instanceof ArtworkError ? error.code : 'invalidCrop' } }
   }, [asset, crop])
+  const drafts = generatedCrops?.asset === asset && generatedCrops.crop === crop ? generatedCrops.drafts : []
 
-  useEffect(() => () => { generation.current += 1 }, [])
+  useEffect(() => () => {
+    generation.current += 1
+    backgroundGeneration.current += 1
+    void window.steamCommenter.cancelProfileBackgroundLoad().catch(() => undefined)
+  }, [])
   useEffect(() => () => { if (asset) URL.revokeObjectURL(asset.url) }, [asset])
+
+  useEffect(() => {
+    const serial = ++cropGeneration.current
+    setGeneratedCrops(null)
+    if (!asset || cropResult.error) { setGeneratingCrops(false); return }
+    setGeneratingCrops(true)
+    const timer = window.setTimeout(() => {
+      void createArtworkCropPngs(asset, crop).then(outputs => {
+        if (cropGeneration.current === serial) setGeneratedCrops({ asset, crop, drafts: outputs })
+      }).catch(error => {
+        if (cropGeneration.current === serial) setNotice({ kind: 'error', message: error instanceof ArtworkError ? errorMessage(error.code, t) : t('裁剪生成失败，请重新选择图片或调整范围。', 'Crop generation failed. Select the image again or adjust the crop.') })
+      }).finally(() => {
+        if (cropGeneration.current === serial) setGeneratingCrops(false)
+      })
+    }, 150)
+    return () => { window.clearTimeout(timer); cropGeneration.current += 1 }
+  }, [asset, crop, cropResult.error, t])
 
   useEffect(() => {
     let active = true
     let eventReceived = false
     const unsubscribe = window.steamCommenter.onEvent(event => {
-      if (event.type === 'artworkChanged') { eventReceived = true; if (active) setBrowser(event.state) }
+      if (event.type === 'artworkChanged') {
+        eventReceived = true
+        const requiresAccount = event.state.tool === 'upload' || event.state.tool === 'showcase'
+        if (active && (!requiresAccount || (event.state.accountId === currentAccount.current.id && currentAccount.current.authenticated))) setBrowser(event.state)
+      }
     })
     void window.steamCommenter.getArtworkToolState().then(result => {
-      if (active && !eventReceived && result.ok) setBrowser(result.data)
+      if (active && !eventReceived && result.ok) {
+        const requiresAccount = result.data.tool === 'upload' || result.data.tool === 'showcase'
+        if (!requiresAccount || (result.data.accountId === currentAccount.current.id && currentAccount.current.authenticated)) setBrowser(result.data)
+      }
     }).catch(() => undefined)
     return () => {
       active = false
@@ -174,16 +336,30 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
   useEffect(() => {
     const nextAccountId = account?.id ?? null
     const switchedAccount = accountId.current !== nextAccountId
+    const sessionExpired = accountSession.current === 'authenticated' && account?.sessionState !== 'authenticated'
     accountId.current = nextAccountId
+    accountSession.current = account?.sessionState ?? null
     const lostAuthentication = (browser.tool === 'upload' || browser.tool === 'showcase') &&
       (account?.sessionState !== 'authenticated' || browser.accountId !== nextAccountId)
-    if (!switchedAccount && !lostAuthentication) return
+    if (!switchedAccount && !lostAuthentication && !sessionExpired) return
+    generation.current += 1
+    cropGeneration.current += 1
+    backgroundGeneration.current += 1
+    setAsset(null)
+    setBackgroundCatalog(null)
+    setBackgroundsLoading(false)
+    setSelectedBackgroundId(null)
+    setGeneratedCrops(null)
+    setGeneratingCrops(false)
+    setLoading(false)
+    setImageError(null)
     toolGeneration.current += 1
     operationSerial.current += 1
     operationInFlight.current = false
     setIpcBusy(false)
     setBrowser(CLOSED_BROWSER)
     setNotice(null)
+    void window.steamCommenter.cancelProfileBackgroundLoad().catch(() => undefined)
     void window.steamCommenter.setArtworkToolBounds(null).catch(() => undefined)
     void window.steamCommenter.closeArtworkTool().catch(() => undefined)
   }, [account?.id, account?.sessionState, browser.tool, browser.accountId])
@@ -262,8 +438,9 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
     finally { closingTool.current = false }
   }
 
-  const loadFile = async (file: File): Promise<void> => {
+  const loadFile = async (file: File, preset: ArtworkCropInput['preset'] = crop.preset): Promise<void> => {
     const currentGeneration = ++generation.current
+    const sourceAccount = { ...currentAccount.current }
     let url: string | null = null
     setLoading(true)
     setAsset(null)
@@ -279,10 +456,10 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
       const matchesDimensions = (image.naturalWidth === info.width && image.naturalHeight === info.height) ||
         (image.naturalWidth === info.height && image.naturalHeight === info.width)
       if (!matchesDimensions) throw new ArtworkError('invalidImage')
-      if (generation.current !== currentGeneration) return
-      setAsset({ url, image, width: image.naturalWidth, height: image.naturalHeight, fileName: file.name })
+      if (generation.current !== currentGeneration || currentAccount.current.id !== sourceAccount.id || (sourceAccount.authenticated && !currentAccount.current.authenticated)) return
+      setAsset({ url, image, width: image.naturalWidth, height: image.naturalHeight, fileName: file.name, accountId: sourceAccount.id, authenticated: sourceAccount.authenticated })
       url = null
-      setCrop(defaultArtworkCrop(image.naturalWidth, image.naturalHeight, crop.preset))
+      setCrop(defaultArtworkCrop(image.naturalWidth, image.naturalHeight, preset))
     } catch (error) {
       if (generation.current === currentGeneration) setImageError(error instanceof ArtworkError ? error.code : 'invalidImage')
     } finally {
@@ -294,29 +471,97 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
   const fileChanged = (event: ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0]
     event.target.value = ''
-    if (file) void loadFile(file)
+    if (file) {
+      backgroundGeneration.current += 1
+      setSelectedBackgroundId(null)
+      void window.steamCommenter.cancelProfileBackgroundLoad().catch(() => undefined)
+      void loadFile(file)
+    }
+  }
+
+  const cancelBackgroundLoading = (): void => {
+    backgroundGeneration.current += 1
+    generation.current += 1
+    setBackgroundsLoading(false)
+    setLoading(false)
+    setSelectedBackgroundId(null)
+    void window.steamCommenter.cancelProfileBackgroundLoad().catch(() => undefined)
+  }
+
+  const loadAccountBackgrounds = async (): Promise<void> => {
+    if (!account || !canUseAccount || backgroundsLoading || loading) return
+    const owner = account.id
+    const serial = ++backgroundGeneration.current
+    setBackgroundsLoading(true)
+    setNotice(null)
+    try {
+      const result = await window.steamCommenter.getProfileBackgrounds(owner)
+      if (backgroundGeneration.current !== serial || currentAccount.current.id !== owner || !currentAccount.current.authenticated) return
+      if (!result.ok) throw new Error(result.error.code)
+      if (result.data.accountId !== owner) throw new Error('BACKGROUND_SESSION_CHANGED')
+      setBackgroundCatalog(result.data)
+    } catch (error) {
+      if (backgroundGeneration.current === serial && currentAccount.current.id === owner) setNotice({ kind: 'error', message: profileBackgroundError(error instanceof Error ? error.message : '', t) })
+    } finally {
+      if (backgroundGeneration.current === serial) setBackgroundsLoading(false)
+    }
+  }
+
+  const selectAccountBackground = async (background: SteamProfileBackground): Promise<void> => {
+    if (!account || !canUseAccount || backgroundsLoading || loading) return
+    if (background.kind === 'animated') { await openTool('design'); return }
+    const owner = account.id
+    const serial = ++backgroundGeneration.current
+    generation.current += 1
+    setSelectedBackgroundId(background.id)
+    setAsset(null)
+    setGeneratedCrops(null)
+    setLoading(true)
+    setImageError(null)
+    setNotice(null)
+    try {
+      const result = await window.steamCommenter.loadProfileBackground(owner, background.id)
+      if (backgroundGeneration.current !== serial || currentAccount.current.id !== owner || !currentAccount.current.authenticated) return
+      if (!result.ok) throw new Error(result.error.code)
+      if (result.data.accountId !== owner || result.data.backgroundId !== background.id) throw new Error('BACKGROUND_SESSION_CHANGED')
+      const binary = atob(result.data.base64)
+      if (binary.length > MAX_ARTWORK_FILE_BYTES) throw new ArtworkError('fileTooLarge')
+      const bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+      await loadFile(new File([bytes], result.data.name, { type: result.data.mimeType }), 'standard')
+    } catch (error) {
+      if (backgroundGeneration.current === serial && currentAccount.current.id === owner) {
+        setNotice({ kind: 'error', message: error instanceof ArtworkError ? errorMessage(error.code, t) : profileBackgroundError(error instanceof Error ? error.message : '', t) })
+      }
+    } finally {
+      if (backgroundGeneration.current === serial) setLoading(false)
+    }
+  }
+
+  const prepareCropUpload = async (name: ArtworkCropRect['name']): Promise<void> => {
+    const draft = drafts.find(item => item.name === name)
+    if (!draft || !account || !canUseAccount || operationInFlight.current) return
+    const owner = account.id
+    const intent = ++toolGeneration.current
+    const selectedAsset = asset
+    const selectedCrop = crop
+    await runTool(async () => {
+      const base64 = await artworkBlobBase64(draft.blob)
+      if (toolGeneration.current !== intent || currentAccount.current.id !== owner || !currentAccount.current.authenticated || imageRevision.current.asset !== selectedAsset || imageRevision.current.crop !== selectedCrop) throw new Error(artworkBrowserError('ARTWORK_SESSION_CHANGED', t))
+      // The main process validates and attaches only this account-bound PNG; it never submits the form.
+      const result = await window.steamCommenter.prepareArtworkUpload(owner, { name: draft.fileName, base64 })
+      if (result.ok && toolGeneration.current === intent && currentAccount.current.id === owner && currentAccount.current.authenticated && imageRevision.current.asset === selectedAsset && imageRevision.current.crop === selectedCrop) setBrowser(result.data)
+      return result
+    }, t(`${cropLabel(name, t)}已放入工具箱内的 Steam 上传页面。请等待预览，应用长图设置，再自行填写标题、版权声明并保存。`, `${cropLabel(name, t)} has been added to the Steam upload page in the toolbox. Wait for the preview, apply long artwork settings, then enter the title, confirm ownership and save yourself.`))
   }
 
   const exportCrops = async (): Promise<void> => {
-    if (!asset || cropResult.error || cropResult.rectangles.length === 0) return
+    if (drafts.length === 0) return
     setExporting(true)
     setNotice(null)
     try {
-      const outputs: { blob: Blob; name: string }[] = []
-      const baseName = asset.fileName.replace(/\.[^.]+$/, '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 96) || 'steam-background'
-      for (const rectangle of cropResult.rectangles) {
-        const canvas = document.createElement('canvas')
-        canvas.width = rectangle.width
-        canvas.height = rectangle.height
-        const context = canvas.getContext('2d')
-        if (!context) throw new ArtworkError('invalidImage')
-        context.drawImage(asset.image, rectangle.x, rectangle.y, rectangle.width, rectangle.height, 0, 0, rectangle.width, rectangle.height)
-        outputs.push({ blob: await canvasBlob(canvas), name: `${baseName}-${rectangle.name}.png` })
-        canvas.width = 0
-        canvas.height = 0
-      }
-      for (const output of outputs) saveLocalPng(output.blob, output.name)
-      setNotice({ kind: 'success', message: t(`已生成 ${outputs.length} 张 PNG，请在保存窗口选择位置。`, `${outputs.length} PNG file(s) created. Choose a location in the save dialog.`) })
+      for (const output of drafts) saveLocalPng(output.blob, output.fileName)
+      setNotice({ kind: 'success', message: t(`已生成 ${drafts.length} 张 PNG，请在保存窗口选择位置。`, `${drafts.length} PNG file(s) created. Choose a location in the save dialog.`) })
     } catch (error) {
       setNotice({ kind: 'error', message: error instanceof ArtworkError ? errorMessage(error.code, t) : t('裁剪导出失败，请重试。', 'Crop export failed. Please retry.') })
     } finally { setExporting(false) }
@@ -335,6 +580,7 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
     {!browser.tool && browser.error && <p role="alert" className="artwork-notice error">{artworkBrowserError(browser.error, t)} <code>{browser.error}</code></p>}
     {browser.tool ? <section className="artwork-browser-card" aria-label={t('工具箱内置艺术页面', 'Embedded artwork page')}>
       <ArtworkBrowserToolbar state={browser} busy={ipcBusy} onApply={() => void runTool(() => window.steamCommenter.applyLongArtwork(), t('长图设置已应用。请自行确认作品版权、标题和可见性，再点击 Steam 页面保存。', 'Long artwork settings applied. Review ownership, title and visibility, then save on the Steam page yourself.'))} onReload={() => void runTool(() => window.steamCommenter.reloadArtworkTool())} onClose={() => void closeTool()} onNavigate={tool => void openTool(tool)} />
+      {browser.tool === 'upload' && drafts.length > 0 && <ArtworkCropUploadButtons drafts={drafts} busy={ipcBusy} authenticated={canUseAccount} onPrepare={name => void prepareCropUpload(name)} />}
       {(browser.tool === 'upload' || browser.tool === 'showcase') && <p className="artwork-browser-account">{t('当前账号', 'Current account')}: <strong>{account?.displayName ?? account?.accountName}</strong><span>{t('不会自动勾选版权声明或提交作品。', 'Ownership is not checked and artwork is not submitted automatically.')}</span></p>}
       {browser.tool === 'upload' && <p className="artwork-browser-instructions">{t('选择本地图片并等待预览载入，点击上方“应用长图设置”，然后自行保存。每张图片都需再次应用；无需 F12 或手动粘贴脚本。', 'Choose a local image, wait for the preview, apply the long artwork settings above, then save yourself. Apply again for each image; no F12 or manual script pasting is needed.')}</p>}
       {browser.error && <p role="alert" className="artwork-notice error">{artworkBrowserError(browser.error, t)} <code>{browser.error}</code></p>}
@@ -346,7 +592,7 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
       <div className="artwork-section-title"><span className="artwork-step">1</span><div><h3>{t('内置上传与展柜配置', 'Embedded upload and showcase setup')}</h3><p>{t('使用当前已登录的 Steam 账号，不离开工具箱。', 'Use the current signed-in Steam account without leaving the toolbox.')}</p></div></div>
       <ol className="artwork-upload-steps">
         <li>{t('在下方本地裁剪背景图，或使用内置动画背景工具准备图片。', 'Crop a static background below, or prepare images with the embedded animated background tool.')}</li>
-        <li>{t('点击“在工具箱内上传”，选择图片并等待预览，然后点击工具栏“应用长图设置”。', 'Select Upload in toolbox, choose your image and wait for its preview, then click Apply long artwork settings in the toolbar.')}</li>
+        <li>{t('裁剪后点击“准备主图上传”或“准备侧图上传”，图片会自动放入工具箱内上传页面；也可点击“在工具箱内上传”手动选择图片。等待预览后点击“应用长图设置”。', 'After cropping, choose Prepare main upload or Prepare side upload to attach the image in the toolbox. You can also choose Upload in toolbox to select a file manually. Wait for the preview, then apply long artwork settings.')}</li>
         <li>{t('核对标题、可见性，自己勾选作品版权声明并保存。上传完成后点击“配置艺术展柜”选择主图 / 侧图；展柜须账号已解锁。', 'Review the title and visibility, confirm ownership yourself and save. Then open Configure artwork showcase to select the main / side artwork. Your account must have unlocked the showcase.')}</li>
       </ol>
       <div className="artwork-actions">
@@ -360,28 +606,31 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
     </section>
 
     <section className="artwork-card artwork-crop-card">
-      <div className="artwork-section-title"><span className="artwork-step">2</span><div><h3>{t('背景适配裁剪', 'Crop artwork from a background')}</h3><p>{t('导入已经保存的原始静态背景图，输出原分辨率的 PNG。', 'Import a saved, original static background and export PNG crops at the original resolution.')}</p></div></div>
+      <div className="artwork-section-title"><span className="artwork-step">2</span><div><h3>{t('背景适配裁剪', 'Crop artwork from a background')}</h3><p>{t('直接选择当前账号的静态原图，或导入本地背景；自动生成原分辨率 PNG 上传稿。', 'Choose an original static image from the current account or import a local background. Original-resolution PNG upload drafts are generated automatically.')}</p></div></div>
+      <ProfileBackgroundPicker key={account?.id ?? 'local'} catalog={backgroundCatalog?.accountId === account?.id ? backgroundCatalog : null} authenticated={canUseAccount} loading={backgroundsLoading} imageLoading={loading} selectedId={selectedBackgroundId} busy={ipcBusy} onRefresh={() => void loadAccountBackgrounds()} onSelect={background => void selectAccountBackground(background)} onCancel={cancelBackgroundLoading} />
       <div className="artwork-crop-layout">
         <div className="artwork-crop-controls">
           <input ref={fileInput} type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" onChange={fileChanged} hidden />
-          <button className="primary artwork-import" disabled={loading || exporting} onClick={() => fileInput.current?.click()}>{loading ? t('正在读取图片…', 'Reading image…') : t('导入本地背景图', 'Import local background')}</button>
+          <button className="primary artwork-import" disabled={loading || backgroundsLoading || exporting || ipcBusy} onClick={() => fileInput.current?.click()}>{loading ? t('正在读取图片…', 'Reading image…') : t('导入本地背景图', 'Import local background')}</button>
           <small>{t('仅静态 PNG / JPEG · 最大 30 MiB、3200 万像素', 'Static PNG / JPEG only · Up to 30 MiB and 32 million pixels')}</small>
           {asset && <p className="artwork-file-name" title={asset.fileName}><strong>{asset.fileName}</strong><span>{asset.width} × {asset.height} px</span></p>}
           {imageError && <p className="artwork-notice error" role="alert">{errorMessage(imageError, t)}</p>}
-          <label>{t('展柜类型', 'Showcase type')}<select value={crop.preset} disabled={exporting} onChange={event => setCrop(previous => ({ ...previous, preset: event.target.value as ArtworkCropInput['preset'] }))}>
+          <label>{t('展柜类型', 'Showcase type')}<select value={crop.preset} disabled={exporting || ipcBusy} onChange={event => setCrop(previous => ({ ...previous, preset: event.target.value as ArtworkCropInput['preset'] }))}>
             <option value="standard">{t('普通艺术作品：506 + 100 px', 'Artwork: 506 + 100 px')}</option>
             <option value="featured">{t('精选艺术作品：630 px', 'Featured Artwork: 630 px')}</option>
           </select></label>
           <div className="artwork-coordinate-inputs">
-            <label>X <span>{t('横坐标', 'left')}</span><input aria-label={t('裁剪 X 坐标', 'Crop X coordinate')} type="number" step="1" min="0" value={Number.isNaN(crop.x) ? '' : crop.x} disabled={!asset || exporting} onChange={event => updateNumber('x', event.target.value)} /></label>
-            <label>Y <span>{t('纵坐标', 'top')}</span><input aria-label={t('裁剪 Y 坐标', 'Crop Y coordinate')} type="number" step="1" min="0" value={Number.isNaN(crop.y) ? '' : crop.y} disabled={!asset || exporting} onChange={event => updateNumber('y', event.target.value)} /></label>
-            <label>{t('高度', 'Height')}<input aria-label={t('裁剪高度', 'Crop height')} type="number" step="1" min="1" value={Number.isNaN(crop.height) ? '' : crop.height} disabled={!asset || exporting} onChange={event => updateNumber('height', event.target.value)} /></label>
+            <label>X <span>{t('横坐标', 'left')}</span><input aria-label={t('裁剪 X 坐标', 'Crop X coordinate')} type="number" step="1" min="0" value={Number.isNaN(crop.x) ? '' : crop.x} disabled={!asset || exporting || ipcBusy} onChange={event => updateNumber('x', event.target.value)} /></label>
+            <label>Y <span>{t('纵坐标', 'top')}</span><input aria-label={t('裁剪 Y 坐标', 'Crop Y coordinate')} type="number" step="1" min="0" value={Number.isNaN(crop.y) ? '' : crop.y} disabled={!asset || exporting || ipcBusy} onChange={event => updateNumber('y', event.target.value)} /></label>
+            <label>{t('高度', 'Height')}<input aria-label={t('裁剪高度', 'Crop height')} type="number" step="1" min="1" value={Number.isNaN(crop.height) ? '' : crop.height} disabled={!asset || exporting || ipcBusy} onChange={event => updateNumber('height', event.target.value)} /></label>
           </div>
-          <button disabled={!asset || exporting} onClick={() => { if (asset) setCrop(defaultArtworkCrop(asset.width, asset.height, crop.preset)) }}>{t('恢复默认对齐', 'Reset alignment')}</button>
+          <button disabled={!asset || exporting || ipcBusy} onClick={() => { if (asset) setCrop(defaultArtworkCrop(asset.width, asset.height, crop.preset)) }}>{t('恢复默认对齐', 'Reset alignment')}</button>
           <p className="artwork-help">{t('默认 X = 原图宽度 ÷ 2 向下取整 − 467，Y = 256；侧图从 X + 515 开始，两张图之间留 9 px。高度默认取原图底部。不同展柜顺序可能需要调整 Y。', 'Default X = floor(image width / 2) − 467, Y = 256. The side image starts at X + 515, leaving a 9px gap. Default height extends to the bottom. Different showcase positions may need another Y value.')}</p>
           {cropResult.error && <p className="artwork-notice error" role="alert">{errorMessage(cropResult.error, t)}</p>}
           {cropResult.rectangles.length > 0 && <ul className="artwork-output-sizes">{cropResult.rectangles.map(rectangle => <li key={rectangle.name}>{cropLabel(rectangle.name, t)} <code>{rectangle.width} × {rectangle.height}</code></li>)}</ul>}
-          <button className="primary artwork-export" disabled={!asset || !!cropResult.error || loading || exporting} onClick={() => void exportCrops()}>{exporting ? t('正在生成 PNG…', 'Creating PNG…') : crop.preset === 'standard' ? t('导出主图与侧图 PNG', 'Export main and side PNG') : t('导出精选图 PNG', 'Export featured PNG')}</button>
+          <button className="primary artwork-export" disabled={drafts.length === 0 || loading || exporting} onClick={() => void exportCrops()}>{generatingCrops ? t('正在生成 PNG…', 'Creating PNG…') : crop.preset === 'standard' ? t('导出主图与侧图 PNG', 'Export main and side PNG') : t('导出精选图 PNG', 'Export featured PNG')}</button>
+          <ArtworkCropUploadButtons drafts={drafts} busy={ipcBusy || generatingCrops || loading} authenticated={canUseAccount} onPrepare={name => void prepareCropUpload(name)} />
+          {drafts.length > 0 && <p className="artwork-help">{t('上传稿已自动生成。准备上传只会填入图片，不会填写标题、勾选版权或自动发布。', 'Upload drafts were created automatically. Preparing an upload only attaches the image; it does not enter a title, confirm ownership or publish automatically.')}</p>}
         </div>
         <div className="artwork-preview-wrap">
           {asset ? <div className="artwork-preview-scroll"><div className="artwork-preview-stage"><img src={asset.url} alt={t('本地背景与裁剪范围预览', 'Local background and crop preview')} draggable={false} />{cropResult.rectangles.map(rectangle => <div key={rectangle.name} className={`artwork-crop-overlay ${rectangle.name}`} style={{ left: `${rectangle.x / asset.width * 100}%`, top: `${rectangle.y / asset.height * 100}%`, width: `${rectangle.width / asset.width * 100}%`, height: `${rectangle.height / asset.height * 100}%` }}><span>{cropLabel(rectangle.name, t)}<small>{rectangle.width} px</small></span></div>)}</div></div> : <div className="artwork-preview-empty"><span>▧</span><strong>{t('选择背景图查看对齐预览', 'Choose a background to preview alignment')}</strong><p>{t('裁剪框保留原始像素，不拉伸。导出的主图 / 侧图可按上方步骤上传。', 'Crop boxes preserve original pixels without stretching. Upload the exported images using the steps above.')}</p></div>}

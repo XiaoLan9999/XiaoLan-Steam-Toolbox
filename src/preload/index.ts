@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { UpdateState } from '../shared/update-types'
 import type { ArtworkBrowserState } from '../shared/artwork-browser'
+import type { ProfileBackgroundCatalog, ProfileBackgroundImage } from '../shared/profile-backgrounds'
 import {
   AppEvent,
   AppSnapshot,
@@ -17,6 +18,10 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<IpcResult<T>> =
   ipcRenderer.invoke(channel, ...args) as Promise<IpcResult<T>>
 
 const api: SteamFriendCommenterApi = {
+  getProfileBackgrounds: (accountId) => invoke<ProfileBackgroundCatalog>('backgrounds:list', accountId),
+  loadProfileBackground: (accountId, backgroundId) => invoke<ProfileBackgroundImage>('backgrounds:load', accountId, backgroundId),
+  cancelProfileBackgroundLoad: () => invoke<void>('backgrounds:cancel'),
+  prepareArtworkUpload: (accountId, draft) => invoke<ArtworkBrowserState>('artwork:prepareUpload', accountId, draft),
   checkForUpdates: () => invoke<UpdateState>('update:check'),
   downloadUpdate: (routeId) => invoke<UpdateState>('update:download', routeId),
   cancelUpdate: () => invoke<void>('update:cancel'),

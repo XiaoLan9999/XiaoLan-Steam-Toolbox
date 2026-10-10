@@ -18,6 +18,7 @@ import {
 } from '../shared/types'
 import { SqliteStore } from './store'
 import { SteamCommunityClient } from './community-client'
+import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 
 interface RuntimeSession {
   accountId: string
@@ -331,6 +332,16 @@ export class SteamService {
       throw new DomainError('ARTWORK_SESSION_CHANGED', '账号或登录会话已变更，请重新打开艺术作品工具')
     }
     return [...cookies]
+  }
+
+  async getProfileBackgrounds(accountId: string, permitted: () => boolean = () => true): Promise<ProfileBackgroundCatalog> {
+    const community = this.requireActiveCommunity(accountId)
+    const runtime = this.runtime!
+    const current = (): boolean => permitted() && this.runtime === runtime && this.store.getActiveAccountId() === accountId
+    if (!current()) throw new DomainError('ARTWORK_SESSION_CHANGED', '账号或登录会话已变更，请重新打开艺术作品工具')
+    const catalog = await community.getProfileBackgrounds(current)
+    if (!current()) throw new DomainError('ARTWORK_SESSION_CHANGED', '账号或登录会话已变更，请重新打开艺术作品工具')
+    return catalog
   }
 
   private createLoginSession(): LoginSession {
