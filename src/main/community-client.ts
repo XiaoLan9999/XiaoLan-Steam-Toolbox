@@ -253,29 +253,17 @@ export class SteamCommunityClient {
         url.searchParams.set('access_token', token)
         url.searchParams.set('input_json', JSON.stringify(input))
         try {
-          const response = await fetch(url, { method: 'GET', redirect: 'error', credentials: 'omit',
-            signal: AbortSignal.timeout(20_000), headers: { Accept: 'application/json' } })
-          if (!isCurrent()) { await response.body?.cancel(); assertCurrent() }
-          if (!response.ok || Number(response.headers.get('content-length')) > MAX_RESPONSE_BYTES) {
-            await response.body?.cancel()
-            throw new Error('BACKGROUND_OWNED_UNAVAILABLE')
-          }
-          const reader = response.body?.getReader()
-          const chunks: Uint8Array[] = []
-          let bytes = 0
-          if (reader) {
-            for (;;) {
-              if (!isCurrent()) { await reader.cancel(); assertCurrent() }
-              const chunk = await reader.read()
-              if (!isCurrent()) { await reader.cancel(); assertCurrent() }
-              if (chunk.done) break
-              bytes += chunk.value.byteLength
-              if (bytes > MAX_RESPONSE_BYTES) { await reader.cancel(); throw new Error('BACKGROUND_OWNED_UNAVAILABLE') }
-              chunks.push(chunk.value)
+          return await withRequestTimeout(20_000, async signal => {
+            const response = await fetch(url, { method: 'GET', redirect: 'error', credentials: 'omit',
+              signal, headers: { Accept: 'application/json' } })
+            try {
+              assertCurrent()
+              if (!response.ok) throw new Error('BACKGROUND_OWNED_UNAVAILABLE')
+              return JSON.parse(await readLimitedResponse(response, assertCurrent)) as unknown
+            } finally {
+              await cancelUnusedBody(response)
             }
-          }
-          assertCurrent()
-          return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+          })
         } catch {
           assertCurrent()
           throw new Error('BACKGROUND_OWNED_UNAVAILABLE')
@@ -302,68 +290,120 @@ export class SteamCommunityClient {
   ): Promise<string> {
     assertCurrent()
     const url = new URL(path, COMMUNITY_ORIGIN)
-    const response = await fetch(url, {
-      ...init,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(50_000),
-      headers: {
-        Accept: 'application/json, text/plain, */*',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        Cookie: this.cookieHeader,
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0 Safari/537.36',
-        ...(init.headers as Record<string, string> | undefined)
+    return withRequestTimeout(50_000, async signal => {
+      const response = await fetch(url, {
+        ...init,
+        redirect: 'manual',
+        signal,
+        headers: {
+          Accept: 'application/json, text/plain, */*',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          Cookie: this.cookieHeader,
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0 Safari/537.36',
+          ...(init.headers as Record<string, string> | undefined)
+        }
+      })
+      try {
+        assertCurrent()
+        const location = response.headers.get('location') ?? ''
+        const redirectedToLogin =
+          response.status >= 300 &&
+          response.status < 400 &&
+          (location.includes('/login/') || location.includes('login.steampowered.com'))
+        if (response.status === 401 || (response.status === 403 && forbiddenMeansExpired) || redirectedToLogin) {
+          this.notifyExpired()
+          throw new DomainError('SESSION_EXPIRED', 'Steam Community 会话已失效')
+        }
+
+        if (response.status >= 300 && response.status < 400 && location && redirectsRemaining > 0) {
+          const target = new URL(location, url)
+          if (
+            (!init.method || init.method === 'GET') &&
+            target.origin === COMMUNITY_ORIGIN &&
+            !target.username && !target.password
+          ) {
+            await cancelUnusedBody(response)
+            assertCurrent()
+            return this.requestText(`${target.pathname}${target.search}`, init, redirectsRemaining - 1, forbiddenMeansExpired, assertCurrent)
+          }
+          throw new Error('Steam 好友页面重定向到了不受信任的地址')
+        }
+
+        const text = await readLimitedResponse(response, assertCurrent)
+        assertCurrent()
+        if (!response.ok) {
+          if (isNotLoggedOnResponse(text)) {
+            this.notifyExpired()
+            throw new DomainError('SESSION_EXPIRED', 'Steam Community 会话已失效')
+          }
+          if (response.status === 429) {
+            throw new DomainError('RATE_LIMITED', 'Steam 请求触发频率限制（HTTP 429），请稍后再试', true)
+          }
+          throw new Error(`Steam HTTP error ${response.status}`)
+        }
+        return text
+      } finally {
+        await cancelUnusedBody(response)
       }
     })
-    try { assertCurrent() } catch (error) { await response.body?.cancel(); throw error }
-    const location = response.headers.get('location') ?? ''
-    const redirectedToLogin =
-      response.status >= 300 &&
-      response.status < 400 &&
-      (location.includes('/login/') || location.includes('login.steampowered.com'))
-    if (response.status === 401 || (response.status === 403 && forbiddenMeansExpired) || redirectedToLogin) {
-      this.notifyExpired()
-      throw new DomainError('SESSION_EXPIRED', 'Steam Community 会话已失效')
-    }
-
-    if (response.status >= 300 && response.status < 400 && location && redirectsRemaining > 0) {
-      const target = new URL(location, url)
-      if (
-        (!init.method || init.method === 'GET') &&
-        target.origin === COMMUNITY_ORIGIN &&
-        !target.username && !target.password
-      ) {
-        await response.body?.cancel()
-        assertCurrent()
-        return this.requestText(`${target.pathname}${target.search}`, init, redirectsRemaining - 1, forbiddenMeansExpired, assertCurrent)
-      }
-      throw new Error('Steam 好友页面重定向到了不受信任的地址')
-    }
-
-    const contentLength = Number(response.headers.get('content-length') || 0)
-    if (contentLength > MAX_RESPONSE_BYTES) throw new Error('Steam response exceeded the size limit')
-    const text = await response.text()
-    assertCurrent()
-    if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
-      throw new Error('Steam response exceeded the size limit')
-    }
-    if (!response.ok) {
-      if (isNotLoggedOnResponse(text)) {
-        this.notifyExpired()
-        throw new DomainError('SESSION_EXPIRED', 'Steam Community 会话已失效')
-      }
-      if (response.status === 429) {
-        throw new DomainError('RATE_LIMITED', 'Steam 请求触发频率限制（HTTP 429），请稍后再试', true)
-      }
-      throw new Error(`Steam HTTP error ${response.status}`)
-    }
-    return text
   }
 
   private notifyExpired(): void {
     if (this.expiredNotified) return
     this.expiredNotified = true
     this.onSessionExpired()
+  }
+}
+
+async function withRequestTimeout<T>(timeoutMs: number, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new DOMException('Steam request timed out', 'TimeoutError')), timeoutMs)
+  timer.unref?.()
+  try {
+    return await operation(controller.signal)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function cancelUnusedBody(response: Response): Promise<void> {
+  if (response.body && !response.bodyUsed && !response.body.locked) {
+    await response.body.cancel().catch(() => undefined)
+  }
+}
+
+async function readLimitedResponse(response: Response, assertCurrent: () => void): Promise<string> {
+  if (Number(response.headers.get('content-length')) > MAX_RESPONSE_BYTES) {
+    throw new Error('Steam response exceeded the size limit')
+  }
+  const reader = response.body?.getReader()
+  if (!reader) return ''
+  const chunks: Uint8Array[] = []
+  let bytes = 0
+  let finished = false
+  try {
+    for (;;) {
+      assertCurrent()
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try {
+        chunk = await reader.read()
+      } catch (error) {
+        throw new Error('Steam response interrupted', { cause: error })
+      }
+      assertCurrent()
+      if (chunk.done) {
+        finished = true
+        break
+      }
+      bytes += chunk.value.byteLength
+      if (bytes > MAX_RESPONSE_BYTES) throw new Error('Steam response exceeded the size limit')
+      chunks.push(chunk.value)
+    }
+    return Buffer.concat(chunks, bytes).toString('utf8')
+  } finally {
+    if (!finished) await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
   }
 }
 

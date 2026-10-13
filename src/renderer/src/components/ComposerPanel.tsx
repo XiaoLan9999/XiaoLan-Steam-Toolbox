@@ -6,7 +6,7 @@ import {
   countCharacters
 } from '../../../shared/domain'
 import { composerIssues, type ComposerIssue } from '../../../shared/composer-validation'
-import { AppSnapshot, BatchRecord, SteamEmoticon } from '../../../shared/types'
+import { AppSnapshot, BatchSummary, SteamEmoticon } from '../../../shared/types'
 import { avatarFallback, formatDuration, unwrap } from '../ui'
 import { useI18n, type Translate } from '../i18n'
 import { RunAction } from './types'
@@ -16,6 +16,7 @@ interface ComposerPanelProps {
   selected: Set<string>
   onSelectedChange(value: Set<string>): void
   onOpenFriends(): void
+  onOpenTasks?(): void
   runAction: RunAction
 }
 
@@ -24,6 +25,7 @@ export function ComposerPanel({
   selected,
   onSelectedChange,
   onOpenFriends,
+  onOpenTasks,
   runAction
 }: ComposerPanelProps): React.JSX.Element {
   const { language, t } = useI18n()
@@ -345,7 +347,7 @@ export function ComposerPanel({
         </section>
 
         {lastBatch && (
-          <ActiveBatchPanel batch={lastBatch} runAction={runAction} />
+          <ActiveBatchPanel batch={lastBatch} authenticated={account.sessionState === 'authenticated'} onOpenTasks={onOpenTasks} runAction={runAction} />
         )}
 
         <section className="card boundary-card">
@@ -416,7 +418,9 @@ export function ComposerPanel({
   )
 }
 
-function ActiveBatchPanel({ batch, runAction }: { batch: BatchRecord; runAction: RunAction }): React.JSX.Element {
+function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
+  batch: BatchSummary; authenticated: boolean; onOpenTasks?(): void; runAction: RunAction
+}): React.JSX.Element {
   const { t } = useI18n()
   const [pendingAction, setPendingAction] = useState(false)
   const actionLock = useRef(false)
@@ -429,7 +433,6 @@ function ActiveBatchPanel({ batch, runAction }: { batch: BatchRecord; runAction:
   }
   const progress = batch.total ? Math.round((batch.completed / batch.total) * 100) : 0
   const active = ['queued', 'running', 'paused'].includes(batch.status)
-  const failures = batch.deliveries.filter((delivery) => delivery.error)
   const statuses = {
     queued: t('等待中', 'Queued'), running: t('发送中', 'Sending'), paused: t('已暂停', 'Paused'),
     completed: t('已结束', 'Finished'), cancelled: t('已取消', 'Cancelled')
@@ -447,20 +450,26 @@ function ActiveBatchPanel({ batch, runAction }: { batch: BatchRecord; runAction:
       </div>
       <div className="progress-facts">
         <span>{batch.completed} / {batch.total}</span>
-        <span className="success">{t('成功', 'Accepted')} {batch.succeeded}</span>
-        <span className="failed">{t('失败/待核对', 'Failed/uncertain')} {batch.failed}</span>
+        <span className="success">{t('已确认', 'Confirmed')} {batch.sentVerified}</span>
+        <span>{t('已接受', 'Accepted')} {batch.acceptedUnverified}</span>
+        <span>{t('尚未发送', 'Pending')} {batch.pending}</span>
+        <span className="failed">{t('失败', 'Failed')} {batch.failedCount}</span>
+        <span className="failed">{t('待核对', 'Uncertain')} {batch.uncertain}</span>
       </div>
-      {failures.slice(-3).map((delivery) => <div className="inline-warning" key={delivery.id}>
-        <strong>{delivery.friendName}</strong>: {delivery.error}
-      </div>)}
-      {failures.length > 3 && <small>{t('更多详情请查看发送记录。', 'See delivery history for more details.')}</small>}
+      {batch.uncertain > 0 && <div className="inline-warning">{t('待核对对象不会自动重发，避免重复留言。', 'Uncertain recipients are not retried automatically to prevent duplicate comments.')}</div>}
+      {onOpenTasks && <button className="ghost" onClick={onOpenTasks}>{t('查看持久任务与明细', 'View saved tasks and details')}</button>}
       {active && <div className="batch-controls">
         {batch.status === 'running' ? (
           <button disabled={pendingAction} onClick={() => void perform(t('正在暂停', 'Pausing'), async () => unwrap(await window.steamCommenter.pauseBatch(batch.id)))}>
             {t('暂停', 'Pause')}
           </button>
         ) : (
-          <button className="primary" disabled={pendingAction} onClick={() => void perform(t('正在恢复', 'Resuming'), async () => unwrap(await window.steamCommenter.resumeBatch(batch.id)))}>
+          <button className="primary" disabled={pendingAction || !authenticated} onClick={() => {
+            if (window.confirm(t(`继续该任务的 ${batch.pending} 位未发送好友？已发送和待核对对象不会重发。`,
+              `Resume the ${batch.pending} pending recipients? Sent and uncertain recipients will not be retried.`))) {
+              void perform(t('正在恢复', 'Resuming'), async () => unwrap(await window.steamCommenter.resumeBatch(batch.id)))
+            }
+          }}>
             {t('继续', 'Resume')}
           </button>
         )}

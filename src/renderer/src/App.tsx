@@ -9,6 +9,8 @@ import { SettingsModal } from './components/SettingsModal'
 import ArtworkToolsPanel from './components/ArtworkToolsPanel'
 import { I18nProvider, type Translate } from './i18n'
 import { avatarFallback, unwrap } from './ui'
+import { applyBatchProgress, applyProgressUpdates, createSnapshotRefresh, type BatchProgressUpdate } from './snapshot-refresh'
+import './task-list.css'
 
 type Tab = 'friends' | 'compose' | 'history' | 'tools'
 
@@ -17,6 +19,8 @@ interface Toast {
   level: 'info' | 'success' | 'warning' | 'error'
   message: string
 }
+
+interface RefreshValue { snapshot: AppSnapshot; batchRevision: number }
 
 export default function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
@@ -27,7 +31,9 @@ export default function App(): React.JSX.Element {
   const [busy, setBusy] = useState<string | null>(null)
   const [fatalError, setFatalError] = useState<string | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
-  const refreshSequence = useRef(0)
+  const refreshController = useRef<ReturnType<typeof createSnapshotRefresh<RefreshValue>> | null>(null)
+  const batchRevision = useRef(0)
+  const progressUpdates = useRef(new Map<string, BatchProgressUpdate>())
   const language = snapshot?.language ?? 'zh-CN'
   const t: Translate = (zh, en) => language === 'en' ? en : zh
 
@@ -39,29 +45,43 @@ export default function App(): React.JSX.Element {
     }, 5_000)
   }, [])
 
-  const refresh = useCallback(async () => {
-    const sequence = ++refreshSequence.current
-    const result = await window.steamCommenter.getSnapshot()
-    if (sequence !== refreshSequence.current) return
-    try {
-      const next = unwrap(result)
-      document.documentElement.lang = next.language
-      document.title = next.language === 'en' ? APP_NAME_EN : APP_NAME_ZH
-      setSnapshot(next)
-      setFatalError(null)
-    } catch (error) {
-      setFatalError(error instanceof Error ? error.message : String(error))
-    }
-  }, [])
+  const refresh = useCallback(() => refreshController.current?.refresh() ?? Promise.resolve(), [])
 
   useEffect(() => {
-    void refresh()
-    return window.steamCommenter.onEvent((event: AppEvent) => {
-      if (event.type === 'snapshotChanged' || event.type === 'batchProgress') void refresh()
+    const controller = createSnapshotRefresh(async () => {
+      const revision = batchRevision.current
+      return { snapshot: unwrap(await window.steamCommenter.getSnapshot()), batchRevision: revision }
+    }, ({ snapshot: next, batchRevision: revision }) => {
+      document.documentElement.lang = next.language
+      document.title = next.language === 'en' ? APP_NAME_EN : APP_NAME_ZH
+      setSnapshot(() => applyProgressUpdates(next, progressUpdates.current.values(), revision))
+      setFatalError(null)
+    }, error => {
+      setFatalError(error instanceof Error ? error.message : String(error))
+    })
+    refreshController.current = controller
+    void controller.refresh()
+    const unsubscribe = window.steamCommenter.onEvent((event: AppEvent) => {
+      if (event.type === 'snapshotChanged') void controller.refresh()
+      if (event.type === 'batchProgress') {
+        if (event.summary !== undefined) {
+          batchRevision.current += 1
+          progressUpdates.current.delete(event.batchId)
+          progressUpdates.current.set(event.batchId, { batchId: event.batchId, summary: event.summary, revision: batchRevision.current })
+          if (progressUpdates.current.size > 32) progressUpdates.current.delete(progressUpdates.current.keys().next().value!)
+          setSnapshot(current => current ? applyBatchProgress(current, event.batchId, event.summary!) : current)
+        }
+        else void controller.refresh()
+      }
       if (event.type === 'updateChanged') setSnapshot((current) => current ? { ...current, updater: event.state } : current)
       if (event.type === 'notice') pushToast(event.message, event.level)
     })
-  }, [pushToast, refresh])
+    return () => {
+      unsubscribe()
+      controller.dispose()
+      if (refreshController.current === controller) refreshController.current = null
+    }
+  }, [pushToast])
 
   useEffect(() => {
     setSelectedFriends(new Set())
@@ -231,7 +251,7 @@ export default function App(): React.JSX.Element {
                   {selectedFriends.size > 0 && <b>{selectedFriends.size}</b>}
                 </button>
                 <button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>
-                  {t('发送记录', 'History')}
+                  {t('任务列表', 'Tasks')}
                 </button>
               </nav>
             </header>
@@ -261,10 +281,11 @@ export default function App(): React.JSX.Element {
                   selected={selectedFriends}
                   onSelectedChange={setSelectedFriends}
                   onOpenFriends={() => setTab('friends')}
+                  onOpenTasks={() => setTab('history')}
                   runAction={runAction}
                 />
               )}
-              {tab === 'history' && <HistoryPanel snapshot={snapshot} />}
+              {tab === 'history' && <HistoryPanel snapshot={snapshot} runAction={runAction} />}
             </section>
           </>
         ) : (

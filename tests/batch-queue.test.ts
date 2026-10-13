@@ -8,10 +8,6 @@ import type { SteamService } from '../src/main/steam-service'
 import { DomainError } from '../src/shared/domain'
 import type { AppEvent, BatchStartInput } from '../src/shared/types'
 
-vi.mock('node:timers/promises', () => ({
-  setTimeout: (delay: number) => new Promise((resolve) => setTimeout(resolve, delay))
-}))
-
 const accountId = '76561198000000001'
 const fixtures: Array<{ directory: string; store: SqliteStore; queue: BatchQueue }> = []
 const cipher: SecretCipher = {
@@ -26,8 +22,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const fixture of fixtures) {
-    const active = fixture.store.getActiveBatch(accountId)
-    if (active) fixture.queue.cancel(active.id)
+    fixture.queue.shutdown()
   }
   await vi.advanceTimersByTimeAsync(500)
   for (const { directory, store } of fixtures.splice(0)) {
@@ -42,6 +37,7 @@ describe('delivery error classification', () => {
   it.each([
     new TypeError('fetch failed'), new Error('Steam returned invalid JSON'),
     new Error('Steam returned a malformed comment response'),
+    new Error('Steam response exceeded the size limit'), new Error('Steam response interrupted'),
     new Error('This operation was aborted'), new Error('Steam HTTP error 503')
   ])('pauses without automatically retrying ambiguous failure %s', (error) => {
     expect(classifyDeliveryError(error)).toEqual({ status: 'uncertain', pauseBatch: true })
@@ -192,14 +188,34 @@ describe('persistent sending queue', () => {
     expect(store.getBatch(batch.id)?.status).toBe('completed')
   })
 
+  it('does not overlap a new batch with a cancelled batch whose POST is still settling', async () => {
+    const { queue, store, post, input } = fixture(2)
+    let finish!: (value: { commentId: string }) => void
+    post.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    const first = queue.start(input)
+    queue.cancel(first.id)
+    expect(queue.hasPendingRequests()).toBe(true)
+    expect(store.getBatchSummary(first.id)).toMatchObject({ status: 'cancelled', sending: 1, cancelled: 1 })
+    expect(() => queue.start(input)).toThrow(/请求正在结束/)
+    expect(post).toHaveBeenCalledOnce()
+    finish({ commentId: 'settled-first' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(queue.hasPendingRequests()).toBe(false)
+    expect(store.getBatchSummary(first.id)).toMatchObject({ status: 'cancelled', sending: 0, succeeded: 1 })
+    const second = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(second.id).not.toBe(first.id)
+    expect(post).toHaveBeenCalledTimes(2)
+  })
+
   it('restarts a worker when resume lands between pause observation and worker cleanup', async () => {
     const { queue, store, post, input } = fixture(2)
     const batch = queue.start(input)
     await vi.advanceTimersByTimeAsync(0)
     queue.pause(batch.id)
-    const getBatch = store.getBatch.bind(store)
-    vi.spyOn(store, 'getBatch').mockImplementationOnce((id) => {
-      const pausedSnapshot = getBatch(id)
+    const getBatchSummary = store.getBatchSummary.bind(store)
+    vi.spyOn(store, 'getBatchSummary').mockImplementationOnce((id) => {
+      const pausedSnapshot = getBatchSummary(id)
       queue.resume(id)
       return pausedSnapshot
     })
@@ -231,6 +247,82 @@ describe('persistent sending queue', () => {
     expect(post).not.toHaveBeenCalled()
     expect(store.getBatch(batch.id)?.status).toBe('paused')
     expect(events).toContainEqual(expect.objectContaining({ type: 'notice', level: 'error', message: expect.stringContaining('Synthetic storage failure') }))
+  })
+
+  it('fails closed rather than rejecting its detached worker when metadata storage fails repeatedly', async () => {
+    const { queue, store, post, events, input } = fixture(2)
+    queue.start(input)
+    vi.spyOn(store, 'getBatchSummary').mockImplementation(() => { throw new Error('Synthetic database read failure') })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(post).toHaveBeenCalledOnce()
+    expect(events).toContainEqual(expect.objectContaining({ type: 'notice', level: 'error', message: expect.stringContaining('Synthetic database read failure') }))
+  })
+
+  it('uses only constant-sized metadata while waiting on a million-recipient summary', async () => {
+    const { queue, store, post, events, input } = fixture(2)
+    const getBatchSummary = store.getBatchSummary.bind(store)
+    vi.spyOn(store, 'getBatch').mockImplementation(() => { throw new Error('Full delivery read is forbidden in the queue') })
+    const summaries = vi.spyOn(store, 'getBatchSummary').mockImplementation(id => {
+      const value = getBatchSummary(id)
+      return value ? { ...value, total: 1_000_000, pending: 999_999 } : null
+    })
+    const batch = queue.start({ ...input, delayMs: 300_000 })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(post).toHaveBeenCalledOnce()
+    expect(summaries.mock.calls.length).toBeGreaterThan(200)
+    expect(batch).not.toHaveProperty('deliveries')
+    expect(events.some(event => event.type === 'snapshotChanged')).toBe(false)
+    queue.pause(batch.id)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('wakes and clears interval timers on shutdown and never reads a subsequently closed database', async () => {
+    const { queue, store, post, input } = fixture(2)
+    queue.start({ ...input, delayMs: 300_000 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(1)
+    queue.shutdown()
+    const reads = vi.spyOn(store, 'getBatchSummary').mockImplementation(() => { throw new Error('Database closed') })
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(reads).not.toHaveBeenCalled()
+    expect(post).toHaveBeenCalledOnce()
+    expect(() => queue.start(input)).toThrow(/队列已关闭/)
+  })
+
+  it.each(['resolve', 'reject'] as const)('ignores a late POST %s after shutdown and restores it as uncertain', async outcome => {
+    const { queue, store, post, events, input } = fixture(2)
+    let resolve!: (value: { commentId: string }) => void
+    let reject!: (error: Error) => void
+    post.mockReturnValueOnce(new Promise((yes, no) => { resolve = yes; reject = no }))
+    const batch = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getBatchSummary(batch.id)).toMatchObject({ sending: 1, pending: 1 })
+    queue.shutdown()
+    expect(queue.hasPendingRequests()).toBe(true)
+    const eventCount = events.length
+    const reads = vi.spyOn(store, 'getBatchSummary')
+    const complete = vi.spyOn(store, 'completeDelivery')
+    store.close()
+    if (outcome === 'resolve') resolve({ commentId: 'late-result' })
+    else reject(new Error('fetch failed'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(queue.hasPendingRequests()).toBe(false)
+    expect(reads).not.toHaveBeenCalled()
+    expect(complete).not.toHaveBeenCalled()
+    expect(events).toHaveLength(eventCount)
+
+    const resource = fixtures.find(item => item.store === store)!
+    const recovered = new SqliteStore(join(resource.directory, 'fixture.sqlite3'), cipher)
+    resource.store = recovered
+    resource.queue = new BatchQueue(recovered, { isAuthenticated: () => true, postProfileComment: post } as unknown as SteamService, () => undefined)
+    expect(recovered.getBatchSummary(batch.id)).toMatchObject({ status: 'paused', pending: 1, sending: 0, uncertain: 1, succeeded: 0 })
+    resource.queue.resume(batch.id)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(new Set(post.mock.calls.map(call => call[1])).size).toBe(2)
+    expect(recovered.getBatchSummary(batch.id)).toMatchObject({ status: 'completed', uncertain: 1, succeeded: 1 })
   })
 })
 

@@ -1,4 +1,3 @@
-import { setTimeout as sleep } from 'node:timers/promises'
 import {
   DomainError,
   renderMessageTemplate,
@@ -6,7 +5,7 @@ import {
   validateDelay,
   validateMessageTemplate
 } from '../shared/domain'
-import { AppEvent, BatchRecord, BatchStartInput } from '../shared/types'
+import { AppEvent, BatchSummary, BatchStartInput } from '../shared/types'
 import { DeliverySeed, SqliteStore } from './store'
 import { publicErrorMessage, SteamService } from './steam-service'
 
@@ -15,6 +14,9 @@ type Emit = (event: AppEvent) => void
 export class BatchQueue {
   private readonly workers = new Set<string>()
   private readonly nextDeliveryAt = new Map<string, number>()
+  private readonly postingAccounts = new Set<string>()
+  private readonly waits = new Set<() => void>()
+  private stopped = false
 
   constructor(
     private readonly store: SqliteStore,
@@ -22,12 +24,16 @@ export class BatchQueue {
     private readonly emit: Emit
   ) {}
 
-  start(input: BatchStartInput): BatchRecord {
+  start(input: BatchStartInput): BatchSummary {
+    this.assertOpen()
     if (this.store.getActiveAccountId() !== input.accountId || !this.steam.isAuthenticated(input.accountId)) {
       throw new DomainError('NOT_AUTHENTICATED', '发送前必须登录对应 Steam 账号')
     }
-    if (this.store.getActiveBatch(input.accountId)) {
+    if (this.store.getActiveBatchSummary(input.accountId)) {
       throw new DomainError('BATCH_ALREADY_ACTIVE', '当前账号已有未完成批次，请先完成或取消')
+    }
+    if (this.postingAccounts.has(input.accountId)) {
+      throw new DomainError('BATCH_REQUEST_SETTLING', '当前账号仍有留言请求正在结束，请稍后再创建批次')
     }
     const template = validateMessageTemplate(input.messageTemplate)
     const delayMs = validateDelay(input.delayMs)
@@ -54,77 +60,123 @@ export class BatchQueue {
         })
       }
     })
-    const batch = this.store.createBatch(input.accountId, template, delayMs, deliveries)
+    const batch = this.store.createBatchTask(input.accountId, template, delayMs, deliveries)
     this.store.setBatchRunning(batch.id)
     this.emit({ type: 'batchProgress', batchId: batch.id })
-    this.emit({ type: 'snapshotChanged' })
     void this.run(batch.id)
-    return this.store.getBatch(batch.id)!
+    return this.store.getBatchSummary(batch.id)!
   }
 
   pause(batchId: string): void {
+    this.assertOpen()
     this.store.pauseBatch(batchId)
+    this.wake()
     this.emit({ type: 'batchProgress', batchId })
-    this.emit({ type: 'snapshotChanged' })
   }
 
   resume(batchId: string): void {
-    const batch = this.store.getBatch(batchId)
+    this.assertOpen()
+    const batch = this.store.getBatchSummary(batchId)
     if (!batch) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
     if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
       throw new DomainError('NOT_AUTHENTICATED', '恢复批次前必须登录对应 Steam 账号')
     }
     this.store.setBatchRunning(batchId)
     this.emit({ type: 'batchProgress', batchId })
-    this.emit({ type: 'snapshotChanged' })
+    this.wake()
     void this.run(batchId)
   }
 
   cancel(batchId: string): void {
+    this.assertOpen()
     this.store.cancelBatch(batchId)
+    this.nextDeliveryAt.delete(batchId)
+    this.wake()
     this.emit({ type: 'batchProgress', batchId })
-    this.emit({ type: 'snapshotChanged' })
   }
 
   pauseForSessionExpiry(accountId: string): void {
-    const batch = this.store.getActiveBatch(accountId)
+    if (this.stopped) return
+    const batch = this.store.getActiveBatchSummary(accountId)
     if (!batch || batch.status === 'paused') return
     try {
       this.store.pauseBatch(batch.id)
+      this.wake()
       this.emit({
         type: 'notice',
         level: 'warning',
         message: 'Steam 会话失效，留言批次已暂停'
       })
-      this.emit({ type: 'snapshotChanged' })
+      this.emit({ type: 'batchProgress', batchId: batch.id })
     } catch {
       // The batch may have completed between the lookup and update.
     }
   }
 
+  shutdown(): void {
+    if (this.stopped) return
+    this.stopped = true
+    this.wake()
+    this.nextDeliveryAt.clear()
+    for (const batchId of this.workers) {
+      try {
+        const batch = this.store.getBatchSummary(batchId)
+        if (batch?.status === 'running' || batch?.status === 'queued') this.store.pauseBatch(batchId)
+      } catch {
+        // Startup recovery also pauses tasks if storage cannot be updated during shutdown.
+      }
+    }
+  }
+
+  hasPendingRequests(): boolean {
+    return this.postingAccounts.size > 0
+  }
+
+  private assertOpen(): void {
+    if (this.stopped) throw new DomainError('BATCH_QUEUE_CLOSED', '留言队列已关闭')
+  }
+
+  private wake(): void {
+    for (const finish of [...this.waits]) finish()
+  }
+
+  private wait(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      const finish = (): void => {
+        clearTimeout(timer)
+        this.waits.delete(finish)
+        resolve()
+      }
+      const timer = setTimeout(finish, ms)
+      this.waits.add(finish)
+    })
+  }
+
   private async run(batchId: string): Promise<void> {
-    if (this.workers.has(batchId)) return
+    if (this.stopped || this.workers.has(batchId)) return
     this.workers.add(batchId)
     let activeDeliveryId: string | null = null
     let submitted = false
     let mayRestart = true
     try {
       while (true) {
-        const batch = this.store.getBatch(batchId)
+        if (this.stopped) return
+        const batch = this.store.getBatchSummary(batchId)
         if (!batch || batch.status !== 'running') return
         if (!this.steam.isAuthenticated(batch.accountId)) {
           this.store.pauseBatch(batchId)
-          this.emit({ type: 'snapshotChanged' })
+          this.emit({ type: 'batchProgress', batchId })
           return
         }
 
         const nextAt = this.nextDeliveryAt.get(batchId) ?? 0
-        if (nextAt > Date.now() && await waitForNextDelivery(this.store, batchId, nextAt)) return
+        if (nextAt > Date.now() && await waitForNextDelivery(this.store, batchId, nextAt,
+          () => this.stopped, ms => this.wait(ms))) return
+        if (this.stopped) return
         const delivery = this.store.takeNextDelivery(batchId)
         if (!delivery) {
           this.store.finishBatchIfDone(batchId)
           this.emit({ type: 'batchProgress', batchId })
-          this.emit({ type: 'snapshotChanged' })
           return
         }
         activeDeliveryId = delivery.id
@@ -134,7 +186,7 @@ export class BatchQueue {
           this.store.resetDeliveryToPending(delivery.id)
           activeDeliveryId = null
           this.store.pauseBatch(batchId)
-          this.emit({ type: 'snapshotChanged' })
+          this.emit({ type: 'batchProgress', batchId })
           return
         }
 
@@ -148,24 +200,26 @@ export class BatchQueue {
           activeDeliveryId = null
           this.store.finishBatchIfDone(batchId)
           this.emit({ type: 'batchProgress', batchId })
-          this.emit({ type: 'snapshotChanged' })
           continue
         }
 
         let shouldPause = false
         try {
           submitted = true
+          this.postingAccounts.add(batch.accountId)
           const result = await this.steam.postProfileComment(
             batch.accountId,
             delivery.friendSteamId,
             delivery.renderedMessage
           )
+          if (this.stopped) return
           this.store.completeDelivery(
             delivery.id,
             result.commentId ? 'sent_verified' : 'accepted_unverified',
             { remoteCommentId: result.commentId ?? undefined }
           )
         } catch (error) {
+          if (this.stopped) return
           const classification = classifyDeliveryError(error)
           this.store.completeDelivery(delivery.id, classification.status, {
             error: publicErrorMessage(error)
@@ -176,39 +230,41 @@ export class BatchQueue {
             level: 'warning',
             message: `${delivery.friendName}：${classification.status === 'uncertain' ? '发送结果待核对，不会自动重发' : '留言失败'}。${publicErrorMessage(error)}`
           })
+        } finally {
+          this.postingAccounts.delete(batch.accountId)
         }
         activeDeliveryId = null
         this.nextDeliveryAt.set(batchId, Date.now() + batch.delayMs + Math.floor(Math.random() * 3_001))
 
         this.emit({ type: 'batchProgress', batchId })
-        this.emit({ type: 'snapshotChanged' })
         if (this.store.finishBatchIfDone(batchId)) {
-          const finished = this.store.getBatch(batchId)!
+          const finished = this.store.getBatchSummary(batchId)!
           this.emit({
             type: 'notice',
             level: finished.failed ? 'warning' : 'success',
             message: `留言批次已结束：成功 ${finished.succeeded}，失败或待核对 ${finished.failed}`
           })
-          this.emit({ type: 'snapshotChanged' })
+          this.emit({ type: 'batchProgress', batchId })
           return
         }
         if (shouldPause) {
-          const current = this.store.getBatch(batchId)
+          const current = this.store.getBatchSummary(batchId)
           if (current?.status === 'running' || current?.status === 'queued') this.store.pauseBatch(batchId)
           this.emit({
             type: 'notice',
             level: 'warning',
             message: '检测到会话、网络或频率问题，批次已暂停'
           })
-          this.emit({ type: 'snapshotChanged' })
+          this.emit({ type: 'batchProgress', batchId })
           return
         }
       }
     } catch (error) {
+      if (this.stopped) return
       mayRestart = false
       try {
-        const current = this.store.getBatch(batchId)
-        if (activeDeliveryId && current?.deliveries.some((item) => item.id === activeDeliveryId && item.status === 'sending')) {
+        const current = this.store.getBatchSummary(batchId)
+        if (activeDeliveryId && this.store.getDeliveryRecordById(activeDeliveryId)?.status === 'sending') {
           if (submitted) this.store.completeDelivery(activeDeliveryId, 'uncertain', { error: '队列异常中断，发送结果待核对；不会自动重发' })
           else this.store.resetDeliveryToPending(activeDeliveryId)
         }
@@ -217,14 +273,18 @@ export class BatchQueue {
         // A storage failure may prevent persistence; startup recovery handles sending records.
       }
       this.emit({ type: 'notice', level: 'error', message: `留言队列已停止：${publicErrorMessage(error)}` })
-      this.emit({ type: 'snapshotChanged' })
+      this.emit({ type: 'batchProgress', batchId })
     } finally {
       this.workers.delete(batchId)
-      if (mayRestart) {
-        const current = this.store.getBatch(batchId)
-        // A resume may arrive after the old worker observed pause but before its finally runs.
-        if (current?.status === 'running') void this.run(batchId)
-        else if (!current || ['completed', 'cancelled'].includes(current.status)) this.nextDeliveryAt.delete(batchId)
+      if (!this.stopped) {
+        try {
+          const current = this.store.getBatchSummary(batchId)
+          // A resume may arrive after the old worker observed pause but before its finally runs.
+          if (mayRestart && current?.status === 'running') void this.run(batchId)
+          else if (!current || ['completed', 'cancelled'].includes(current.status)) this.nextDeliveryAt.delete(batchId)
+        } catch {
+          this.nextDeliveryAt.delete(batchId)
+        }
       }
     }
   }
@@ -238,7 +298,7 @@ export function classifyDeliveryError(error: unknown): {
   const rateLimited = /rate|limit|too many|\b429\b|频率|限制/.test(message)
   const sessionFailure = /not logged|login|session|access denied|expired|登录|会话/.test(message)
   const ambiguousNetworkFailure =
-    /timeout|timed out|socket|econn|network|hang up|connection|fetch failed|abort|invalid json|malformed comment response|网络|连接/.test(message)
+    /timeout|timed out|socket|econn|network|hang up|connection|fetch failed|abort|invalid json|malformed comment response|response interrupted|response exceeded the size limit|网络|连接/.test(message)
   const serverFailure = /http error 5\d\d|service unavailable|busy/.test(message)
 
   if (ambiguousNetworkFailure || serverFailure) {
@@ -253,12 +313,15 @@ export function classifyDeliveryError(error: unknown): {
 async function waitForNextDelivery(
   store: SqliteStore,
   batchId: string,
-  deadline: number
+  deadline: number,
+  stopped: () => boolean,
+  wait: (ms: number) => Promise<void>
 ): Promise<boolean> {
   while (Date.now() < deadline) {
-    const batch = store.getBatch(batchId)
+    if (stopped()) return true
+    const batch = store.getBatchSummary(batchId)
     if (!batch || batch.status !== 'running') return true
-    await sleep(Math.min(250, deadline - Date.now()))
+    await wait(Math.min(250, deadline - Date.now()))
   }
-  return false
+  return stopped()
 }

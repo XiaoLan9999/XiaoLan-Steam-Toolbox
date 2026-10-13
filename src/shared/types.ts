@@ -156,6 +156,44 @@ export interface BatchRecord {
   deliveries: DeliveryRecord[]
 }
 
+export interface BatchSummary extends Omit<BatchRecord, 'deliveries'> {
+  pending: number
+  sending: number
+  sentVerified: number
+  acceptedUnverified: number
+  failedCount: number
+  uncertain: number
+  cancelled: number
+}
+
+export type DeliveryListRecord = Omit<DeliveryRecord, 'renderedMessage'>
+
+export interface BatchTaskListOptions {
+  offset?: number
+  limit?: number
+  status?: BatchStatus
+}
+
+export interface BatchDeliveryListOptions {
+  offset?: number
+  limit?: number
+  status?: DeliveryStatus
+}
+
+export interface BatchTaskPage {
+  items: BatchSummary[]
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface BatchDeliveryPage {
+  items: DeliveryListRecord[]
+  total: number
+  offset: number
+  limit: number
+}
+
 export interface AppSnapshot {
   accounts: AccountView[]
   activeAccountId: string | null
@@ -165,8 +203,8 @@ export interface AppSnapshot {
   groups: FriendGroup[]
   emoticons: SteamEmoticon[]
   settings: AccountSettings | null
-  batches: BatchRecord[]
-  activeBatch: BatchRecord | null
+  batches: BatchSummary[]
+  activeBatch: BatchSummary | null
   friendPolicies: FriendPolicy[]
   commentScan: CommentScanJob | null
   dataDirectory: string
@@ -218,7 +256,7 @@ export type AppEvent =
   | { type: 'authRemoteInteraction'; loginId: string }
   | { type: 'authFinished'; loginId: string; accountId: string }
   | { type: 'authFailed'; loginId: string; message: string }
-  | { type: 'batchProgress'; batchId: string }
+  | { type: 'batchProgress'; batchId: string; summary?: BatchSummary | null }
 
 export interface SteamFriendCommenterApi {
   getProfileBackgrounds(accountId: string): Promise<IpcResult<ProfileBackgroundCatalog>>
@@ -263,7 +301,9 @@ export interface SteamFriendCommenterApi {
   deleteGroup(accountId: string, groupId: string): Promise<IpcResult<void>>
   setFriendGroups(accountId: string, friendSteamIds: string[], groupIds: string[]): Promise<IpcResult<void>>
   updateSettings(accountId: string, draft: string, delayMs: number): Promise<IpcResult<void>>
-  startBatch(input: BatchStartInput): Promise<IpcResult<BatchRecord>>
+  startBatch(input: BatchStartInput): Promise<IpcResult<BatchSummary>>
+  listBatchTasks(accountId: string, options?: BatchTaskListOptions): Promise<IpcResult<BatchTaskPage>>
+  listBatchDeliveries(accountId: string, batchId: string, options?: BatchDeliveryListOptions): Promise<IpcResult<BatchDeliveryPage>>
   pauseBatch(batchId: string): Promise<IpcResult<void>>
   resumeBatch(batchId: string): Promise<IpcResult<void>>
   cancelBatch(batchId: string): Promise<IpcResult<void>>

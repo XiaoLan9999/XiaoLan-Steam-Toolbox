@@ -324,6 +324,107 @@ describe('SteamCommunityClient', () => {
   })
 })
 
+describe('bounded Community response resources', () => {
+  const friend = '76561198000000002'
+  const responseLimit = 5 * 1024 * 1024
+
+  it.each<{ status: number; headers: Record<string, string>; error: RegExp }>([
+    { status: 401, headers: {}, error: /会话已失效/ },
+    { status: 403, headers: {}, error: /会话已失效/ },
+    { status: 302, headers: { Location: 'https://steamcommunity.com/login/home/' }, error: /会话已失效/ },
+    { status: 200, headers: { 'Content-Length': String(responseLimit + 1) }, error: /size limit/ }
+  ])('cancels the unconsumed body on early exit $status $headers', async ({ status, headers, error }) => {
+    const cancel = vi.fn()
+    const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => controller.enqueue(new Uint8Array(64)))
+    const response = new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), { status, headers })
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow(error)
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(pull).not.toHaveBeenCalled()
+    expect(response.body?.locked).toBe(false)
+  })
+
+  it.each<Record<string, string>>([{}, { 'Content-Length': '1' }])('stops a chunked/decompressed body before buffering its entire payload: %j', async headers => {
+    const cancel = vi.fn()
+    let emitted = 0
+    const chunkBytes = 64 * 1024
+    const response = new Response(new ReadableStream({
+      pull(controller) {
+        emitted += chunkBytes
+        controller.enqueue(new Uint8Array(chunkBytes).fill(120))
+        if (emitted >= 16 * 1024 * 1024) controller.close()
+      }, cancel
+    }, { highWaterMark: 0 }), { status: 200, headers })
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow('size limit')
+    expect(emitted).toBe(responseLimit + chunkBytes)
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(response.body?.locked).toBe(false)
+  })
+
+  it('reassembles split UTF-8 bytes without corrupting a valid comment response', async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify({ success: true, error: '汉', comments_html: '<div id="comment_42"></div>' }))
+    let offset = 0
+    const response = new Response(new ReadableStream({
+      pull(controller) {
+        if (offset === bytes.length) controller.close()
+        else controller.enqueue(bytes.slice(offset, ++offset))
+      }
+    }, { highWaterMark: 0 }))
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await expect(client.postProfileComment(friend, 'fixture')).resolves.toEqual({ commentId: '42' })
+    expect(response.body?.locked).toBe(false)
+  })
+
+  it('marks an interrupted POST response ambiguous and releases its reader', async () => {
+    const response = new Response(new ReadableStream({ pull(controller) { controller.error(new Error('Synthetic broken stream')) } }))
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow('Steam response interrupted')
+    expect(response.body?.locked).toBe(false)
+  })
+
+  it('cancels an unsafe GET redirect body without following it', async () => {
+    const cancel = vi.fn()
+    const response = new Response(new ReadableStream({ cancel }), {
+      status: 302, headers: { Location: 'https://untrusted.example/profile' }
+    })
+    const fetchMock = vi.fn(async () => response)
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await expect(client.checkCommentEligibility(friend)).resolves.toMatchObject({ status: 'unknown' })
+    expect(cancel).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('clears request deadlines immediately after success or an early response rejection', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ success: true }))
+      .mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await client.postProfileComment(friend, 'fixture')
+    expect(vi.getTimerCount()).toBe(0)
+    await expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow(/会话已失效/)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('aborts a stalled fetch at its deadline and clears the timer', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_url: URL, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+    })))
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    const checked = expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow('Steam request timed out')
+    await vi.advanceTimersByTimeAsync(50_000)
+    await checked
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
 describe('account-scoped profile background transport', () => {
   const account = '76561198000000001'
   const media = 'https://shared.akamai.steamstatic.com/community_assets/images/items/440/background.jpg'

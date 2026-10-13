@@ -1,4 +1,10 @@
 const messages = new Map<string, string>([
+  ['任务分页参数无效', 'Invalid task pagination parameters.'],
+  ['任务状态筛选无效', 'Invalid task status filter.'],
+  ['这个批次不属于当前账号', 'This batch does not belong to the current account.'],
+  ['请先切换到任务所属账号', 'Switch to the account that owns this task first.'],
+  ['当前账号仍有留言请求正在结束，请稍后再创建批次', 'A comment request for this account is still settling. Wait before creating a new batch.'],
+  ['留言队列已关闭', 'The comment queue is closed.'],
   ['请先暂停检查再修改间隔', 'Pause the check before changing its interval.'],
   ['账号正在切换，请稍候', 'The account is being switched. Please wait.'],
   ['无法准备 Steam 艺术作品会话，请确认网络后重新登录', 'The Steam artwork session could not be prepared. Check your connection and sign in again.'],

@@ -6,10 +6,16 @@ import {
   AccountRecord,
   AccountSettings,
   BatchRecord,
+  BatchSummary,
+  BatchTaskListOptions,
+  BatchTaskPage,
+  BatchDeliveryListOptions,
+  BatchDeliveryPage,
   BatchStatus,
   CommentCheckResult,
   CommentScanJob,
   DeliveryRecord,
+  DeliveryListRecord,
   DeliveryStatus,
   FriendGroup,
   FriendNameChangeRecord,
@@ -105,6 +111,16 @@ interface BatchRow {
   finished_at: string | null
 }
 
+interface BatchSummaryRow extends BatchRow {
+  pending: number
+  sending: number
+  sent_verified: number
+  accepted_unverified: number
+  failed_count: number
+  uncertain: number
+  cancelled: number
+}
+
 interface DeliveryRow {
   id: string
   batch_id: string
@@ -117,6 +133,8 @@ interface DeliveryRow {
   created_at: string
   sent_at: string | null
 }
+
+type DeliveryListRow = Omit<DeliveryRow, 'rendered_message'>
 
 interface SettingsRow {
   account_id: string
@@ -161,6 +179,18 @@ export interface DeliverySeed {
 }
 
 const now = (): string => new Date().toISOString()
+const batchStatuses: readonly BatchStatus[] = ['queued', 'running', 'paused', 'completed', 'cancelled']
+const deliveryStatuses: readonly DeliveryStatus[] = [
+  'pending', 'sending', 'sent_verified', 'accepted_unverified', 'failed', 'uncertain', 'cancelled'
+]
+const batchSummaryColumns = `b.*,
+  COALESCE(SUM(d.status = 'pending'), 0) AS pending,
+  COALESCE(SUM(d.status = 'sending'), 0) AS sending,
+  COALESCE(SUM(d.status = 'sent_verified'), 0) AS sent_verified,
+  COALESCE(SUM(d.status = 'accepted_unverified'), 0) AS accepted_unverified,
+  COALESCE(SUM(d.status = 'failed'), 0) AS failed_count,
+  COALESCE(SUM(d.status = 'uncertain'), 0) AS uncertain,
+  COALESCE(SUM(d.status = 'cancelled'), 0) AS cancelled`
 
 export class SqliteStore {
   private readonly db: DatabaseSync
@@ -844,6 +874,17 @@ export class SqliteStore {
     delayMs: number,
     deliveries: DeliverySeed[]
   ): BatchRecord {
+    const batch = this.createBatchTask(accountId, messageTemplate, delayMs, deliveries)
+    return this.getBatch(batch.id)!
+  }
+
+  createBatchTask(
+    accountId: string,
+    messageTemplate: string,
+    delayMs: number,
+    deliveries: DeliverySeed[]
+  ): BatchSummary {
+    this.requireTaskAccount(accountId)
     const batchId = randomUUID()
     const createdAt = now()
     this.transaction(() => {
@@ -872,7 +913,79 @@ export class SqliteStore {
         )
       }
     })
-    return this.getBatch(batchId)!
+    return this.getBatchSummary(batchId)!
+  }
+
+  getBatchSummary(batchId: string): BatchSummary | null {
+    const row = this.db.prepare(
+      `SELECT ${batchSummaryColumns} FROM batches b
+       LEFT JOIN deliveries d ON d.batch_id = b.id WHERE b.id = ? GROUP BY b.id`
+    ).get(batchId) as unknown as BatchSummaryRow | undefined
+    return row ? mapBatchSummary(row) : null
+  }
+
+  getActiveBatchSummary(accountId: string): BatchSummary | null {
+    const row = this.db.prepare(
+      `SELECT id FROM batches WHERE account_id = ? AND status IN ('queued', 'running', 'paused')
+       ORDER BY created_at DESC, id DESC LIMIT 1`
+    ).get(accountId) as unknown as { id: string } | undefined
+    return row ? this.getBatchSummary(row.id) : null
+  }
+
+  getRecentBatchSummaries(accountId: string, limit = 20): BatchSummary[] {
+    return this.listBatchTasks(accountId, { limit }).items
+  }
+
+  listBatchTasks(accountId: string, options: BatchTaskListOptions = {}): BatchTaskPage {
+    this.requireTaskAccount(accountId)
+    const { offset, limit, status } = validateTaskPage(options, 25, 50, batchStatuses)
+    const filter = status === undefined ? '' : ' AND status = ?'
+    const parameters: Array<string | number> = status === undefined ? [accountId] : [accountId, status]
+    const count = this.db.prepare(
+      `SELECT COUNT(*) AS total FROM batches WHERE account_id = ?${filter}`
+    ).get(...parameters) as unknown as { total: number }
+    const rows = this.db.prepare(
+      `WITH selected_batches AS (
+         SELECT * FROM batches WHERE account_id = ?${filter}
+         ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?
+       )
+       SELECT ${batchSummaryColumns} FROM selected_batches b
+       LEFT JOIN deliveries d ON d.batch_id = b.id GROUP BY b.id
+       ORDER BY b.created_at DESC, b.id DESC`
+    ).all(...parameters, limit, offset) as unknown as BatchSummaryRow[]
+    return { items: rows.map(mapBatchSummary), total: Number(count.total), offset, limit }
+  }
+
+  listBatchDeliveries(
+    accountId: string,
+    batchId: string,
+    options: BatchDeliveryListOptions = {}
+  ): BatchDeliveryPage {
+    this.requireTaskAccount(accountId)
+    const { offset, limit, status } = validateTaskPage(options, 50, 100, deliveryStatuses)
+    if (typeof batchId !== 'string') throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
+    const batch = this.db.prepare('SELECT account_id FROM batches WHERE id = ?')
+      .get(batchId) as unknown as { account_id: string } | undefined
+    if (!batch) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
+    if (batch.account_id !== accountId) {
+      throw new DomainError('BATCH_ACCOUNT_MISMATCH', '这个批次不属于当前账号')
+    }
+    const filter = status === undefined ? '' : ' AND status = ?'
+    const parameters: Array<string | number> = status === undefined ? [batchId] : [batchId, status]
+    const count = this.db.prepare(
+      `SELECT COUNT(*) AS total FROM deliveries WHERE batch_id = ?${filter}`
+    ).get(...parameters) as unknown as { total: number }
+    const rows = this.db.prepare(
+      `SELECT id, batch_id, friend_steam_id, friend_name, status, error, remote_comment_id, created_at, sent_at
+       FROM deliveries WHERE batch_id = ?${filter} ORDER BY created_at, id LIMIT ? OFFSET ?`
+    ).all(...parameters, limit, offset) as unknown as DeliveryListRow[]
+    return { items: rows.map(mapDeliveryList), total: Number(count.total), offset, limit }
+  }
+
+  getDeliveryRecordById(deliveryId: string): DeliveryRecord | null {
+    const row = this.db.prepare('SELECT * FROM deliveries WHERE id = ?')
+      .get(deliveryId) as unknown as DeliveryRow | undefined
+    return row ? mapDelivery(row) : null
   }
 
   getBatch(batchId: string): BatchRecord | null {
@@ -1072,8 +1185,14 @@ export class SqliteStore {
     })
   }
 
-  private requireBatch(batchId: string): BatchRecord {
-    const batch = this.getBatch(batchId)
+  private requireTaskAccount(accountId: string): void {
+    if (typeof accountId !== 'string' || !this.getAccount(accountId)) {
+      throw new DomainError('ACCOUNT_NOT_FOUND', '账号不存在')
+    }
+  }
+
+  private requireBatch(batchId: string): BatchSummary {
+    const batch = this.getBatchSummary(batchId)
     if (!batch) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
     return batch
   }
@@ -1118,6 +1237,10 @@ export class SqliteStore {
 
   private recoverInterruptedBatches(): void {
     this.transaction(() => {
+      const rows = this.db.prepare(
+        `SELECT id FROM batches WHERE status IN ('queued', 'running', 'paused')
+         OR EXISTS (SELECT 1 FROM deliveries WHERE batch_id = batches.id AND status = 'sending')`
+      ).all() as unknown as Array<{ id: string }>
       this.db
         .prepare(
           `UPDATE deliveries
@@ -1128,9 +1251,6 @@ export class SqliteStore {
       this.db
         .prepare("UPDATE batches SET status = 'paused' WHERE status IN ('queued', 'running')")
         .run()
-      const rows = this.db
-        .prepare("SELECT id FROM batches WHERE status = 'paused'")
-        .all() as unknown as Array<{ id: string }>
       for (const row of rows) this.recalculateBatchInTransaction(row.id)
     })
   }
@@ -1353,6 +1473,12 @@ export class SqliteStore {
         ON batches(account_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_deliveries_batch_status
         ON deliveries(batch_id, status);
+      CREATE INDEX IF NOT EXISTS idx_batches_account_status_created
+        ON batches(account_id, status, created_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_deliveries_batch_created
+        ON deliveries(batch_id, created_at, id);
+      CREATE INDEX IF NOT EXISTS idx_deliveries_batch_status_created
+        ON deliveries(batch_id, status, created_at, id);
 
       CREATE UNIQUE INDEX IF NOT EXISTS idx_comment_scan_active
         ON comment_scan_jobs(account_id) WHERE status IN ('running', 'paused');
@@ -1457,13 +1583,33 @@ function mapGroup(row: GroupRow): FriendGroup {
   }
 }
 
-function mapDelivery(row: DeliveryRow): DeliveryRecord {
+function validateTaskPage<T extends string>(
+  options: { offset?: number; limit?: number; status?: T },
+  defaultLimit: number,
+  maximumLimit: number,
+  statuses: readonly T[]
+): { offset: number; limit: number; status: T | undefined } {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new DomainError('INVALID_TASK_PAGE', '任务分页参数无效')
+  }
+  const offset = options.offset === undefined ? 0 : options.offset
+  const limit = options.limit === undefined ? defaultLimit : options.limit
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > maximumLimit) {
+    throw new DomainError('INVALID_TASK_PAGE', '任务分页参数无效')
+  }
+  const status = options.status
+  if (status !== undefined && !statuses.includes(status)) {
+    throw new DomainError('INVALID_TASK_STATUS', '任务状态筛选无效')
+  }
+  return { offset, limit, status }
+}
+
+function mapDeliveryList(row: DeliveryListRow): DeliveryListRecord {
   return {
     id: row.id,
     batchId: row.batch_id,
     friendSteamId: row.friend_steam_id,
     friendName: row.friend_name,
-    renderedMessage: row.rendered_message,
     status: row.status,
     error: row.error,
     remoteCommentId: row.remote_comment_id,
@@ -1472,7 +1618,11 @@ function mapDelivery(row: DeliveryRow): DeliveryRecord {
   }
 }
 
-function mapBatch(row: BatchRow, deliveries: DeliveryRow[]): BatchRecord {
+function mapDelivery(row: DeliveryRow): DeliveryRecord {
+  return { ...mapDeliveryList(row), renderedMessage: row.rendered_message }
+}
+
+function mapBatchFields(row: BatchRow): Omit<BatchRecord, 'deliveries'> {
   return {
     id: row.id,
     accountId: row.account_id,
@@ -1485,7 +1635,23 @@ function mapBatch(row: BatchRow, deliveries: DeliveryRow[]): BatchRecord {
     failed: row.failed,
     createdAt: row.created_at,
     startedAt: row.started_at,
-    finishedAt: row.finished_at,
-    deliveries: deliveries.map(mapDelivery)
+    finishedAt: row.finished_at
   }
+}
+
+function mapBatchSummary(row: BatchSummaryRow): BatchSummary {
+  return {
+    ...mapBatchFields(row),
+    pending: Number(row.pending),
+    sending: Number(row.sending),
+    sentVerified: Number(row.sent_verified),
+    acceptedUnverified: Number(row.accepted_unverified),
+    failedCount: Number(row.failed_count),
+    uncertain: Number(row.uncertain),
+    cancelled: Number(row.cancelled)
+  }
+}
+
+function mapBatch(row: BatchRow, deliveries: DeliveryRow[]): BatchRecord {
+  return { ...mapBatchFields(row), deliveries: deliveries.map(mapDelivery) }
 }

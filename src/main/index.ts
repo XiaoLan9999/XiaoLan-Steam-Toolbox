@@ -21,6 +21,7 @@ import type { ArtworkUploadDraft } from '../shared/profile-backgrounds'
 import type { ArtworkBounds, ArtworkTool } from '../shared/artwork-browser'
 import { UpdateService } from './update-service'
 import { createUpdateFetch } from './update-fetch'
+import { RuntimeDiagnostics } from './runtime-diagnostics'
 import { prepareWindowsUpdate } from './update-installer'
 import { UPDATE_REPOSITORY, type UpdatePreferences, type UpdatePackageKind } from '../shared/update-types'
 import {
@@ -28,7 +29,8 @@ import {
   AppEvent,
   AppSnapshot,
   BatchStartInput,
-  BatchRecord,
+  BatchTaskListOptions,
+  BatchDeliveryListOptions,
   CommentScanStartInput,
   IpcResult
 } from '../shared/types'
@@ -38,6 +40,9 @@ let store: SqliteStore
 let steam: SteamService
 let queue: BatchQueue
 let commentScans: CommentScanQueue
+let diagnostics: RuntimeDiagnostics | undefined
+let recoveringRenderer = false
+let shuttingDown = false
 let exportInProgress = false
 let installInProgress = false
 const accountTransition = new AccountTransition()
@@ -78,9 +83,13 @@ app.whenReady().then(async () => {
       void artworkBrowser?.close()
       for (const account of store.getAccounts()) commentScans?.pauseForAccount(account.id)
     }
-    const displayEvent = 'message' in event
-      ? { ...event, message: localizeMessage(event.message, store.getLanguage()) } : event
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:event', displayEvent)
+    const displayEvent = event.type === 'batchProgress'
+      ? { ...event, summary: store.getBatchSummary(event.batchId) }
+      : 'message' in event ? { ...event, message: localizeMessage(event.message, store.getLanguage()) } : event
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      try { mainWindow.webContents.send('app:event', displayEvent) }
+      catch { /* Saved task state is recovered when the interface reconnects. */ }
+    }
   }
   steam = new SteamService(store, emit, (accountId) => {
     artworkUploads?.invalidate()
@@ -91,6 +100,15 @@ app.whenReady().then(async () => {
   })
   queue = new BatchQueue(store, steam, emit)
   commentScans = new CommentScanQueue(store, steam, emit)
+  diagnostics = new RuntimeDiagnostics({
+    directory: join(app.getPath('userData'), 'diagnostics'), version: app.getVersion(),
+    metrics: () => app.getAppMetrics(),
+    task: () => {
+      const accountId = store.getActiveAccountId()
+      return accountId ? store.getActiveBatchSummary(accountId) : null
+    }
+  })
+  diagnostics.start()
   updater = new UpdateService({
     currentVersion: app.getVersion(), packageKind: updatePackageKind,
     cacheDirectory: join(app.getPath('userData'), 'updates'),
@@ -121,18 +139,25 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  shuttingDown = true
   clearTimeout(startupUpdateTimer)
   clearInterval(periodicUpdateTimer)
   updater?.shutdown()
   artworkBrowser?.shutdown()
   artworkUploads?.invalidate()
   backgroundMedia?.invalidate()
+  queue?.shutdown()
   commentScans?.shutdown()
+  diagnostics?.shutdown()
   store?.close()
 })
 
+app.on('child-process-gone', (_event, details) => {
+  diagnostics?.processGone('child', details.reason, details.exitCode)
+})
+
 app.on('before-quit', (event) => {
-  if (!exportInProgress) return
+  if (!exportInProgress) { shuttingDown = true; return }
   event.preventDefault()
   if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, {
     type: 'info', message: store.getLanguage() === 'en'
@@ -208,6 +233,31 @@ function createWindow(): void {
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const currentUrl = mainWindow?.webContents.getURL()
     if (url !== currentUrl) event.preventDefault()
+  })
+  const rendererWindow = mainWindow
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    diagnostics?.processGone('renderer', details.reason, details.exitCode)
+    if (details.reason === 'clean-exit' || shuttingDown || rendererWindow.isDestroyed() || recoveringRenderer) return
+    for (const account of store.getAccounts()) {
+      const batch = store.getActiveBatchSummary(account.id)
+      if (batch?.status === 'running' || batch?.status === 'queued') queue.pause(batch.id)
+      commentScans.pauseForAccount(account.id)
+    }
+    recoveringRenderer = true
+    const en = store.getLanguage() === 'en'
+    void dialog.showMessageBox(rendererWindow, {
+      type: 'error', title: en ? 'Toolbox interface stopped' : '工具箱界面已停止',
+      message: en ? 'Tasks are paused. Saved results and pending recipients remain in the task list.'
+        : '任务已暂停，已保存的结果和未发送对象仍保留在任务列表中。',
+      detail: en ? 'Reloading the interface does not resume sending. Check the task list and continue manually.'
+        : '重新加载界面不会自动继续发送，请在任务列表核对后手动继续。',
+      buttons: en ? ['Reload interface (keep paused)', 'Exit'] : ['重新加载界面（保持暂停）', '退出'],
+      defaultId: 0, cancelId: 1
+    }).then(({ response }) => {
+      if (rendererWindow.isDestroyed()) return
+      if (response === 0) rendererWindow.reload()
+      else app.quit()
+    }).catch(() => undefined).finally(() => { recoveringRenderer = false })
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -290,7 +340,7 @@ function registerIpcHandlers(): void {
     const previousId = store.getActiveAccountId()
     if (previousId && previousId !== accountId) {
       commentScans.pauseForAccount(previousId)
-      const activeBatch = store.getActiveBatch(previousId)
+      const activeBatch = store.getActiveBatchSummary(previousId)
       if (activeBatch?.status === 'running' || activeBatch?.status === 'queued') {
         queue.pause(activeBatch.id)
       }
@@ -299,7 +349,7 @@ function registerIpcHandlers(): void {
     return getSnapshot()
   }))
   handle('account:remove', (accountId: string) => accountTransition.run(async () => {
-    const batch = store.getActiveBatch(accountId)
+    const batch = store.getActiveBatchSummary(accountId)
     if (batch) {
       throw new DomainError('ACCOUNT_HAS_ACTIVE_BATCH', '请先取消这个账号的未完成批次')
     }
@@ -391,20 +441,42 @@ function registerIpcHandlers(): void {
     store.updateSettings(accountId, draft, delayMs)
   )
   handle('batch:start', (input: BatchStartInput) => queue.start(input))
-  handle('batch:pause', (batchId: string) => queue.pause(batchId))
-  handle('batch:resume', (batchId: string) => queue.resume(batchId))
-  handle('batch:cancel', (batchId: string) => queue.cancel(batchId))
+  handle('batch:tasks', (accountId: string, options?: BatchTaskListOptions) => {
+    requireTaskAccount(accountId)
+    return store.listBatchTasks(accountId, options)
+  })
+  handle('batch:deliveries', (accountId: string, batchId: string, options?: BatchDeliveryListOptions) => {
+    requireTaskAccount(accountId)
+    const page = store.listBatchDeliveries(accountId, batchId, options)
+    return { ...page, items: page.items.map(item => ({ ...item,
+      error: item.error === null ? null : localizeMessage(item.error, store.getLanguage()) })) }
+  })
+  handle('batch:pause', (batchId: string) => { requireCurrentTask(batchId); queue.pause(batchId) })
+  handle('batch:resume', (batchId: string) => { requireCurrentTask(batchId); queue.resume(batchId) })
+  handle('batch:cancel', (batchId: string) => { requireCurrentTask(batchId); queue.cancel(batchId) })
+}
+
+function requireTaskAccount(accountId: string): void {
+  if (accountTransition.active || store.getActiveAccountId() !== accountId) {
+    throw new DomainError('ACCOUNT_NOT_ACTIVE', '请先切换到任务所属账号')
+  }
+}
+
+function requireCurrentTask(batchId: string): void {
+  const batch = store.getBatchSummary(batchId)
+  if (!batch) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
+  requireTaskAccount(batch.accountId)
 }
 
 function ensureInstallationIdle(): void {
   if (artworkBrowser?.getState().tool) throw new DomainError('update.installArtworkBusy', 'update.installArtworkBusy')
   const hasActiveWork = store.getAccounts().some((account) => {
-    const batch = store.getActiveBatch(account.id)
+    const batch = store.getActiveBatchSummary(account.id)
     const scan = store.getLatestCommentScan(account.id)
     return batch?.status === 'running' || batch?.status === 'queued' ||
-      batch?.deliveries.some((delivery) => delivery.status === 'sending') || scan?.status === 'running'
+      Boolean(batch?.sending) || scan?.status === 'running'
   })
-  if (exportInProgress || installInProgress || hasActiveWork) throw new DomainError('update.installBusy', 'update.installBusy')
+  if (exportInProgress || installInProgress || hasActiveWork || queue.hasPendingRequests()) throw new DomainError('update.installBusy', 'update.installBusy')
 }
 
 function requireArtworkBrowser(): ArtworkBrowser {
@@ -417,9 +489,7 @@ function getSnapshot(): AppSnapshot {
   const secretInfo = store.getSecretStorageInfo()
   const language = store.getLanguage()
   const translated = (message: string | null): string | null => message === null ? null : localizeMessage(message, language)
-  const translateBatch = (batch: BatchRecord): BatchRecord => ({ ...batch,
-    deliveries: batch.deliveries.map(delivery => ({ ...delivery, error: translated(delivery.error) })) })
-  const batch = activeAccountId ? store.getActiveBatch(activeAccountId) : null
+  const batch = activeAccountId ? store.getActiveBatchSummary(activeAccountId) : null
   const scan = activeAccountId ? store.getLatestCommentScan(activeAccountId) : null
   return {
     accounts: steam.getAccountViews().map(account => ({ ...account, sessionMessage: translated(account.sessionMessage) })),
@@ -430,8 +500,8 @@ function getSnapshot(): AppSnapshot {
     groups: activeAccountId ? store.getGroups(activeAccountId) : [],
     emoticons: activeAccountId ? store.getEmoticons(activeAccountId) : [],
     settings: activeAccountId ? store.getSettings(activeAccountId) : null,
-    batches: activeAccountId ? store.getRecentBatches(activeAccountId).map(translateBatch) : [],
-    activeBatch: batch ? translateBatch(batch) : null,
+    batches: activeAccountId ? store.getRecentBatchSummaries(activeAccountId) : [],
+    activeBatch: batch,
     friendPolicies: activeAccountId ? store.getFriendPolicies(activeAccountId)
       .map(policy => ({ ...policy, commentReason: translated(policy.commentReason) })) : [],
     commentScan: scan ? { ...scan, lastError: translated(scan.lastError) } : null,
