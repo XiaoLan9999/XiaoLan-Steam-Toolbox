@@ -1,0 +1,32 @@
+.batch-recovery {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(8, 20, 30, 0.45);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.task-details > .batch-recovery { margin: 0 20px 16px; }
+.active-batch-card > .batch-recovery { margin: 14px 0; }
+.batch-recovery.scheduled { border-color: rgba(102, 192, 244, 0.5); }
+.batch-stop-reason { display: grid; gap: 4px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.batch-stop-reason > strong { color: var(--yellow); font-size: 13px; }
+.batch-stop-reason > small, .batch-stop-reason > span { color: var(--muted); font-size: 10px; }
+.batch-stop-reason p, .batch-retry-state, .batch-retry-attempt { margin: 0; }
+.batch-retry-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.batch-retry-heading label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.batch-retry-heading input { width: 14px; height: 14px; margin: 0; }
+.batch-retry-attempt, .batch-retry-safety { color: var(--muted); font-size: 10px; }
+.batch-retry-deadline { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; align-items: center; }
+.batch-retry-deadline > strong { color: var(--blue); font-size: 22px; font-variant-numeric: tabular-nums; }
+.batch-retry-deadline small { grid-column: 1 / -1; color: var(--muted); font-size: 10px; }
+.batch-retry-deadline button { grid-column: 1 / -1; }
+.batch-enable-retry { width: 100%; }
+.composer-auto-retry { display: flex; gap: 9px; align-items: flex-start; margin: 0 20px 16px; font-size: 11px; line-height: 1.6; }
+.composer-auto-retry input { flex-shrink: 0; width: 14px; height: 14px; margin-top: 3px; }
+.composer-auto-retry span { display: grid; gap: 3px; }
+.composer-auto-retry small { color: var(--muted); font-size: 10px; }

@@ -10,6 +10,7 @@ import { AppSnapshot, BatchSummary, SteamEmoticon } from '../../../shared/types'
 import { avatarFallback, formatDuration, unwrap } from '../ui'
 import { useI18n, type Translate } from '../i18n'
 import { RunAction } from './types'
+import { BatchRecoveryPanel } from './BatchRecoveryPanel'
 
 interface ComposerPanelProps {
   snapshot: AppSnapshot
@@ -32,6 +33,7 @@ export function ComposerPanel({
   const account = snapshot.accounts.find((item) => item.id === snapshot.activeAccountId)!
   const [draft, setDraft] = useState(snapshot.settings?.draft ?? '')
   const [delaySeconds, setDelaySeconds] = useState((snapshot.settings?.delayMs ?? 15_000) / 1000)
+  const [autoRetryEnabled, setAutoRetryEnabled] = useState(true)
   const [emoticonOpen, setEmoticonOpen] = useState(false)
   const [emoticonSearch, setEmoticonSearch] = useState('')
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -48,6 +50,7 @@ export function ComposerPanel({
     hydratedAccount.current = account.id
     setDraft(snapshot.settings?.draft ?? '')
     setDelaySeconds((snapshot.settings?.delayMs ?? 15_000) / 1000)
+    setAutoRetryEnabled(true)
     setConfirmOpen(false)
     setConfirmed(false)
     setSubmissionError('')
@@ -97,7 +100,8 @@ export function ComposerPanel({
     hasActiveBatch: Boolean(snapshot.activeBatch)
   })
   const canStart = issues.length === 0 && !submitting
-  const lastBatch = snapshot.activeBatch ?? snapshot.batches[0]
+  const lastBatch = (snapshot.activeBatch?.accountId === account.id ? snapshot.activeBatch : null)
+    ?? snapshot.batches.find((batch) => batch.accountId === account.id)
   const closeConfirmation = (): void => {
     if (submissionLock.current) return
     setConfirmOpen(false)
@@ -140,7 +144,8 @@ export function ComposerPanel({
             accountId: account.id,
             friendSteamIds: selectedRecords.map((friend) => friend.steamId),
             messageTemplate: draft,
-            delayMs: delaySeconds * 1000
+            delayMs: delaySeconds * 1000,
+            autoRetryEnabled
           }))
         } catch (error) {
           setSubmissionError(error instanceof Error ? error.message : String(error))
@@ -316,6 +321,13 @@ export function ComposerPanel({
               {t('预览并确认发送', 'Preview and confirm')}
             </button>
           </div>
+          <label className="composer-auto-retry">
+            <input type="checkbox" checked={autoRetryEnabled} disabled={submitting}
+              onChange={(event) => setAutoRetryEnabled(event.target.checked)} />
+            <span>{t('临时错误后自动重试并继续待发', 'Automatically retry temporary errors and resume pending deliveries')}
+              <small>{t('按退避间隔继续；不重发已发送、已接受或结果不确定的对象。手动暂停后需手动继续。',
+                'Resume with backoff; never resend sent, accepted, or uncertain deliveries. A manual pause requires a manual resume.')}</small></span>
+          </label>
           <div id="send-readiness" aria-live="polite">
             {issues.length > 0 && <div className="inline-warning"><strong>{t('暂时不能发送：', 'Cannot send yet:')}</strong><ul>
               {issues.map((issue) => <li key={issue.code}>{issueText(issue, t)}</li>)}
@@ -387,6 +399,10 @@ export function ComposerPanel({
                 <dt>{t('投递位置', 'Destination')}</dt>
                 <dd>{t('好友 Steam 个人资料页', 'Friends’ Steam profile pages')}</dd>
               </div>
+              <div>
+                <dt>{t('自动重试', 'Automatic retries')}</dt>
+                <dd>{autoRetryEnabled ? t('已开启，仅继续待发', 'Enabled, pending recipients only') : t('已关闭', 'Disabled')}</dd>
+              </div>
             </dl>
             <div className="confirm-recipients">
               {selectedRecords.map((friend) => (
@@ -457,6 +473,7 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
         <span className="failed">{t('待核对', 'Uncertain')} {batch.uncertain}</span>
       </div>
       {batch.uncertain > 0 && <div className="inline-warning">{t('待核对对象不会自动重发，避免重复留言。', 'Uncertain recipients are not retried automatically to prevent duplicate comments.')}</div>}
+      <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated} disabled={pendingAction} runAction={runAction} />
       {onOpenTasks && <button className="ghost" onClick={onOpenTasks}>{t('查看持久任务与明细', 'View saved tasks and details')}</button>}
       {active && <div className="batch-controls">
         {batch.status === 'running' ? (

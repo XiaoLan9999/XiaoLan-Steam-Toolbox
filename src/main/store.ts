@@ -12,6 +12,8 @@ import {
   BatchDeliveryListOptions,
   BatchDeliveryPage,
   BatchStatus,
+  BatchStopCode,
+  BatchPauseDetails,
   CommentCheckResult,
   CommentScanJob,
   DeliveryRecord,
@@ -109,6 +111,12 @@ interface BatchRow {
   created_at: string
   started_at: string | null
   finished_at: string | null
+  auto_retry_enabled: number
+  stop_code: BatchStopCode | null
+  stop_message: string | null
+  paused_at: string | null
+  next_retry_at: string | null
+  retry_count: number
 }
 
 interface BatchSummaryRow extends BatchRow {
@@ -180,6 +188,12 @@ export interface DeliverySeed {
 
 const now = (): string => new Date().toISOString()
 const batchStatuses: readonly BatchStatus[] = ['queued', 'running', 'paused', 'completed', 'cancelled']
+const batchStopCodes: readonly BatchStopCode[] = [
+  'MANUAL_PAUSE', 'RATE_LIMITED', 'ACCESS_DENIED', 'SESSION_EXPIRED', 'SESSION_PREPARATION',
+  'LOGIN_REQUIRED', 'NETWORK_ERROR', 'SERVER_ERROR', 'UNCERTAIN_RESULT', 'SESSION_CHANGED',
+  'ACCOUNT_CHANGED', 'APP_RESTARTED', 'APP_SHUTDOWN', 'RETRY_EXHAUSTED', 'QUEUE_ERROR',
+  'LEGACY_PAUSED', 'CANCELLED'
+]
 const deliveryStatuses: readonly DeliveryStatus[] = [
   'pending', 'sending', 'sent_verified', 'accepted_unverified', 'failed', 'uncertain', 'cancelled'
 ]
@@ -890,9 +904,11 @@ export class SqliteStore {
     accountId: string,
     messageTemplate: string,
     delayMs: number,
-    deliveries: DeliverySeed[]
+    deliveries: DeliverySeed[],
+    autoRetryEnabled = true
   ): BatchSummary {
     this.requireTaskAccount(accountId)
+    validateAutoRetryEnabled(autoRetryEnabled)
     const batchId = randomUUID()
     const createdAt = now()
     this.transaction(() => {
@@ -900,10 +916,10 @@ export class SqliteStore {
         .prepare(
           `INSERT INTO batches (
              id, account_id, message_template, delay_ms, status, total, completed,
-             succeeded, failed, created_at
-           ) VALUES (?, ?, ?, ?, 'queued', ?, 0, 0, 0, ?)`
+             succeeded, failed, created_at, auto_retry_enabled
+           ) VALUES (?, ?, ?, ?, 'queued', ?, 0, 0, 0, ?, ?)`
         )
-        .run(batchId, accountId, messageTemplate, delayMs, deliveries.length, createdAt)
+        .run(batchId, accountId, messageTemplate, delayMs, deliveries.length, createdAt, autoRetryEnabled ? 1 : 0)
 
       const insert = this.db.prepare(
         `INSERT INTO deliveries (
@@ -1037,17 +1053,44 @@ export class SqliteStore {
     }
     this.db
       .prepare(
-        `UPDATE batches SET status = 'running', started_at = COALESCE(started_at, ?), finished_at = NULL
+        `UPDATE batches SET status = 'running', started_at = COALESCE(started_at, ?), finished_at = NULL,
+         next_retry_at = NULL
          WHERE id = ?`
       )
       .run(now(), batchId)
   }
 
-  pauseBatch(batchId: string): void {
+  pauseBatch(batchId: string, stop?: BatchPauseDetails): void {
+    const batch = this.requireBatch(batchId)
+    const details = stop === undefined ? { code: 'MANUAL_PAUSE' as const, message: '用户手动暂停任务' } : stop
+    validateBatchPauseDetails(details)
+    if (details.nextRetryAt != null && !batch.autoRetryEnabled) {
+      throw new DomainError('BATCH_AUTO_RETRY_DISABLED', '任务未启用自动重试')
+    }
+    const manual = stop === undefined
+    const canPause = ['queued', 'running'].includes(batch.status) ||
+      (batch.status === 'paused' && (manual || batch.stopCode !== 'MANUAL_PAUSE'))
+    if (!canPause) throw new DomainError('BATCH_NOT_PAUSABLE', '这个批次不能暂停')
     const result = this.db
-      .prepare("UPDATE batches SET status = 'paused' WHERE id = ? AND status IN ('queued', 'running')")
-      .run(batchId)
+      .prepare(`UPDATE batches SET status = 'paused', stop_code = ?, stop_message = ?,
+        paused_at = ?, next_retry_at = ?, retry_count = ?
+        WHERE id = ? AND status IN ('queued', 'running', 'paused')`)
+      .run(details.code, details.message, now(), details.nextRetryAt ?? null,
+        manual ? 0 : (details.retryCount ?? batch.retryCount), batchId)
     if (result.changes === 0) throw new DomainError('BATCH_NOT_PAUSABLE', '这个批次不能暂停')
+  }
+
+  setBatchAutoRetry(batchId: string, enabled: boolean): void {
+    validateAutoRetryEnabled(enabled)
+    this.requireBatch(batchId)
+    this.db.prepare(`UPDATE batches SET auto_retry_enabled = ?,
+      next_retry_at = CASE WHEN ? = 0 THEN NULL ELSE next_retry_at END WHERE id = ?`)
+      .run(enabled ? 1 : 0, enabled ? 1 : 0, batchId)
+  }
+
+  clearBatchRetryCount(batchId: string): void {
+    this.requireBatch(batchId)
+    this.db.prepare('UPDATE batches SET retry_count = 0 WHERE id = ?').run(batchId)
   }
 
   cancelBatch(batchId: string): void {
@@ -1059,8 +1102,10 @@ export class SqliteStore {
         )
         .run(batchId)
       this.db
-        .prepare("UPDATE batches SET status = 'cancelled', finished_at = ? WHERE id = ?")
-        .run(now(), batchId)
+        .prepare(`UPDATE batches SET status = 'cancelled', finished_at = ?,
+          stop_code = 'CANCELLED', stop_message = '用户取消任务', paused_at = ?, next_retry_at = NULL
+          WHERE id = ?`)
+        .run(now(), now(), batchId)
       this.recalculateBatchInTransaction(batchId)
     })
   }
@@ -1111,9 +1156,17 @@ export class SqliteStore {
   }
 
   resetDeliveryToPending(deliveryId: string): void {
-    this.db
-      .prepare("UPDATE deliveries SET status = 'pending' WHERE id = ? AND status = 'sending'")
-      .run(deliveryId)
+    this.transaction(() => {
+      const row = this.db.prepare(`SELECT d.batch_id, b.status AS batch_status
+        FROM deliveries d JOIN batches b ON b.id = d.batch_id WHERE d.id = ?`)
+        .get(deliveryId) as unknown as { batch_id: string; batch_status: BatchStatus } | undefined
+      if (!row) return
+      this.db.prepare(`UPDATE deliveries SET status = ?, error = ?, remote_comment_id = NULL, sent_at = NULL
+        WHERE id = ? AND status = 'sending'`)
+        .run(row.batch_status === 'cancelled' ? 'cancelled' : 'pending',
+          row.batch_status === 'cancelled' ? '用户取消' : null, deliveryId)
+      this.recalculateBatchInTransaction(row.batch_id)
+    })
   }
 
   finishBatchIfDone(batchId: string): boolean {
@@ -1130,7 +1183,7 @@ export class SqliteStore {
       const batch = this.requireBatch(batchId)
       if (batch.status !== 'cancelled') {
         this.db
-          .prepare("UPDATE batches SET status = 'completed', finished_at = ? WHERE id = ?")
+          .prepare("UPDATE batches SET status = 'completed', finished_at = ?, next_retry_at = NULL WHERE id = ?")
           .run(now(), batchId)
       }
     })
@@ -1257,8 +1310,14 @@ export class SqliteStore {
         )
         .run()
       this.db
-        .prepare("UPDATE batches SET status = 'paused' WHERE status IN ('queued', 'running')")
-        .run()
+        .prepare(`UPDATE batches SET status = 'paused', stop_code = 'APP_RESTARTED',
+          stop_message = CASE WHEN stop_message IS NOT NULL
+            THEN CASE WHEN stop_code = 'APP_RESTARTED' THEN substr(stop_message, 1, 1000)
+              ELSE '应用已重启，任务保持暂停，请手动继续。上次停止：' || substr(stop_message, 1, 900) END
+            ELSE '应用已重启，任务保持暂停，请手动继续' END,
+          paused_at = ?, next_retry_at = NULL WHERE status IN ('queued', 'running', 'paused')`)
+        .run(now())
+      this.db.prepare('UPDATE batches SET next_retry_at = NULL WHERE next_retry_at IS NOT NULL').run()
       for (const row of rows) this.recalculateBatchInTransaction(row.id)
     })
   }
@@ -1518,7 +1577,37 @@ export class SqliteStore {
           WHERE length(trim(display_name)) > 0 AND display_name <> steam_id;`)
         this.db.exec('PRAGMA user_version = 4;')
       }
+      if (version.user_version < 5) {
+        const columns = new Set((this.db.prepare('PRAGMA table_info(batches)').all() as unknown as
+          Array<{ name: string }>).map((column) => column.name))
+        const additions = [
+          ['auto_retry_enabled', 'INTEGER NOT NULL DEFAULT 0'],
+          ['stop_code', 'TEXT'],
+          ['stop_message', 'TEXT'],
+          ['paused_at', 'TEXT'],
+          ['next_retry_at', 'TEXT'],
+          ['retry_count', 'INTEGER NOT NULL DEFAULT 0']
+        ] as const
+        for (const [name, definition] of additions) {
+          if (!columns.has(name)) this.db.exec(`ALTER TABLE batches ADD COLUMN ${name} ${definition}`)
+        }
+        this.db.exec('PRAGMA user_version = 5;')
+      }
     })
+  }
+}
+
+function validateAutoRetryEnabled(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') throw new DomainError('INVALID_AUTO_RETRY', '自动重试设置无效')
+}
+
+function validateBatchPauseDetails(stop: BatchPauseDetails): void {
+  if (!stop || typeof stop !== 'object' || !batchStopCodes.includes(stop.code) ||
+    typeof stop.message !== 'string' || !stop.message.trim() || stop.message.length > 1_000 ||
+    (stop.nextRetryAt != null && (typeof stop.nextRetryAt !== 'string' ||
+      !Number.isFinite(Date.parse(stop.nextRetryAt)))) ||
+    (stop.retryCount !== undefined && (!Number.isSafeInteger(stop.retryCount) || stop.retryCount < 0))) {
+    throw new DomainError('INVALID_BATCH_STOP', '任务暂停原因或重试计划无效')
   }
 }
 
@@ -1643,7 +1732,13 @@ function mapBatchFields(row: BatchRow): Omit<BatchRecord, 'deliveries'> {
     failed: row.failed,
     createdAt: row.created_at,
     startedAt: row.started_at,
-    finishedAt: row.finished_at
+    finishedAt: row.finished_at,
+    autoRetryEnabled: row.auto_retry_enabled === 1,
+    stopCode: row.stop_code,
+    stopMessage: row.stop_message,
+    pausedAt: row.paused_at,
+    nextRetryAt: row.next_retry_at,
+    retryCount: row.retry_count
   }
 }
 

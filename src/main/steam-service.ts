@@ -380,8 +380,10 @@ export class SteamService {
     try {
       await this.ensureSessionFresh(accountId)
       community = this.requireActiveCommunity(accountId)
-    } catch {
-      throw new DomainError('SESSION_PREPARATION_FAILED', 'Steam 会话准备失败，尚未发送留言；任务已暂停，请稍后继续')
+    } catch (error) {
+      throw new DomainError('SESSION_PREPARATION_FAILED',
+        `Steam 会话准备失败，尚未提交留言。原因：${publicErrorMessage(error)}`,
+        true, error instanceof DomainError ? error.retryAfterMs : undefined)
     }
     if (!this.store.hasActiveFriend(accountId, friendSteamId)) {
       throw new DomainError('FRIEND_NOT_FOUND', '该用户不在当前账号已同步的好友列表中')
@@ -596,8 +598,8 @@ export class SteamService {
         const recovered = runtime.recovering
         runtime.recovering = false
         if (recovered) {
-          this.setStatus(runtime.accountId, 'authenticated', 'Steam 会话已自动恢复；请手动继续暂停的任务')
-          this.emit({ type: 'notice', level: 'success', message: 'Steam 会话已自动恢复，原任务仍保持暂停，请手动继续' })
+          this.setStatus(runtime.accountId, 'authenticated', 'Steam 会话已自动恢复，请查看任务的恢复状态')
+          this.emit({ type: 'notice', level: 'success', message: 'Steam 会话已自动恢复，请在任务列表查看继续安排' })
         }
         this.diagnostic(phase, 'success', 'verified')
         return [...verifiedCookies]

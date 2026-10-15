@@ -38,6 +38,51 @@ const MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 const PROFILE_BATCH_SIZE = 100
 const PROFILE_BATCH_INTERVAL_MS = 5000
 
+// This sentinel is a long server hint, not a timer delay to execute.
+export const RETRY_AFTER_TOO_LONG_MS = Number.MAX_SAFE_INTEGER
+const MAX_PARSED_RETRY_AFTER_MS = 7 * 24 * 60 * 60 * 1000
+
+export function parseRetryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (!value || !Number.isFinite(now) || !Number.isFinite(new Date(now).getTime())) return undefined
+  const trimmed = value.trim()
+  if (/^\d+$/.test(trimmed)) {
+    const significant = trimmed.replace(/^0+/, '')
+    if (significant.length > 6) return RETRY_AFTER_TOO_LONG_MS
+    const milliseconds = Number(significant || '0') * 1000
+    return milliseconds > MAX_PARSED_RETRY_AFTER_MS ? RETRY_AFTER_TOO_LONG_MS : milliseconds
+  }
+
+  const shortDay = '(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)'
+  const month = '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
+  const time = '([01]\\d|2[0-3]):([0-5]\\d):([0-5]\\d)'
+  let dateText = trimmed
+  let fields = trimmed.match(new RegExp(`^${shortDay}, (\\d{2}) ${month} (\\d{4}) ${time} GMT$`, 'i'))?.slice(1)
+  fields ??= trimmed.match(new RegExp(`^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (\\d{2})-${month}-(\\d{2}) ${time} GMT$`, 'i'))?.slice(1)
+  if (!fields) {
+    const asctime = trimmed.match(new RegExp(`^${shortDay} ${month} ( [1-9]|[12]\\d|3[01]) ${time} (\\d{4})$`, 'i'))
+    if (asctime) {
+      fields = [asctime[2]!, asctime[1]!, asctime[6]!, asctime[3]!, asctime[4]!, asctime[5]!]
+      dateText += ' GMT'
+    }
+  }
+  if (!fields) return undefined
+  let deadline = Date.parse(dateText)
+  if (!Number.isFinite(deadline)) return undefined
+  const date = new Date(deadline)
+  if (fields[2]!.length === 2) {
+    const currentYear = new Date(now).getUTCFullYear()
+    let year = Math.floor(currentYear / 100) * 100 + Number(fields[2])
+    if (year > currentYear + 50) year -= 100
+    date.setUTCFullYear(year)
+    deadline = date.getTime()
+  } else if (date.getUTCFullYear() !== Number(fields[2])) return undefined
+  const parsedMonth = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    .indexOf(fields[1]!.toLowerCase())
+  if (date.getUTCDate() !== Number(fields[0]) || date.getUTCMonth() !== parsedMonth) return undefined
+  const milliseconds = Math.max(0, deadline - now)
+  return milliseconds > MAX_PARSED_RETRY_AFTER_MS ? RETRY_AFTER_TOO_LONG_MS : milliseconds
+}
+
 export class SteamCommunityClient {
   private cookies = new Map<string, CommunityCookie>()
   private cookieVersion = 0
@@ -362,7 +407,8 @@ export class SteamCommunityClient {
             isLoginRedirect(location, url)
           if (response.status === 429) {
             this.diagnostic({ phase: 'community-request', outcome: 'rate-limited', reason: 'http-429', httpStatus: 429, method })
-            throw new DomainError('RATE_LIMITED', 'Steam 请求触发频率限制（HTTP 429），请稍后再试', true)
+            throw new DomainError('RATE_LIMITED', 'Steam 请求触发频率限制（HTTP 429），请稍后再试', true,
+              parseRetryAfterMs(response.headers.get('retry-after')))
           }
           if (response.status === 401 || redirectedToLogin) {
             this.rejectExpired(version, { phase: 'community-request', outcome: 'auth-rejected',
@@ -393,7 +439,8 @@ export class SteamCommunityClient {
           if (!response.ok) {
             if (response.status === 403) {
               this.diagnostic({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method })
-              throw new DomainError('COMMUNITY_ACCESS_DENIED', 'Steam 拒绝了本次请求（HTTP 403），可能是访问或频率限制；尚未确认登录失效，请稍后再试', true)
+              throw new DomainError('COMMUNITY_ACCESS_DENIED', 'Steam 拒绝了本次请求（HTTP 403），可能是访问或频率限制；尚未确认登录失效，请稍后再试', true,
+                parseRetryAfterMs(response.headers.get('retry-after')))
             }
             throw new Error(`Steam HTTP error ${response.status}`)
           }

@@ -64,7 +64,8 @@ describe('lightweight task progress reconciliation', () => {
     status: 'paused', total: 1200, completed, succeeded: completed, failed: 0,
     createdAt: '2026-10-13T00:00:00.000Z', startedAt: null, finishedAt: null,
     pending: 1200 - completed, sending: 0, sentVerified: completed,
-    acceptedUnverified: 0, failedCount: 0, uncertain: 0, cancelled: 0
+    acceptedUnverified: 0, failedCount: 0, uncertain: 0, cancelled: 0,
+    autoRetryEnabled: false, stopCode: null, stopMessage: null, pausedAt: null, nextRetryAt: null, retryCount: 0
   })
   const snapshot = (accountId: string): AppSnapshot => ({ activeAccountId: accountId, batches: [], activeBatch: null } as unknown as AppSnapshot)
 

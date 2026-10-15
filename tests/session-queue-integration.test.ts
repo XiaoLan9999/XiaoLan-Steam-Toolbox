@@ -268,7 +268,7 @@ async function createFixture(keepAliveMs = 60_000): Promise<Fixture> {
 }
 
 function start(fixture: Fixture) {
-  return fixture.queue.start({ accountId: accountA, friendSteamIds: friendIds, messageTemplate: 'Synthetic comment', delayMs: 100 })
+  return fixture.queue.start({ accountId: accountA, friendSteamIds: friendIds, messageTemplate: 'Synthetic comment', delayMs: 100, autoRetryEnabled: false })
 }
 
 function posts(fixture: Fixture) {

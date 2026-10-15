@@ -5,9 +5,11 @@ import {
   validateDelay,
   validateMessageTemplate
 } from '../shared/domain'
-import { AppEvent, BatchSummary, BatchStartInput } from '../shared/types'
+import { AppEvent, BatchSummary, BatchStartInput, BatchStopCode } from '../shared/types'
+import { batchInterruption } from '../shared/batch-retry-policy'
 import { DeliverySeed, SqliteStore } from './store'
 import { publicErrorMessage, SteamService } from './steam-service'
+import { BatchRecoveryController } from './batch-recovery'
 
 type Emit = (event: AppEvent) => void
 
@@ -17,12 +19,19 @@ export class BatchQueue {
   private readonly postingAccounts = new Set<string>()
   private readonly waits = new Set<() => void>()
   private stopped = false
+  private readonly recovery: BatchRecoveryController
 
   constructor(
     private readonly store: SqliteStore,
     private readonly steam: SteamService,
     private readonly emit: Emit
-  ) {}
+  ) {
+    this.recovery = new BatchRecoveryController(store, steam, {
+      resume: batchId => { if (!this.stopped) void this.run(batchId) },
+      changed: batchId => { if (!this.stopped) this.emit({ type: 'batchProgress', batchId }) },
+      isBusy: (batchId, accountId) => this.workers.has(batchId) || this.postingAccounts.has(accountId)
+    })
+  }
 
   start(input: BatchStartInput): BatchSummary {
     this.assertOpen()
@@ -60,16 +69,22 @@ export class BatchQueue {
         })
       }
     })
-    const batch = this.store.createBatchTask(input.accountId, template, delayMs, deliveries)
+    const batch = this.store.createBatchTask(input.accountId, template, delayMs, deliveries, input.autoRetryEnabled ?? true)
+    this.recovery.capture(batch.id)
     this.store.setBatchRunning(batch.id)
     this.emit({ type: 'batchProgress', batchId: batch.id })
     void this.run(batch.id)
     return this.store.getBatchSummary(batch.id)!
   }
 
-  pause(batchId: string): void {
+  pause(batchId: string, code: BatchStopCode = 'MANUAL_PAUSE', message?: string): void {
     this.assertOpen()
-    this.store.pauseBatch(batchId)
+    this.recovery.invalidate(batchId)
+    const batch = this.store.getBatchSummary(batchId)
+    if (code === 'MANUAL_PAUSE') this.store.pauseBatch(batchId)
+    else if (batch?.status !== 'paused' || batch.stopCode !== 'MANUAL_PAUSE') {
+      this.store.pauseBatch(batchId, { code, message: message ?? '任务已暂停，需手动继续' })
+    }
     this.wake()
     this.emit({ type: 'batchProgress', batchId })
   }
@@ -81,6 +96,8 @@ export class BatchQueue {
     if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
       throw new DomainError('NOT_AUTHENTICATED', '恢复批次前必须登录对应 Steam 账号')
     }
+    this.recovery.invalidate(batchId)
+    this.store.clearBatchRetryCount(batchId)
     this.store.setBatchRunning(batchId)
     this.emit({ type: 'batchProgress', batchId })
     this.wake()
@@ -89,9 +106,21 @@ export class BatchQueue {
 
   cancel(batchId: string): void {
     this.assertOpen()
+    this.recovery.invalidate(batchId)
     this.store.cancelBatch(batchId)
     this.nextDeliveryAt.delete(batchId)
     this.wake()
+    this.emit({ type: 'batchProgress', batchId })
+    this.recovery.cleanup(batchId)
+  }
+
+  setAutoRetry(batchId: string, enabled: boolean): void {
+    this.assertOpen()
+    const batch = this.store.getBatchSummary(batchId)
+    if (!batch) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
+    if (enabled === true && batch.autoRetryEnabled) return
+    if (batch.status !== 'running' && batch.status !== 'queued') this.recovery.invalidate(batchId)
+    this.store.setBatchAutoRetry(batchId, enabled)
     this.emit({ type: 'batchProgress', batchId })
   }
 
@@ -100,7 +129,9 @@ export class BatchQueue {
     const batch = this.store.getActiveBatchSummary(accountId)
     if (!batch || batch.status === 'paused') return
     try {
-      this.store.pauseBatch(batch.id)
+      this.recovery.interrupt(batch.id, {
+        code: 'SESSION_EXPIRED', message: 'Steam 网页会话失效，正在等待自动恢复', allowAuto: true
+      })
       this.wake()
       this.emit({
         type: 'notice',
@@ -116,12 +147,15 @@ export class BatchQueue {
   shutdown(): void {
     if (this.stopped) return
     this.stopped = true
+    this.recovery.shutdown()
     this.wake()
     this.nextDeliveryAt.clear()
-    for (const batchId of this.workers) {
+    for (const account of this.store.getAccounts()) {
       try {
-        const batch = this.store.getBatchSummary(batchId)
-        if (batch?.status === 'running' || batch?.status === 'queued') this.store.pauseBatch(batchId)
+        const batch = this.store.getActiveBatchSummary(account.id)
+        if (batch && (batch.status !== 'paused' || batch.nextRetryAt)) {
+          this.store.pauseBatch(batch.id, { code: 'APP_SHUTDOWN', message: '软件已退出，自动继续计划已取消，请启动后手动继续' })
+        }
       } catch {
         // Startup recovery also pauses tasks if storage cannot be updated during shutdown.
       }
@@ -163,9 +197,10 @@ export class BatchQueue {
         if (this.stopped) return
         const batch = this.store.getBatchSummary(batchId)
         if (!batch || batch.status !== 'running') return
+        const intent = this.recovery.capture(batchId)
         if (!this.steam.isAuthenticated(batch.accountId)) {
-          this.store.pauseBatch(batchId)
-          this.emit({ type: 'batchProgress', batchId })
+          this.recovery.interrupt(batchId, { code: 'SESSION_PREPARATION',
+            message: 'Steam 会话尚未准备完成', allowAuto: true }, intent)
           return
         }
 
@@ -175,20 +210,20 @@ export class BatchQueue {
         if (this.stopped) return
         if (typeof this.steam.ensureSessionFresh === 'function') {
           try { await this.steam.ensureSessionFresh(batch.accountId) }
-          catch {
+          catch (error) {
             if (this.stopped) return
-            const current = this.store.getBatchSummary(batchId)
-            if (current?.status === 'running' || current?.status === 'queued') this.store.pauseBatch(batchId)
-            this.emit({ type: 'notice', level: 'warning', message: 'Steam 会话准备未完成，任务已暂停；未发送对象仍保留，请稍后继续' })
-            this.emit({ type: 'batchProgress', batchId })
+            const detail = batchInterruption(error)
+            this.recovery.interrupt(batchId, { code: detail.code === 'QUEUE_ERROR' ? 'SESSION_PREPARATION' : detail.code,
+              message: publicErrorMessage(error), allowAuto: !['ACCOUNT_CHANGED', 'LOGIN_REQUIRED'].includes(detail.code),
+              retryAfterMs: detail.retryAfterMs }, intent)
             return
           }
           if (this.stopped) return
           const current = this.store.getBatchSummary(batchId)
-          if (!current || current.status !== 'running') return
+          if (!current || current.status !== 'running' || !this.recovery.isCurrent(batchId, intent)) return
           if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
-            this.store.pauseBatch(batchId)
-            this.emit({ type: 'batchProgress', batchId })
+            this.recovery.interrupt(batchId, { code: 'ACCOUNT_CHANGED',
+              message: '当前账号或登录状态已改变，自动继续已停止', allowAuto: false }, intent)
             return
           }
         }
@@ -204,8 +239,8 @@ export class BatchQueue {
         if (!this.steam.isAuthenticated(batch.accountId)) {
           this.store.resetDeliveryToPending(delivery.id)
           activeDeliveryId = null
-          this.store.pauseBatch(batchId)
-          this.emit({ type: 'batchProgress', batchId })
+          this.recovery.interrupt(batchId, { code: 'SESSION_PREPARATION',
+            message: 'Steam 会话尚未准备完成，未提交任何留言', allowAuto: true }, intent)
           return
         }
 
@@ -216,6 +251,7 @@ export class BatchQueue {
               ? '已跳过：该用户已不在当前好友列表中，未发送留言'
               : '已跳过：好友已加入当前账号黑名单，未发送留言'
           })
+          this.clearRetryCountAfterProgress(batchId)
           activeDeliveryId = null
           this.store.finishBatchIfDone(batchId)
           this.emit({ type: 'batchProgress', batchId })
@@ -223,6 +259,8 @@ export class BatchQueue {
         }
 
         let shouldPause = false
+        let interruption: ReturnType<typeof batchInterruption> | null = null
+        let stopMessage = ''
         try {
           submitted = true
           this.postingAccounts.add(batch.accountId)
@@ -237,21 +275,26 @@ export class BatchQueue {
             result.commentId ? 'sent_verified' : 'accepted_unverified',
             { remoteCommentId: result.commentId ?? undefined }
           )
+          this.clearRetryCountAfterProgress(batchId)
         } catch (error) {
           if (this.stopped) return
           if (error instanceof DomainError && error.code === 'SESSION_PREPARATION_FAILED') {
             this.store.resetDeliveryToPending(delivery.id)
             activeDeliveryId = null
-            const current = this.store.getBatchSummary(batchId)
-            if (current?.status === 'running' || current?.status === 'queued') this.store.pauseBatch(batchId)
-            this.emit({ type: 'notice', level: 'warning', message: error.message })
-            this.emit({ type: 'batchProgress', batchId })
+            this.recovery.interrupt(batchId, { code: 'SESSION_PREPARATION',
+              message: error.message, allowAuto: true, retryAfterMs: error.retryAfterMs }, intent)
             return
           }
           const classification = classifyDeliveryError(error)
-          this.store.completeDelivery(delivery.id, classification.status, {
-            error: publicErrorMessage(error)
-          })
+          interruption = batchInterruption(error)
+          const current = this.store.getBatchSummary(batchId)
+          if (classification.pauseBatch && interruption.rejectedBeforeAcceptance && current?.autoRetryEnabled) {
+            this.store.resetDeliveryToPending(delivery.id)
+          } else {
+            this.store.completeDelivery(delivery.id, classification.status, { error: publicErrorMessage(error) })
+            if (!classification.pauseBatch) this.clearRetryCountAfterProgress(batchId)
+          }
+          stopMessage = publicErrorMessage(error)
           shouldPause = classification.pauseBatch
           this.emit({
             type: 'notice',
@@ -276,14 +319,10 @@ export class BatchQueue {
           return
         }
         if (shouldPause) {
-          const current = this.store.getBatchSummary(batchId)
-          if (current?.status === 'running' || current?.status === 'queued') this.store.pauseBatch(batchId)
-          this.emit({
-            type: 'notice',
-            level: 'warning',
-            message: '检测到会话、网络或频率问题，批次已暂停'
-          })
-          this.emit({ type: 'batchProgress', batchId })
+          this.recovery.interrupt(batchId, {
+            code: interruption?.code ?? 'QUEUE_ERROR', message: stopMessage || '留言请求暂时失败',
+            allowAuto: interruption?.canRetry ?? false, retryAfterMs: interruption?.retryAfterMs
+          }, intent)
           return
         }
       }
@@ -296,7 +335,10 @@ export class BatchQueue {
           if (submitted) this.store.completeDelivery(activeDeliveryId, 'uncertain', { error: '队列异常中断，发送结果待核对；不会自动重发' })
           else this.store.resetDeliveryToPending(activeDeliveryId)
         }
-        if (current?.status === 'running' || current?.status === 'queued') this.store.pauseBatch(batchId)
+        if (current?.status === 'running' || current?.status === 'queued') {
+          this.recovery.interrupt(batchId, { code: 'QUEUE_ERROR',
+            message: '任务队列发生错误，请检查记录后手动继续', allowAuto: false })
+        }
       } catch {
         // A storage failure may prevent persistence; startup recovery handles sending records.
       }
@@ -310,11 +352,17 @@ export class BatchQueue {
           // A resume may arrive after the old worker observed pause but before its finally runs.
           if (mayRestart && current?.status === 'running') void this.run(batchId)
           else if (!current || ['completed', 'cancelled'].includes(current.status)) this.nextDeliveryAt.delete(batchId)
+          this.recovery.cleanup(batchId)
         } catch {
           this.nextDeliveryAt.delete(batchId)
         }
       }
     }
+  }
+
+  private clearRetryCountAfterProgress(batchId: string): void {
+    const batch = this.store.getBatchSummary(batchId)
+    if (batch && !batch.nextRetryAt) this.store.clearBatchRetryCount(batchId)
   }
 }
 

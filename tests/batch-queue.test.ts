@@ -391,7 +391,7 @@ function fixture(count: number) {
   const queue = new BatchQueue(store, steam as unknown as SteamService, (event) => events.push(event))
   fixtures.push({ directory, store, queue })
   const input: BatchStartInput = {
-    accountId, friendSteamIds: friendIds, messageTemplate: 'Hello {friend} from {account}', delayMs: 1000
+    accountId, friendSteamIds: friendIds, messageTemplate: 'Hello {friend} from {account}', delayMs: 1000, autoRetryEnabled: false
   }
   return { queue, steam, store, post, events, input }
 }

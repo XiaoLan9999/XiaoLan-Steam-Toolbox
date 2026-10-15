@@ -5,6 +5,7 @@ import type {
 import { unwrap } from '../ui'
 import { useI18n, type Translate } from '../i18n'
 import type { RunAction } from './types'
+import { BatchRecoveryPanel, batchStopLabel } from './BatchRecoveryPanel'
 
 const TASK_PAGE_SIZE = 25
 const DELIVERY_PAGE_SIZE = 50
@@ -184,6 +185,7 @@ function AccountTasks({ snapshot, runAction }: { snapshot: AppSnapshot; runActio
               <span>
                 <strong>{dates(batch.createdAt)}</strong>
                 <small>{batchStatusLabel(batch.status, t)} · {t('完成', 'Done')} {batch.completed}/{batch.total}</small>
+                {batch.status === 'paused' && <small className="task-uncertain-text">{batchStopLabel(batch.stopCode, t)}</small>}
                 {batch.uncertain > 0 && <small className="task-uncertain-text">{t('待核对', 'Uncertain')} {batch.uncertain}</small>}
               </span>
               <b>{batch.pending} {t('待发', 'pending')}</b>
@@ -284,6 +286,8 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
         <span>{t('请求可能已到达 Steam。请先核对好友主页，避免重复留言；继续只处理待发记录。',
           'A request may have reached Steam. Check the friend profile to avoid duplicates; Resume only processes pending records.')}</span>
       </div>}
+      <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated}
+        otherTaskActive={otherTaskActive} disabled={acting} runAction={runAction} />
       {!authenticated && <p className="task-offline-note">{t('账号未登录：可查看保存记录，登录此账号后才能继续发送。',
         'Account offline: saved records remain available. Sign in to this account to resume sending.')}</p>}
       {otherTaskActive && active && <p className="task-offline-note">{t('当前账号有其他未结束任务，请先处理或取消该任务。',
@@ -346,7 +350,8 @@ export function TaskPagination({ page, loading, loaded, onChange }: {
 
 function batchRevision(batch: BatchSummary): string {
   return [batch.id, batch.status, batch.completed, batch.pending, batch.sending, batch.sentVerified,
-    batch.acceptedUnverified, batch.failedCount, batch.uncertain, batch.cancelled, batch.startedAt, batch.finishedAt].join(':')
+    batch.acceptedUnverified, batch.failedCount, batch.uncertain, batch.cancelled, batch.startedAt, batch.finishedAt,
+    batch.autoRetryEnabled, batch.stopCode, batch.stopMessage, batch.pausedAt, batch.nextRetryAt, batch.retryCount].join(':')
 }
 
 function statusCount(batch: BatchSummary, status: DeliveryStatus): number {

@@ -263,7 +263,7 @@ describe('SteamService web-session lifecycle', () => {
     await service.ensureSessionFresh(accountA)
     expect(service.isAuthenticated(accountA)).toBe(true)
     expect(onExpired).toHaveBeenCalledTimes(1)
-    expect(service.getAccountViews().find(account => account.id === accountA)?.sessionMessage).toContain('手动继续')
+    expect(service.getAccountViews().find(account => account.id === accountA)?.sessionMessage).toContain('恢复状态')
   })
 
   it('retains a recovering session over network failure and recovers on its bounded retry timer', async () => {

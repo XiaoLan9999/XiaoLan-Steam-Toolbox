@@ -1,4 +1,28 @@
 const messages = new Map<string, string>([
+  ['Steam 会话已自动恢复，请查看任务的恢复状态', 'The Steam session was restored. Check the task recovery status.'],
+  ['Steam 会话已自动恢复，请在任务列表查看继续安排', 'The Steam session was restored. Check the task list for the resume schedule.'],
+  ['自动重试设置无效', 'Invalid automatic retry setting.'],
+  ['任务未启用自动重试', 'Automatic retries are disabled for this task.'],
+  ['任务停止信息无效', 'Invalid task stop information.'],
+  ['任务暂停原因或重试计划无效', 'Invalid task pause reason or retry schedule.'],
+  ['应用已重启，任务保持暂停，请手动继续', 'The app restarted. The task remains paused; resume it manually.'],
+  ['未知原因', 'Unknown reason'],
+  ['任务已暂停，需手动继续', 'The task is paused. Resume it manually.'],
+  ['用户手动暂停任务', 'The user paused this task.'],
+  ['用户取消任务', 'The user cancelled this task.'],
+  ['登录账号或会话已改变，自动继续已停止，请核对后手动继续', 'The account or session changed. Automatic resume stopped; review the task before resuming manually.'],
+  ['界面异常退出，自动继续已停止，请重新加载后手动继续', 'The interface exited unexpectedly. Automatic resume stopped; reload and resume manually.'],
+  ['当前账号已切换，自动继续已停止，请切回后手动继续', 'The active account changed. Switch back and resume manually.'],
+  ['Steam 网页会话失效，正在等待自动恢复', 'The Steam web session expired. Waiting for automatic recovery.'],
+  ['软件已退出，自动继续计划已取消，请启动后手动继续', 'The app closed and automatic resume was cancelled. Reopen and resume manually.'],
+  ['Steam 会话尚未准备完成', 'The Steam session is not ready.'],
+  ['Steam 会话尚未准备完成，未提交任何留言', 'The Steam session is not ready. No comment was submitted.'],
+  ['当前账号或登录状态已改变，自动继续已停止', 'The account or sign-in state changed. Automatic resume stopped.'],
+  ['留言请求暂时失败', 'The comment request failed temporarily.'],
+  ['任务队列发生错误，请检查记录后手动继续', 'The queue encountered an error. Review the records before resuming manually.'],
+  ['当前账号已切换，任务保持暂停，请切回原账号后手动继续', 'The active account changed. Switch back to the original account and resume manually.'],
+  ['当前账号已切换，任务保持暂停', 'The active account changed. The task remains paused.'],
+  ['Steam 会话仍在恢复，尚未发送留言', 'The Steam session is still recovering. No comment was submitted.'],
   ['自动登录令牌无效', 'The automatic sign-in token is invalid.'],
   ['Steam 账号或会话已变更', 'The Steam account or session has changed.'],
   ['Steam 服务已关闭', 'The Steam service is closed.'],
@@ -125,7 +149,17 @@ export function localizeMessage(message: string, language: 'zh-CN' | 'en'): stri
   const translated = messages.get(message)
   if (translated !== undefined) return translated
 
-  let match = /^留言最多 (\d+) 个字符$/.exec(message)
+  let match = /^Steam 会话准备失败，尚未提交留言。原因：([\s\S]*)$/.exec(message)
+  if (match) return `Steam session preparation failed. No comment was submitted. Reason: ${localizeMessage(match[1]!, language)}`
+  match = /^连续自动恢复已达 (\d+) 次，请检查原因后手动继续。([\s\S]*)$/.exec(message)
+  if (match) return `The limit of ${match[1]} consecutive automatic retries was reached. Review the reason before resuming manually. ${localizeMessage(match[2]!, language)}`
+  match = /^服务器要求的等待时间超出自动恢复范围，请稍后手动继续。([\s\S]*)$/.exec(message)
+  if (match) return `The server cooldown is too long for automatic recovery. Resume manually later. ${localizeMessage(match[1]!, language)}`
+  match = /^Steam 登录已失效或退出，请重新登录后手动继续。([\s\S]*)$/.exec(message)
+  if (match) return `Steam sign-in expired or ended. Sign in again and resume manually. ${localizeMessage(match[1]!, language)}`
+  match = /^应用已重启，任务保持暂停，请手动继续。上次停止：([\s\S]*)$/.exec(message)
+  if (match) return `The app restarted. The task remains paused; resume it manually. Previous stop: ${localizeMessage(match[1]!, language)}`
+  match = /^留言最多 (\d+) 个字符$/.exec(message)
   if (match) return `Comments can contain at most ${match[1]} characters.`
   match = /^为 ([\s\S]*) 生成的留言超过 (\d+) 个字符$/.exec(message)
   if (match) return `The comment generated for ${match[1]} exceeds ${match[2]} characters.`

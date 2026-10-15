@@ -140,6 +140,32 @@ export interface DeliveryRecord {
 
 export type BatchStatus = 'queued' | 'running' | 'paused' | 'completed' | 'cancelled'
 
+export type BatchStopCode =
+  | 'MANUAL_PAUSE'
+  | 'RATE_LIMITED'
+  | 'ACCESS_DENIED'
+  | 'SESSION_EXPIRED'
+  | 'SESSION_PREPARATION'
+  | 'LOGIN_REQUIRED'
+  | 'NETWORK_ERROR'
+  | 'SERVER_ERROR'
+  | 'UNCERTAIN_RESULT'
+  | 'SESSION_CHANGED'
+  | 'ACCOUNT_CHANGED'
+  | 'APP_RESTARTED'
+  | 'APP_SHUTDOWN'
+  | 'RETRY_EXHAUSTED'
+  | 'QUEUE_ERROR'
+  | 'LEGACY_PAUSED'
+  | 'CANCELLED'
+
+export interface BatchPauseDetails {
+  code: BatchStopCode
+  message: string
+  nextRetryAt?: string | null
+  retryCount?: number
+}
+
 export interface BatchRecord {
   id: string
   accountId: string
@@ -153,6 +179,12 @@ export interface BatchRecord {
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
+  autoRetryEnabled: boolean
+  stopCode: BatchStopCode | null
+  stopMessage: string | null
+  pausedAt: string | null
+  nextRetryAt: string | null
+  retryCount: number
   deliveries: DeliveryRecord[]
 }
 
@@ -246,6 +278,7 @@ export interface BatchStartInput {
   friendSteamIds: string[]
   messageTemplate: string
   delayMs: number
+  autoRetryEnabled?: boolean
 }
 
 export type AppEvent =
@@ -306,6 +339,7 @@ export interface SteamFriendCommenterApi {
   listBatchDeliveries(accountId: string, batchId: string, options?: BatchDeliveryListOptions): Promise<IpcResult<BatchDeliveryPage>>
   pauseBatch(batchId: string): Promise<IpcResult<void>>
   resumeBatch(batchId: string): Promise<IpcResult<void>>
+  setBatchAutoRetry(batchId: string, enabled: boolean): Promise<IpcResult<void>>
   cancelBatch(batchId: string): Promise<IpcResult<void>>
   onEvent(callback: (event: AppEvent) => void): () => void
 }

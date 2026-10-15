@@ -6,7 +6,8 @@ export class DomainError extends Error {
   constructor(
     public readonly code: string,
     message: string,
-    public readonly retryable = false
+    public readonly retryable = false,
+    public readonly retryAfterMs?: number
   ) {
     super(message)
     this.name = 'DomainError'

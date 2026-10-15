@@ -85,7 +85,11 @@ app.whenReady().then(async () => {
       for (const account of store.getAccounts()) {
         commentScans?.pauseForAccount(account.id)
         const batch = store.getActiveBatchSummary(account.id)
-        if (batch?.status === 'running' || batch?.status === 'queued') queue?.pause(batch.id)
+        if (batch && (batch.status === 'running' || batch.status === 'queued' ||
+          (batch.nextRetryAt && account.id !== event.accountId))) {
+          queue?.pause(batch.id, account.id === event.accountId ? 'SESSION_CHANGED' : 'ACCOUNT_CHANGED',
+            '登录账号或会话已改变，自动继续已停止，请核对后手动继续')
+        }
       }
     }
     const displayEvent = event.type === 'batchProgress'
@@ -246,7 +250,9 @@ function createWindow(): void {
     if (details.reason === 'clean-exit' || shuttingDown || rendererWindow.isDestroyed() || recoveringRenderer) return
     for (const account of store.getAccounts()) {
       const batch = store.getActiveBatchSummary(account.id)
-      if (batch?.status === 'running' || batch?.status === 'queued') queue.pause(batch.id)
+      if (batch && (batch.status === 'running' || batch.status === 'queued' || batch.nextRetryAt)) {
+        queue.pause(batch.id, 'QUEUE_ERROR', '界面异常退出，自动继续已停止，请重新加载后手动继续')
+      }
       commentScans.pauseForAccount(account.id)
     }
     recoveringRenderer = true
@@ -347,8 +353,8 @@ function registerIpcHandlers(): void {
     if (previousId && previousId !== accountId) {
       commentScans.pauseForAccount(previousId)
       const activeBatch = store.getActiveBatchSummary(previousId)
-      if (activeBatch?.status === 'running' || activeBatch?.status === 'queued') {
-        queue.pause(activeBatch.id)
+      if (activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'queued' || activeBatch.nextRetryAt)) {
+        queue.pause(activeBatch.id, 'ACCOUNT_CHANGED', '当前账号已切换，自动继续已停止，请切回后手动继续')
       }
     }
     await steam.activateAccount(accountId)
@@ -459,6 +465,7 @@ function registerIpcHandlers(): void {
   })
   handle('batch:pause', (batchId: string) => { requireCurrentTask(batchId); queue.pause(batchId) })
   handle('batch:resume', (batchId: string) => { requireCurrentTask(batchId); queue.resume(batchId) })
+  handle('batch:autoRetry', (batchId: string, enabled: boolean) => { requireCurrentTask(batchId); queue.setAutoRetry(batchId, enabled) })
   handle('batch:cancel', (batchId: string) => { requireCurrentTask(batchId); queue.cancel(batchId) })
 }
 

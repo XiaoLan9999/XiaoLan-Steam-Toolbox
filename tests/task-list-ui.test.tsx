@@ -18,7 +18,8 @@ function batch(overrides: Partial<BatchSummary> = {}): BatchSummary {
     id: 'task-12345678', accountId, messageTemplate: 'Saved hello {friend}', delayMs: 100, status: 'paused',
     total: 1005, completed: 405, succeeded: 400, failed: 5, createdAt: timestamp, startedAt: timestamp,
     finishedAt: null, pending: 599, sending: 1, sentVerified: 390, acceptedUnverified: 10,
-    failedCount: 3, uncertain: 2, cancelled: 0, ...overrides
+    failedCount: 3, uncertain: 2, cancelled: 0, autoRetryEnabled: false, stopCode: null,
+    stopMessage: null, pausedAt: null, nextRetryAt: null, retryCount: 0, ...overrides
   }
 }
 

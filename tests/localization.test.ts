@@ -3,6 +3,19 @@ import { localizeMessage } from '../src/shared/localization'
 
 describe('localizeMessage', () => {
   it.each([
+    '用户手动暂停任务', '用户取消任务', '任务暂停原因或重试计划无效',
+    '应用已重启，任务保持暂停，请手动继续',
+    '连续自动恢复已达 5 次，请检查原因后手动继续。Steam 会话尚未准备完成',
+    '服务器要求的等待时间超出自动恢复范围，请稍后手动继续。Steam 会话尚未准备完成',
+    'Steam 登录已失效或退出，请重新登录后手动继续。当前 Steam 账号尚未登录',
+    '应用已重启，任务保持暂停，请手动继续。上次停止：用户手动暂停任务',
+    'Steam 会话准备失败，尚未提交留言。原因：Steam 会话尚未准备完成'
+  ])('translates durable pause and automatic recovery reasons: %s', message => {
+    expect(localizeMessage(message, 'en')).not.toMatch(/\p{Script=Han}/u)
+    expect(localizeMessage(message, 'zh-CN')).toBe(message)
+  })
+
+  it.each([
     '自动登录令牌无效', 'Steam 账号或会话已变更', 'Steam 服务已关闭',
     '自动登录令牌已失效，请重新登录', 'Steam 自动登录暂时失败，将稍后重试；无需反复扫码',
     'Steam 网页会话已失效，正在自动恢复；任务保持暂停',
