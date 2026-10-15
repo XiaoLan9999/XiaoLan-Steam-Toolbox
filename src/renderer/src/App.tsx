@@ -260,10 +260,14 @@ export default function App(): React.JSX.Element {
               {activeAccount.sessionState !== 'authenticated' && (
                 <div className="session-banner">
                   <div>
-                    <strong>{t('当前账号未连接', 'Account is disconnected')}</strong>
+                    <strong>{activeAccount.sessionState === 'restoring'
+                      ? t('正在自动恢复会话', 'Restoring the session automatically')
+                      : activeAccount.sessionState === 'expired' ? t('需要重新登录', 'Sign-in required')
+                        : t('当前账号未连接', 'Account is disconnected')}</strong>
                     <span>{activeAccount.sessionMessage ?? t('重新登录后才可同步或留言', 'Sign in again to sync or post comments')}</span>
                   </div>
-                  <button onClick={() => setLoginOpen(true)}>{t('重新登录', 'Sign in again')}</button>
+                  <button onClick={() => setLoginOpen(true)}>{activeAccount.sessionState === 'restoring'
+                    ? t('改为扫码登录', 'Use QR sign-in instead') : t('重新登录', 'Sign in again')}</button>
                 </div>
               )}
               {tab === 'friends' && (

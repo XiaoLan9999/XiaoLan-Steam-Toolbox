@@ -173,6 +173,25 @@ export class BatchQueue {
         if (nextAt > Date.now() && await waitForNextDelivery(this.store, batchId, nextAt,
           () => this.stopped, ms => this.wait(ms))) return
         if (this.stopped) return
+        if (typeof this.steam.ensureSessionFresh === 'function') {
+          try { await this.steam.ensureSessionFresh(batch.accountId) }
+          catch {
+            if (this.stopped) return
+            const current = this.store.getBatchSummary(batchId)
+            if (current?.status === 'running' || current?.status === 'queued') this.store.pauseBatch(batchId)
+            this.emit({ type: 'notice', level: 'warning', message: 'Steam 会话准备未完成，任务已暂停；未发送对象仍保留，请稍后继续' })
+            this.emit({ type: 'batchProgress', batchId })
+            return
+          }
+          if (this.stopped) return
+          const current = this.store.getBatchSummary(batchId)
+          if (!current || current.status !== 'running') return
+          if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
+            this.store.pauseBatch(batchId)
+            this.emit({ type: 'batchProgress', batchId })
+            return
+          }
+        }
         const delivery = this.store.takeNextDelivery(batchId)
         if (!delivery) {
           this.store.finishBatchIfDone(batchId)
@@ -220,6 +239,15 @@ export class BatchQueue {
           )
         } catch (error) {
           if (this.stopped) return
+          if (error instanceof DomainError && error.code === 'SESSION_PREPARATION_FAILED') {
+            this.store.resetDeliveryToPending(delivery.id)
+            activeDeliveryId = null
+            const current = this.store.getBatchSummary(batchId)
+            if (current?.status === 'running' || current?.status === 'queued') this.store.pauseBatch(batchId)
+            this.emit({ type: 'notice', level: 'warning', message: error.message })
+            this.emit({ type: 'batchProgress', batchId })
+            return
+          }
           const classification = classifyDeliveryError(error)
           this.store.completeDelivery(delivery.id, classification.status, {
             error: publicErrorMessage(error)
@@ -294,6 +322,12 @@ export function classifyDeliveryError(error: unknown): {
   status: 'failed' | 'uncertain'
   pauseBatch: boolean
 } {
+  if (error instanceof DomainError) {
+    if (error.code === 'SESSION_CHANGED') return { status: 'uncertain', pauseBatch: true }
+    if (['COMMUNITY_ACCESS_DENIED', 'RATE_LIMITED', 'SESSION_CHECK_FAILED'].includes(error.code)) {
+      return { status: 'failed', pauseBatch: true }
+    }
+  }
   const message = publicErrorMessage(error).toLowerCase()
   const rateLimited = /rate|limit|too many|\b429\b|频率|限制/.test(message)
   const sessionFailure = /not logged|login|session|access denied|expired|登录|会话/.test(message)

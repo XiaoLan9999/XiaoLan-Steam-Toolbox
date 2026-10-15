@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SteamService } from '../src/main/steam-service'
+import { BoundedLoginAgent, SteamService } from '../src/main/steam-service'
+import type { SteamServiceOptions } from '../src/main/steam-service'
+import { DomainError } from '../src/shared/domain'
+import { EventEmitter } from 'node:events'
+import type { ClientRequest, RequestOptions } from 'node:http'
+import { Agent } from 'node:https'
 import { SecretCipher, SqliteStore } from '../src/main/store'
 import { AccountRecord, AppEvent, FriendRecord } from '../src/shared/types'
 
@@ -12,31 +17,51 @@ const mocks = vi.hoisted(() => ({
   profile: vi.fn(),
   webCookies: vi.fn(),
   backgrounds: vi.fn(),
+  verify: vi.fn(),
+  replaceCookies: vi.fn(),
+  post: vi.fn(),
+  emoticons: vi.fn(),
+  sessions: [] as Array<{refreshToken: string; emit: (event: string) => void}>,
   instances: [] as Array<{ accountId: string; expire: () => void }>
 }))
 
-vi.mock('steam-session', () => ({
+vi.mock('steam-session', async () => {
+  const { EventEmitter: MockEmitter } = await import('node:events')
+  return {
   EAuthSessionGuardType: {},
   EAuthTokenPlatformType: { WebBrowser: 2 },
   ESessionPersistence: { Persistent: 1 },
-  LoginSession: class {
+  LoginSession: class extends MockEmitter {
+    constructor() { super(); mocks.sessions.push(this) }
     refreshToken = ''
     loginTimeout = 0
     async getWebCookies(): Promise<string[]> {
       return mocks.webCookies()
     }
+    cancelLoginAttempt = vi.fn()
+    startWithQR = vi.fn(async () => ({ qrChallengeUrl: 'https://example.invalid/qr' }))
+    startWithCredentials = vi.fn(async () => ({ actionRequired: true, validActions: [] }))
+    submitSteamGuardCode = vi.fn(async () => undefined)
+    steamID = { getSteamID64: () => accountA }
+    accountName = 'Fixture account'
   }
-}))
+  }
+})
 
 vi.mock('../src/main/community-client', () => ({
   SteamCommunityClient: class {
-    constructor(accountId: string, _cookies: string[], expire: () => void) {
+    constructor(accountId: string, private cookies: string[], expire: () => void) {
       mocks.instances.push({ accountId, expire })
     }
+    getCookies(): string[] { return [...this.cookies] }
     getFriendRelationships = mocks.relationships
     getProfileSummaries = mocks.summaries
     getProfileSummary = mocks.profile
     getProfileBackgrounds = mocks.backgrounds
+    verifySession = mocks.verify
+    replaceCookies = mocks.replaceCookies
+    postProfileComment = mocks.post
+    getEmoticons = mocks.emoticons
   }
 }))
 
@@ -45,7 +70,7 @@ const accountB = '76561198000000002'
 const friendA = '76561198000000101'
 const friendB = '76561198000000102'
 const friendC = '76561198000000103'
-const fixtures: Array<{ directory: string; store: SqliteStore }> = []
+const fixtures: Array<{ directory: string; store: SqliteStore; service: SteamService }> = []
 
 type Profile = Pick<FriendRecord, 'steamId' | 'displayName' | 'avatarUrl' | 'onlineState'>
 type ProfilesResult = { profiles: Map<string, Profile>; error: Error | null }
@@ -53,18 +78,373 @@ type ProfilesResult = { profiles: Map<string, Profile>; error: Error | null }
 beforeEach(() => {
   vi.resetAllMocks()
   mocks.instances.splice(0)
+  mocks.sessions.splice(0)
   mocks.profile.mockResolvedValue(null)
   mocks.webCookies.mockResolvedValue(['sessionid=test-session'])
   mocks.backgrounds.mockResolvedValue({ accountId: accountA, items: [], issues: [], ownedComplete: true, fetchedAt: new Date().toISOString() })
   mocks.relationships.mockResolvedValue({ [friendA]: 3 })
   mocks.summaries.mockResolvedValue(profileResult([profile(friendA, 'Updated friend')]))
+  mocks.verify.mockResolvedValue(undefined)
+  mocks.emoticons.mockResolvedValue([])
 })
 
 afterEach(() => {
-  for (const { directory, store } of fixtures.splice(0)) {
+  for (const { directory, store, service } of fixtures.splice(0)) {
+    service.dispose()
     store.close()
     rmSync(directory, { recursive: true, force: true })
   }
+  vi.useRealTimers()
+})
+
+describe('SteamService web-session lifecycle', () => {
+  it.each(['friends', 'emoticons'] as const)('ignores QR background %s results after shutdown without events or closed-store reads', async phase => {
+    const { service, store, events } = await createService()
+    const friends = deferred<Record<string, number>>()
+    const emoticons = deferred<[]>()
+    if (phase === 'friends') mocks.relationships.mockReturnValueOnce(friends.promise)
+    else mocks.emoticons.mockReturnValueOnce(emoticons.promise)
+    await service.startQrLogin()
+    mocks.sessions.at(-1)!.emit('authenticated')
+    await vi.waitFor(() => expect(phase === 'friends' ? mocks.relationships : mocks.emoticons).toHaveBeenCalledTimes(1))
+    service.dispose()
+    const close = vi.spyOn(store, 'close')
+    store.close()
+    close.mockImplementation(() => undefined)
+    const reads = [vi.spyOn(store, 'getActiveAccountId'), vi.spyOn(store, 'getAccount'), vi.spyOn(store, 'getLanguage')]
+    const eventCount = events.length
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      if (phase === 'friends') friends.resolve({ [friendA]: 3 })
+      else emoticons.resolve([])
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(events).toHaveLength(eventCount)
+      for (const read of reads) expect(read).not.toHaveBeenCalled()
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+  })
+
+  it('does not show an old account background-sync failure after switching accounts', async () => {
+    const { service, events } = await createService()
+    const pending = deferred<Record<string, number>>()
+    mocks.relationships.mockReturnValueOnce(pending.promise)
+    await service.startQrLogin()
+    mocks.sessions.at(-1)!.emit('authenticated')
+    await vi.waitFor(() => expect(mocks.relationships).toHaveBeenCalledTimes(1))
+    await service.activateAccount(accountB)
+    const eventCount = events.length
+    pending.resolve({ [friendA]: 3 })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(events).toHaveLength(eventCount)
+    expect(mocks.emoticons).not.toHaveBeenCalled()
+  })
+
+  it('backs initial restore failures off progressively and resets the backoff after success', async () => {
+    vi.useFakeTimers()
+    const { service } = await createService(false, { keepAliveMs: 10_000, retryDelaysMs: [100, 200, 500] })
+    mocks.webCookies.mockRejectedValue(new Error('network failed'))
+    await service.activateAccount(accountB)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(199)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(499)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(5)
+    await vi.advanceTimersByTimeAsync(499)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(5)
+    mocks.webCookies.mockResolvedValue(['sessionid=recovered'])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(service.isAuthenticated(accountB)).toBe(true)
+    await service.activateAccount(accountA)
+    mocks.webCookies.mockRejectedValue(new Error('network failed again'))
+    await service.activateAccount(accountB)
+    const beforeRetry = mocks.webCookies.mock.calls.length
+    await vi.advanceTimersByTimeAsync(100)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(beforeRetry + 1)
+  })
+
+  it.each(['qr', 'credentials'] as const)('keeps a new %s login valid after an automatic restore retry deadline', async mode => {
+    vi.useFakeTimers()
+    const { service, events } = await createService(false, { keepAliveMs: 10_000, retryDelaysMs: [100] })
+    mocks.webCookies.mockRejectedValueOnce(new Error('network failed'))
+    await service.activateAccount(accountB)
+    const result = mode === 'qr' ? await service.startQrLogin() : await service.startCredentialsLogin('fixture', 'fixture-only')
+    const manualSession = mocks.sessions.at(-1)!
+    const beforeWait = mocks.webCookies.mock.calls.length
+    await vi.advanceTimersByTimeAsync(500)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(beforeWait)
+    await expect(service.submitSteamGuard(result.loginId, 'fixture')).resolves.toBeUndefined()
+    manualSession.emit('authenticated')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events).toContainEqual(expect.objectContaining({ type: 'authFinished', loginId: result.loginId }))
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
+
+  it.each(['qr', 'credentials'] as const)('does not let an in-flight automatic restore overwrite a newer %s login', async mode => {
+    vi.useFakeTimers()
+    const { service, store, events } = await createService(false, { keepAliveMs: 10_000 })
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const oldRestore = service.activateAccount(accountB)
+    const result = mode === 'qr' ? await service.startQrLogin() : await service.startCredentialsLogin('fixture', 'fixture-only')
+    mocks.sessions.at(-1)!.emit('authenticated')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events).toContainEqual(expect.objectContaining({ type: 'authFinished', loginId: result.loginId }))
+    pending.resolve(['sessionid=late-restore-b'])
+    await oldRestore
+    expect(store.getActiveAccountId()).toBe(accountA)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+    expect(service.isAuthenticated(accountB)).toBe(false)
+  })
+
+  it('refreshes periodically without logging out a trusted current session and disposes its timer', async () => {
+    vi.useFakeTimers()
+    const { service } = await createService(false, { keepAliveMs: 100 })
+    expect(mocks.webCookies).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+    expect(mocks.verify).toHaveBeenCalledTimes(2)
+    expect(mocks.replaceCookies).toHaveBeenCalledTimes(1)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+    service.dispose()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+  })
+
+  it('shares one renewal across the timer, preflight and artwork instead of overlapping requests', async () => {
+    vi.useFakeTimers()
+    const { service } = await createService(false, { keepAliveMs: 100 })
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    await vi.advanceTimersByTimeAsync(100)
+    const first = service.ensureSessionFresh(accountA)
+    const second = service.ensureSessionFresh(accountA)
+    const artwork = service.getArtworkWebCookies(accountA)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+    pending.resolve(['sessionid=updated'])
+    await Promise.all([first, second, artwork])
+    expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+    expect(mocks.replaceCookies).toHaveBeenCalledExactlyOnceWith(['sessionid=updated'])
+  })
+
+  it.each([new Error('HTTP 429'), new Error('HTTP 503'), Object.assign(new Error('AccessDenied'), { eresult: 15 })])(
+    'keeps a trusted login on transient renewal failure and backs off without clearing tokens: %s', async error => {
+      vi.useFakeTimers()
+      const { service, store } = await createService(false, { keepAliveMs: 100, retryDelaysMs: [200, 400] })
+      mocks.webCookies.mockRejectedValueOnce(error)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(service.isAuthenticated(accountA)).toBe(true)
+      expect(store.getRefreshToken(accountA)).toBe('test-token-a')
+      expect(mocks.replaceCookies).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(199)
+      expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(mocks.webCookies).toHaveBeenCalledTimes(3)
+    }
+  )
+
+  it('pauses once on confirmed cookie expiry and restores without automatically resuming any task', async () => {
+    const { service, onExpired } = await createService()
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    mocks.instances[0]!.expire()
+    mocks.instances[0]!.expire()
+    expect(onExpired).toHaveBeenCalledExactlyOnceWith(accountA)
+    expect(service.isAuthenticated(accountA)).toBe(false)
+    pending.resolve(['sessionid=recovered'])
+    await service.ensureSessionFresh(accountA)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+    expect(onExpired).toHaveBeenCalledTimes(1)
+    expect(service.getAccountViews().find(account => account.id === accountA)?.sessionMessage).toContain('手动继续')
+  })
+
+  it('retains a recovering session over network failure and recovers on its bounded retry timer', async () => {
+    vi.useFakeTimers()
+    const { service, onExpired } = await createService(false, { keepAliveMs: 1000, retryDelaysMs: [200] })
+    mocks.webCookies.mockRejectedValueOnce(new Error('fetch failed'))
+    mocks.instances[0]!.expire()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(service.isAuthenticated(accountA)).toBe(false)
+    expect(service.getAccountViews().find(account => account.id === accountA)?.sessionState).toBe('restoring')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+    expect(onExpired).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not treat rejected candidate cookies as proof the refresh token was revoked', async () => {
+    vi.useFakeTimers()
+    const { service, store, onExpired } = await createService(false, { keepAliveMs: 100, retryDelaysMs: [200] })
+    mocks.verify.mockRejectedValueOnce(new DomainError('SESSION_EXPIRED', 'fixture guest'))
+    await vi.advanceTimersByTimeAsync(100)
+    expect(service.isAuthenticated(accountA)).toBe(false)
+    expect(service.getAccountViews().find(account => account.id === accountA)?.sessionState).toBe('restoring')
+    expect(store.getRefreshToken(accountA)).toBe('test-token-a')
+    expect(onExpired).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
+
+  it('does not overwrite recovery state when an optional profile request expires during restore', async () => {
+    const { service } = await createService()
+    const pending = deferred<string[]>()
+    mocks.profile.mockImplementationOnce(async () => {
+      mocks.webCookies.mockReturnValueOnce(pending.promise)
+      mocks.instances.at(-1)!.expire()
+      throw new DomainError('SESSION_EXPIRED', 'fixture expired profile')
+    })
+    await service.activateAccount(accountB)
+    expect(service.isAuthenticated(accountB)).toBe(false)
+    expect(service.getAccountViews().find(account => account.id === accountB)?.sessionState).toBe('restoring')
+    pending.resolve(['sessionid=recovered'])
+    await service.ensureSessionFresh(accountB)
+    expect(service.isAuthenticated(accountB)).toBe(true)
+  })
+
+  it.each([27, 26, 126])('requires login only for a definitive refresh-token rejection (%s)', async eresult => {
+    vi.useFakeTimers()
+    const { service, onExpired, store } = await createService(false, { keepAliveMs: 100 })
+    mocks.webCookies.mockRejectedValueOnce(Object.assign(new Error('Rejected'), { eresult }))
+    await vi.advanceTimersByTimeAsync(100)
+    expect(service.isAuthenticated(accountA)).toBe(false)
+    expect(service.getAccountViews().find(account => account.id === accountA)?.sessionState).toBe('expired')
+    expect(onExpired).toHaveBeenCalledExactlyOnceWith(accountA)
+    expect(store.getRefreshToken(accountA)).toBe('test-token-a')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+  })
+
+  it('persists a changed refresh token through encrypted storage without changing the selected account', async () => {
+    vi.useFakeTimers()
+    const { service, store } = await createService(false, { keepAliveMs: 100 })
+    const save = vi.spyOn(store, 'saveRefreshToken')
+    mocks.webCookies.mockImplementationOnce(async () => {
+      mocks.sessions[0]!.refreshToken = 'rotated-token'
+      return ['sessionid=rotated']
+    })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(save).toHaveBeenCalledExactlyOnceWith(accountA, 'rotated-token')
+    expect(store.getRefreshToken(accountA)).toBe('rotated-token')
+    expect(store.getActiveAccountId()).toBe(accountA)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
+
+  it('never applies a late renewal or token change after switching accounts', async () => {
+    const { service, store } = await createService()
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const old = service.getArtworkWebCookies(accountA)
+    const rejected = expect(old).rejects.toMatchObject({ code: 'ARTWORK_SESSION_CHANGED' })
+    await Promise.resolve()
+    await service.activateAccount(accountB)
+    mocks.sessions[0]!.refreshToken = 'stale-token'
+    pending.resolve(['sessionid=stale'])
+    await rejected
+    expect(mocks.replaceCookies).not.toHaveBeenCalled()
+    expect(store.getRefreshToken(accountA)).toBe('test-token-a')
+    expect(service.isAuthenticated(accountB)).toBe(true)
+  })
+
+  it('ignores an old automatic login that completes after switching back to the original account', async () => {
+    const { service, store } = await createService()
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const oldRestore = service.activateAccount(accountB)
+    await service.activateAccount(accountA)
+    pending.resolve(['sessionid=late-account-b'])
+    await oldRestore
+    expect(store.getActiveAccountId()).toBe(accountA)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+    expect(service.isAuthenticated(accountB)).toBe(false)
+    expect(service.getAccountViews().find(account => account.id === accountB)?.sessionState).toBe('offline')
+  })
+
+  it('disposes an in-flight renewal without committing cookies or scheduling another timer', async () => {
+    vi.useFakeTimers()
+    const { service } = await createService(false, { keepAliveMs: 100 })
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    await vi.advanceTimersByTimeAsync(100)
+    service.dispose()
+    pending.resolve(['sessionid=late-disposed'])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(service.isAuthenticated(accountA)).toBe(false)
+    expect(mocks.replaceCookies).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('discards a completed QR login after cancellation instead of resurrecting the removed intent', async () => {
+    const { service, events } = await createService()
+    const result = await service.startQrLogin()
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    mocks.sessions[1]!.emit('authenticated')
+    service.cancelLogin(result.loginId)
+    pending.resolve(['sessionid=cancelled'])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(events.some(event => event.type === 'authFinished')).toBe(false)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
+
+  it('does not finish QR login with cookies rejected by the later optional profile request', async () => {
+    const { service, events } = await createService()
+    const result = await service.startQrLogin()
+    mocks.profile.mockRejectedValueOnce(new DomainError('SESSION_EXPIRED', 'fixture guest profile'))
+    mocks.sessions[1]!.emit('authenticated')
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'authFailed', loginId: result.loginId })))
+    expect(events.some(event => event.type === 'authFinished')).toBe(false)
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
+
+  it('does not submit a comment if its final session preparation fails', async () => {
+    let now = 0
+    const { service, store } = await createService(false, { now: () => now, keepAliveMs: 100 })
+    store.replaceFriends(accountA, [friend(accountA, friendA, 'Fixture friend')])
+    now = 100
+    mocks.webCookies.mockRejectedValueOnce(new Error('network failed'))
+    await expect(service.postProfileComment(accountA, friendA, 'Unsent')).rejects.toMatchObject({ code: 'SESSION_PREPARATION_FAILED' })
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+})
+
+describe('Steam login request timeout', () => {
+  it('destroys a stalled request at its wall deadline and clears completed request timers', async () => {
+    vi.useFakeTimers()
+    const prototype = Agent.prototype as Agent & { addRequest(request: ClientRequest, options: RequestOptions): void }
+    const native = vi.spyOn(prototype, 'addRequest').mockImplementation(() => undefined)
+    const agent = new BoundedLoginAgent(100)
+    try {
+      const stalled = Object.assign(new EventEmitter(), { destroy: vi.fn() })
+      agent.addRequest(stalled as unknown as ClientRequest, {})
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(stalled.destroy).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'Steam login network request timed out' }))
+      stalled.emit('close')
+      const done = Object.assign(new EventEmitter(), { destroy: vi.fn() })
+      agent.addRequest(done as unknown as ClientRequest, {})
+      done.emit('close')
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(done.destroy).not.toHaveBeenCalled()
+      agent.destroy()
+      const cancelled = Object.assign(new EventEmitter(), { destroy: vi.fn() })
+      agent.addRequest(cancelled as unknown as ClientRequest, {})
+      await vi.advanceTimersByTimeAsync(0)
+      expect(cancelled.destroy).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'Steam login request cancelled' }))
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      native.mockRestore()
+      agent.destroy()
+    }
+  })
 })
 
 describe('SteamService artwork sessions', () => {
@@ -132,6 +512,21 @@ describe('SteamService artwork sessions', () => {
 })
 
 describe('SteamService friend synchronization', () => {
+  it.each(['switch', 'remove', 'dispose'] as const)('discards emoticons returned after session %s', async transition => {
+    const { service, store } = await createService()
+    const pending = deferred<[]>()
+    mocks.emoticons.mockReturnValueOnce(pending.promise)
+    const write = vi.spyOn(store, 'replaceEmoticons')
+    const syncing = service.syncEmoticons(accountA)
+    const rejected = expect(syncing).rejects.toMatchObject({ code: 'SYNC_CANCELLED' })
+    if (transition === 'switch') await service.activateAccount(accountB)
+    else if (transition === 'remove') service.removeAccount(accountA)
+    else service.dispose()
+    pending.resolve([])
+    await rejected
+    expect(write).not.toHaveBeenCalled()
+  })
+
   it('records only newly resolved nickname changes and preserves the baseline across failed lookups', async () => {
     const { service, store } = await createService()
     store.replaceFriends(accountA, [friend(accountA, friendA, 'Original name')])
@@ -335,20 +730,22 @@ const fakeCipher: SecretCipher = {
   decrypt: (value) => value.toString()
 }
 
-async function createService(autoSync = false): Promise<{
+async function createService(autoSync = false, options: SteamServiceOptions = {}): Promise<{
   service: SteamService
   store: SqliteStore
   events: AppEvent[]
+  onExpired: ReturnType<typeof vi.fn>
 }> {
   const directory = mkdtempSync(join(tmpdir(), 'steam-service-test-'))
   const store = new SqliteStore(join(directory, 'test.sqlite3'), fakeCipher)
-  fixtures.push({ directory, store })
   store.upsertAccount(account(accountA, autoSync), 'test-token-a')
   store.upsertAccount(account(accountB), 'test-token-b')
   const events: AppEvent[] = []
-  const service = new SteamService(store, (event) => events.push(event), vi.fn())
+  const onExpired = vi.fn()
+  const service = new SteamService(store, (event) => events.push(event), onExpired, options)
+  fixtures.push({ directory, store, service })
   await service.activateAccount(accountA)
-  return { service, store, events }
+  return { service, store, events, onExpired }
 }
 
 function account(id: string, autoSync = false): AccountRecord {

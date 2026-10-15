@@ -322,6 +322,14 @@ export class SqliteStore {
       .run(values.accountName, values.displayName, values.avatarUrl, now(), accountId)
   }
 
+  saveRefreshToken(accountId: string, refreshToken: string): void {
+    if (!this.getAccount(accountId)) throw new DomainError('ACCOUNT_NOT_FOUND', '账号不存在')
+    if (typeof refreshToken !== 'string' || !refreshToken) {
+      throw new DomainError('INVALID_REFRESH_TOKEN', '自动登录令牌无效')
+    }
+    this.transaction(() => this.saveRefreshTokenInTransaction(accountId, refreshToken))
+  }
+
   deleteAccount(accountId: string): void {
     this.transaction(() => {
       this.db.prepare('DELETE FROM accounts WHERE account_id = ?').run(accountId)

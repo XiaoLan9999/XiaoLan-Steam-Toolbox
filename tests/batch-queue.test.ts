@@ -52,9 +52,55 @@ describe('delivery error classification', () => {
     expect(classifyDeliveryError(new Error('Comments are disabled for this profile')))
       .toEqual({ status: 'failed', pauseBatch: false })
   })
+
+  it('pauses an access denial without treating an old-cookie POST result as a definite rejection', () => {
+    expect(classifyDeliveryError(new DomainError('COMMUNITY_ACCESS_DENIED', 'Steam denied the request')))
+      .toEqual({ status: 'failed', pauseBatch: true })
+    expect(classifyDeliveryError(new DomainError('SESSION_CHANGED', 'New cookies replaced an old request')))
+      .toEqual({ status: 'uncertain', pauseBatch: true })
+  })
 })
 
 describe('persistent sending queue', () => {
+  it('pauses before claiming a recipient when session preparation fails, retaining every pending target', async () => {
+    const { queue, steam, store, post, input } = fixture(2)
+    const prepare = vi.fn().mockRejectedValueOnce(new Error('Synthetic preparation failure')).mockResolvedValue(undefined)
+    Object.assign(steam, { ensureSessionFresh: prepare })
+    const batch = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getBatchSummary(batch.id)).toMatchObject({ status: 'paused', pending: 2, sending: 0, completed: 0 })
+    expect(post).not.toHaveBeenCalled()
+    queue.resume(batch.id)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed', succeeded: 2 })
+  })
+
+  it('returns a claimed recipient to pending only for a proven pre-submit failure', async () => {
+    const { queue, store, post, input } = fixture(2)
+    post.mockRejectedValueOnce(new DomainError('SESSION_PREPARATION_FAILED', 'No comment was submitted'))
+    const batch = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getBatchSummary(batch.id)).toMatchObject({ status: 'paused', pending: 2, completed: 0, failedCount: 0, uncertain: 0 })
+    expect(queue.hasPendingRequests()).toBe(false)
+    expect(post).toHaveBeenCalledTimes(1)
+    queue.resume(batch.id)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed', succeeded: 2 })
+    expect(post).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not send when a paused task resumes its asynchronous session preparation late', async () => {
+    const { queue, steam, store, post, input } = fixture(2)
+    let finish!: () => void
+    Object.assign(steam, { ensureSessionFresh: vi.fn(() => new Promise<void>(resolve => { finish = resolve })) })
+    const batch = queue.start(input)
+    queue.pause(batch.id)
+    finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(post).not.toHaveBeenCalled()
+    expect(store.getBatchSummary(batch.id)).toMatchObject({ status: 'paused', pending: 2, completed: 0 })
+  })
   it('keeps the requested 0.1-second base interval sequential without removing jitter', async () => {
     const { queue, store, post, input } = fixture(2)
     const batch = queue.start({ ...input, delayMs: 0.1 * 1000 })
@@ -347,5 +393,5 @@ function fixture(count: number) {
   const input: BatchStartInput = {
     accountId, friendSteamIds: friendIds, messageTemplate: 'Hello {friend} from {account}', delayMs: 1000
   }
-  return { queue, store, post, events, input }
+  return { queue, steam, store, post, events, input }
 }

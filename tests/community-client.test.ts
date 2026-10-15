@@ -330,7 +330,7 @@ describe('bounded Community response resources', () => {
 
   it.each<{ status: number; headers: Record<string, string>; error: RegExp }>([
     { status: 401, headers: {}, error: /会话已失效/ },
-    { status: 403, headers: {}, error: /会话已失效/ },
+    { status: 429, headers: {}, error: /HTTP 429/ },
     { status: 302, headers: { Location: 'https://steamcommunity.com/login/home/' }, error: /会话已失效/ },
     { status: 200, headers: { 'Content-Length': String(responseLimit + 1) }, error: /size limit/ }
   ])('cancels the unconsumed body on early exit $status $headers', async ({ status, headers, error }) => {

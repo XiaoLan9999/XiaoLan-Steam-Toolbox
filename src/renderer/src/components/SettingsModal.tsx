@@ -51,8 +51,8 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
       <small>{t('备份包含个人数据，请妥善保管。留言与检查最低间隔均为 0.1 秒；Steam 限流时仍会暂停。',
         'Backups contain personal data; keep them private. Comments and checks both support 0.1-second minimum intervals. Steam rate limits still pause tasks.')}</small>
       <h3>{t('运行诊断', 'Runtime diagnostics')}</h3>
-      <p>{t('数据目录中的 diagnostics 文件夹每分钟记录工具箱自身的内存用量和任务数量，并记录界面异常退出。日志轮换保存两份，每份最多 1 MiB；不包含账号、好友、留言正文、Cookie 或登录令牌，不会上传。',
-        'The diagnostics folder records the toolbox memory usage and task counts every minute, plus interface exits. Two rotating files are kept, up to 1 MiB each. No account, friend, message, cookie or login-token content is recorded or uploaded.')}</p>
+      <p>{t('数据目录中的 diagnostics 文件夹每分钟记录工具箱自身的内存用量和任务数量，并记录界面异常退出、会话续期结果和 HTTP 错误分类。日志轮换保存两份，每份最多 1 MiB；不包含账号、好友、留言正文、URL、Cookie 或登录令牌，不会上传。',
+        'The diagnostics folder records toolbox memory and task counts every minute, plus interface exits, session renewal outcomes and HTTP error classifications. Two rotating files are kept, up to 1 MiB each. No account, friend, message, URL, cookie or login-token content is recorded or uploaded.')}</p>
     </section>
   </div>
 }

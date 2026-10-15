@@ -77,11 +77,16 @@ app.whenReady().then(async () => {
     createSecretCipher()
   )
   const emit = (event: AppEvent): void => {
+    if (shuttingDown) return
     if (event.type === 'authFinished') {
       artworkUploads?.invalidate()
       backgroundMedia?.invalidate()
       void artworkBrowser?.close()
-      for (const account of store.getAccounts()) commentScans?.pauseForAccount(account.id)
+      for (const account of store.getAccounts()) {
+        commentScans?.pauseForAccount(account.id)
+        const batch = store.getActiveBatchSummary(account.id)
+        if (batch?.status === 'running' || batch?.status === 'queued') queue?.pause(batch.id)
+      }
     }
     const displayEvent = event.type === 'batchProgress'
       ? { ...event, summary: store.getBatchSummary(event.batchId) }
@@ -97,7 +102,7 @@ app.whenReady().then(async () => {
     if (artworkBrowser?.getState().accountId === accountId) void artworkBrowser.close()
     queue?.pauseForSessionExpiry(accountId)
     commentScans?.pauseForAccount(accountId)
-  })
+  }, { onDiagnostic: (event) => diagnostics?.sessionEvent(event) })
   queue = new BatchQueue(store, steam, emit)
   commentScans = new CommentScanQueue(store, steam, emit)
   diagnostics = new RuntimeDiagnostics({
@@ -148,6 +153,7 @@ app.on('will-quit', () => {
   backgroundMedia?.invalidate()
   queue?.shutdown()
   commentScans?.shutdown()
+  steam?.dispose()
   diagnostics?.shutdown()
   store?.close()
 })
@@ -521,6 +527,7 @@ function handle<TArgs extends unknown[], TResult>(
   operation: (...args: TArgs) => TResult | Promise<TResult>
 ): void {
   ipcMain.handle(channel, async (event, ...args: TArgs): Promise<IpcResult<TResult>> => {
+    if (shuttingDown) return { ok: false, error: { code: 'APP_SHUTTING_DOWN', message: '应用正在退出' } }
     if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id || event.senderFrame !== mainWindow.webContents.mainFrame) {
       return { ok: false, error: { code: 'INVALID_SENDER', message: '拒绝未知页面的请求' } }
     }

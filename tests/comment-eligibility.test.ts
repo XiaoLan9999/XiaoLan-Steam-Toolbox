@@ -177,7 +177,7 @@ describe('read-only profile comment eligibility requests', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('Access Denied', { status: 403 })))
     const expire = vi.fn()
     const client = new SteamCommunityClient(accountId, cookies, expire)
-    expect((await client.checkCommentEligibility(friendId)).status).toBe('unknown')
+    await expect(client.checkCommentEligibility(friendId)).rejects.toMatchObject({ code: 'COMMUNITY_ACCESS_DENIED', retryable: true })
     expect(expire).not.toHaveBeenCalled()
   })
 

@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { localizeMessage } from '../src/shared/localization'
 
 describe('localizeMessage', () => {
+  it.each([
+    '自动登录令牌无效', 'Steam 账号或会话已变更', 'Steam 服务已关闭',
+    '自动登录令牌已失效，请重新登录', 'Steam 自动登录暂时失败，将稍后重试；无需反复扫码',
+    'Steam 网页会话已失效，正在自动恢复；任务保持暂停',
+    'Steam 会话已自动恢复；请手动继续暂停的任务',
+    'Steam 会话已自动恢复，原任务仍保持暂停，请手动继续',
+    'Steam 自动登录令牌已失效，请重新登录；原任务保持暂停',
+    'Steam 会话恢复暂时失败，将稍后重试；原任务保持暂停',
+    'Steam 会话准备失败，尚未发送留言；任务已暂停，请稍后继续',
+    'Steam 会话准备未完成，任务已暂停；未发送对象仍保留，请稍后继续',
+    'Steam 会话需要更新，尚未提交留言，请稍后继续原任务',
+    '暂时无法核验 Steam 登录状态，请稍后重试',
+    'Steam 拒绝了本次请求（HTTP 403），可能是访问或频率限制；尚未确认登录失效，请稍后再试',
+    'Steam 登录会话已更新，旧请求结果待核对，请继续原任务'
+  ])('translates session maintenance messages without exposing internal data: %s', message => {
+    expect(localizeMessage(message, 'en')).not.toMatch(/\p{Script=Han}/u)
+    expect(localizeMessage(message, 'zh-CN')).toBe(message)
+  })
+
   it('returns Chinese-mode messages unchanged, including whitespace and external errors', () => {
     for (const message of ['页面明确提示当前账号被目标屏蔽', '已同步 1005 位好友及资料', '  HTTP 429\n', '']) {
       expect(localizeMessage(message, 'zh-CN')).toBe(message)

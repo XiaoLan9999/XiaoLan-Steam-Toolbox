@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { Agent } from 'node:https'
+import type { ClientRequest, RequestOptions } from 'node:http'
 import {
   EAuthSessionGuardType,
   EAuthTokenPlatformType,
@@ -18,13 +20,34 @@ import {
 } from '../shared/types'
 import { SqliteStore } from './store'
 import { SteamCommunityClient } from './community-client'
+import type { CommunityDiagnosticEvent } from './community-client'
 import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 
 interface RuntimeSession {
   accountId: string
   loginSession: LoginSession
   community: SteamCommunityClient
+  cookies: string[]
+  refreshAt: number
+  refreshFailures: number
+  refresh: Promise<string[]> | null
+  recovering: boolean
 }
+
+export interface SteamServiceOptions {
+  keepAliveMs?: number
+  retryDelaysMs?: readonly number[]
+  now?: () => number
+  onDiagnostic?: (event: CommunityDiagnosticEvent | {
+    phase: 'restore' | 'refresh' | 'recover'
+    outcome: 'success' | 'transient' | 'expired'
+    reason: string
+  }) => void
+}
+
+const KEEP_ALIVE_MS = 10 * 60 * 1000
+const RETRY_DELAYS_MS = [60_000, 120_000, 300_000]
+const LOGIN_REQUEST_TIMEOUT_MS = 30_000
 
 interface SessionStatus {
   state: SessionState
@@ -45,6 +68,11 @@ export class SteamService {
   private readonly pendingLogins = new Map<string, LoginSession>()
   private readonly completingLogins = new Set<string>()
   private readonly statuses = new Map<string, SessionStatus>()
+  private generation = 0
+  private disposed = false
+  private keepAliveTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly loginAgents = new Map<LoginSession, Agent>()
+  private readonly restorationFailures = new Map<string, number>()
   private readonly friendSyncs = new Map<
     string,
     { community: SteamCommunityClient; promise: Promise<number> }
@@ -53,8 +81,24 @@ export class SteamService {
   constructor(
     private readonly store: SqliteStore,
     private readonly emit: Emit,
-    private readonly onSessionExpired: (accountId: string) => void
+    private readonly onSessionExpired: (accountId: string) => void,
+    private readonly options: SteamServiceOptions = {}
   ) {}
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    this.generation += 1
+    this.clearKeepAliveTimer()
+    this.runtime = null
+    for (const loginId of [...this.pendingLogins.keys()]) this.cancelLogin(loginId)
+    for (const [session, agent] of this.loginAgents) {
+      session.cancelLoginAttempt?.()
+      agent.destroy()
+    }
+    this.loginAgents.clear()
+    this.restorationFailures.clear()
+  }
 
   getAccountViews(): AccountView[] {
     const activeAccountId = this.store.getActiveAccountId()
@@ -74,11 +118,15 @@ export class SteamService {
   }
 
   async activateAccount(accountId: string, persistSelection = true): Promise<void> {
+    this.requireOpen()
     const account = this.store.getAccount(accountId)
     if (!account) throw new DomainError('ACCOUNT_NOT_FOUND', '账号不存在')
-    if (this.runtime?.accountId === accountId) return
+    if (this.runtime?.accountId === accountId) {
+      if (this.runtime.recovering) await this.refreshWebSession(this.runtime)
+      return
+    }
 
-    this.runtime = null
+    const generation = this.beginSessionTransition()
     for (const knownAccount of this.store.getAccounts()) {
       this.setStatus(knownAccount.id, 'offline', null, false)
     }
@@ -101,24 +149,53 @@ export class SteamService {
     try {
       session.refreshToken = refreshToken
       const cookies = await session.getWebCookies()
+      if (!this.isCurrentTransition(generation, accountId)) return
       const community = this.createCommunity(accountId, cookies)
-      this.runtime = { accountId, loginSession: session, community }
+      await community.verifySession()
+      if (!this.isCurrentTransition(generation, accountId)) return
+      this.persistChangedToken(accountId, session)
+      this.restorationFailures.delete(accountId)
+      const runtime = this.makeRuntime(accountId, session, community, community.getCookies())
+      this.runtime = runtime
       const profile = await this.tryGetProfile(community, accountId)
+      if (this.runtime !== runtime || !this.isCurrentTransition(generation, accountId)) return
       this.store.updateAccountProfile(accountId, {
         accountName: account.accountName,
         displayName: profile?.displayName ?? account.displayName,
         avatarUrl: profile?.avatarUrl ?? account.avatarUrl
       })
-      this.setStatus(accountId, 'authenticated', '已自动登录')
+      if (!runtime.recovering) {
+        this.setStatus(accountId, 'authenticated', '已自动登录')
+        this.diagnostic('restore', 'success', 'verified')
+        this.scheduleKeepAlive(runtime)
+      }
       void this.refreshStaleAccountData(accountId)
     } catch (error) {
+      if (!this.isCurrentTransition(generation, accountId)) return
       this.runtime = null
-      this.setStatus(accountId, 'expired', '自动登录失败，请重新登录')
+      if (isDefinitiveAuthenticationError(error)) {
+        this.setStatus(accountId, 'expired', '自动登录令牌已失效，请重新登录')
+        this.diagnostic('restore', 'expired', 'credentials_rejected')
+      } else {
+        this.setStatus(accountId, 'error', 'Steam 自动登录暂时失败，将稍后重试；无需反复扫码')
+        const failures = this.restorationFailures.get(accountId) ?? 0
+        this.restorationFailures.set(accountId, failures + 1)
+        this.keepAliveTimer = setTimeout(() => {
+          this.keepAliveTimer = null
+          if (this.isCurrentTransition(generation, accountId)) void this.activateAccount(accountId, false)
+        }, this.retryDelay(failures))
+        this.keepAliveTimer.unref?.()
+        this.diagnostic('restore', 'transient', error instanceof DomainError ? safeDiagnosticReason(error.code) : 'network_or_service')
+      }
       this.emit({ type: 'notice', level: 'warning', message: publicErrorMessage(error) })
+    } finally {
+      if (this.runtime?.loginSession !== session) this.releaseLoginSession(session)
     }
   }
 
   async startQrLogin(): Promise<AuthStartResult> {
+    this.requireOpen()
+    this.prepareManualLogin()
     const loginId = randomUUID()
     const session = this.createLoginSession()
     this.attachPendingLogin(loginId, session)
@@ -135,16 +212,18 @@ export class SteamService {
         guardTypes: mapGuardTypes(response.validActions?.map((item) => item.type) ?? [])
       }
     } catch (error) {
-      this.pendingLogins.delete(loginId)
+      this.cancelLogin(loginId)
       throw error
     }
   }
 
   async startCredentialsLogin(accountName: string, password: string): Promise<AuthStartResult> {
+    this.requireOpen()
     const normalizedName = accountName.trim()
     if (!normalizedName || !password) {
       throw new DomainError('MISSING_CREDENTIALS', '请输入 Steam 登录名和密码')
     }
+    this.prepareManualLogin()
     const loginId = randomUUID()
     const session = this.createLoginSession()
     this.attachPendingLogin(loginId, session)
@@ -163,7 +242,7 @@ export class SteamService {
         guardDetail: actions.find((item) => item.detail)?.detail
       }
     } catch (error) {
-      this.pendingLogins.delete(loginId)
+      this.cancelLogin(loginId)
       throw error
     }
   }
@@ -179,13 +258,16 @@ export class SteamService {
   cancelLogin(loginId: string): void {
     const session = this.pendingLogins.get(loginId)
     if (!session) return
-    session.cancelLoginAttempt()
     this.pendingLogins.delete(loginId)
+    this.releaseLoginSession(session)
   }
 
   removeAccount(accountId: string): void {
-    if (this.runtime?.accountId === accountId) this.runtime = null
+    if (this.runtime?.accountId === accountId || this.store.getActiveAccountId() === accountId) {
+      this.beginSessionTransition()
+    } else this.cancelPendingLogins()
     this.statuses.delete(accountId)
+    this.restorationFailures.delete(accountId)
     this.store.deleteAccount(accountId)
     this.emit({ type: 'snapshotChanged' })
   }
@@ -277,6 +359,7 @@ export class SteamService {
   async syncEmoticons(accountId: string): Promise<number> {
     const community = this.requireActiveCommunity(accountId)
     const emoticons = await community.getEmoticons()
+    this.requireCurrentSyncSession(accountId, community)
     this.store.replaceEmoticons(accountId, emoticons)
     this.emit({ type: 'snapshotChanged' })
     return emoticons.length
@@ -287,7 +370,19 @@ export class SteamService {
     friendSteamId: string,
     message: string
   ): Promise<{ commentId: string | null }> {
-    const community = this.requireActiveCommunity(accountId)
+    let community = this.requireActiveCommunity(accountId)
+    if (!this.store.hasActiveFriend(accountId, friendSteamId)) {
+      throw new DomainError('FRIEND_NOT_FOUND', '该用户不在当前账号已同步的好友列表中')
+    }
+    if (this.store.isBlacklisted(accountId, friendSteamId)) {
+      throw new DomainError('FRIEND_BLACKLISTED', '该好友在当前账号黑名单中，已阻止留言')
+    }
+    try {
+      await this.ensureSessionFresh(accountId)
+      community = this.requireActiveCommunity(accountId)
+    } catch {
+      throw new DomainError('SESSION_PREPARATION_FAILED', 'Steam 会话准备失败，尚未发送留言；任务已暂停，请稍后继续')
+    }
     if (!this.store.hasActiveFriend(accountId, friendSteamId)) {
       throw new DomainError('FRIEND_NOT_FOUND', '该用户不在当前账号已同步的好友列表中')
     }
@@ -316,7 +411,21 @@ export class SteamService {
   }
 
   isAuthenticated(accountId: string): boolean {
-    return this.runtime?.accountId === accountId
+    return !this.disposed && this.runtime?.accountId === accountId && !this.runtime.recovering
+  }
+
+  async ensureSessionFresh(accountId: string): Promise<void> {
+    this.requireOpen()
+    this.requireActiveCommunity(accountId)
+    const runtime = this.runtime!
+    if (runtime.refresh) {
+      await runtime.refresh
+    } else if (runtime.recovering || (Number.isFinite(runtime.refreshAt) && this.now() >= runtime.refreshAt)) {
+      await this.refreshWebSession(runtime)
+    }
+    if (this.runtime !== runtime || !this.isAuthenticated(accountId)) {
+      throw new DomainError('SESSION_PREPARATION_FAILED', 'Steam 会话准备失败，尚未发送留言；任务已暂停，请稍后继续')
+    }
   }
 
   async getArtworkWebCookies(accountId: string): Promise<string[]> {
@@ -324,8 +433,11 @@ export class SteamService {
     const runtime = this.runtime!
     let cookies: string[]
     try {
-      cookies = await runtime.loginSession.getWebCookies()
+      cookies = await this.refreshWebSession(runtime)
     } catch {
+      if (this.runtime !== runtime || this.store.getActiveAccountId() !== accountId) {
+        throw new DomainError('ARTWORK_SESSION_CHANGED', '账号或登录会话已变更，请重新打开艺术作品工具')
+      }
       throw new DomainError('ARTWORK_AUTH_FAILED', '无法准备 Steam 艺术作品会话，请确认网络后重新登录')
     }
     if (this.runtime !== runtime || this.store.getActiveAccountId() !== accountId) {
@@ -345,8 +457,10 @@ export class SteamService {
   }
 
   private createLoginSession(): LoginSession {
-    const session = new LoginSession(EAuthTokenPlatformType.WebBrowser)
+    const agent = new BoundedLoginAgent(LOGIN_REQUEST_TIMEOUT_MS)
+    const session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent })
     session.loginTimeout = 5 * 60 * 1000
+    this.loginAgents.set(session, agent)
     return session
   }
 
@@ -369,12 +483,18 @@ export class SteamService {
   private async finishPendingLogin(loginId: string, session: LoginSession): Promise<void> {
     if (!this.pendingLogins.has(loginId) || this.completingLogins.has(loginId)) return
     this.completingLogins.add(loginId)
+    const generation = this.generation
+    const current = (): boolean => !this.disposed && this.generation === generation && this.pendingLogins.get(loginId) === session
     try {
       const accountId = session.steamID.getSteamID64()
       const cookies = await session.getWebCookies()
+      if (!current()) return
       const community = this.createCommunity(accountId, cookies)
+      await community.verifySession()
+      if (!current()) return
       const existing = this.store.getAccount(accountId)
-      const profile = await this.tryGetProfile(community, accountId)
+      const profile = await this.tryGetProfile(community, accountId, true)
+      if (!current()) return
       const timestamp = new Date().toISOString()
       const account: AccountRecord = {
         id: accountId,
@@ -389,13 +509,18 @@ export class SteamService {
       }
       const canPersist = this.store.getSecretStorageInfo().available
       this.store.upsertAccount(account, canPersist ? session.refreshToken : undefined)
-      this.runtime = { accountId, loginSession: session, community }
+      this.restorationFailures.delete(accountId)
+      this.clearKeepAliveTimer()
+      if (this.runtime?.loginSession !== session && this.runtime) this.releaseLoginSession(this.runtime.loginSession)
+      this.generation += 1
+      this.runtime = this.makeRuntime(accountId, session, community, community.getCookies())
       for (const knownAccount of this.store.getAccounts()) {
         this.setStatus(knownAccount.id, knownAccount.id === accountId ? 'authenticated' : 'offline', null, false)
       }
       this.pendingLogins.delete(loginId)
       this.emit({ type: 'authFinished', loginId, accountId })
       this.emit({ type: 'snapshotChanged' })
+      this.scheduleKeepAlive(this.runtime)
       if (!canPersist) {
         this.emit({
           type: 'notice',
@@ -408,24 +533,178 @@ export class SteamService {
       this.failPendingLogin(loginId, publicErrorMessage(error))
     } finally {
       this.completingLogins.delete(loginId)
+      if (this.runtime?.loginSession !== session) this.releaseLoginSession(session)
     }
   }
 
   private failPendingLogin(loginId: string, message: string): void {
-    if (!this.pendingLogins.has(loginId)) return
+    const session = this.pendingLogins.get(loginId)
+    if (!session) return
     this.pendingLogins.delete(loginId)
     this.completingLogins.delete(loginId)
+    this.releaseLoginSession(session)
     this.emit({ type: 'authFailed', loginId, message })
   }
 
   private createCommunity(accountId: string, cookies: string[]): SteamCommunityClient {
     const community = new SteamCommunityClient(accountId, cookies, () => {
       if (this.runtime?.community !== community) return
-      this.runtime = null
-      this.setStatus(accountId, 'expired', 'Steam 会话已过期，请重新登录')
-      this.onSessionExpired(accountId)
-    })
+      const runtime = this.runtime
+      if (!runtime.recovering) {
+        runtime.recovering = true
+        this.setStatus(accountId, 'restoring', 'Steam 网页会话已失效，正在自动恢复；任务保持暂停')
+        this.onSessionExpired(accountId)
+      }
+      void this.refreshWebSession(runtime).catch(() => undefined)
+    }, event => this.options.onDiagnostic?.(event))
     return community
+  }
+
+  private makeRuntime(accountId: string, loginSession: LoginSession, community: SteamCommunityClient, cookies: string[]): RuntimeSession {
+    return { accountId, loginSession, community, cookies: [...cookies], refreshAt: this.now() + this.keepAliveMs(),
+      refreshFailures: 0, refresh: null, recovering: false }
+  }
+
+  private refreshWebSession(runtime: RuntimeSession): Promise<string[]> {
+    if (runtime.refresh) return runtime.refresh
+    if (!this.isCurrentRuntime(runtime)) {
+      return Promise.reject(new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更'))
+    }
+    this.clearKeepAliveTimer()
+    const phase = runtime.recovering ? 'recover' : 'refresh'
+    let request: Promise<string[]>
+    try {
+      request = runtime.loginSession.getWebCookies()
+    } catch (error) {
+      request = Promise.reject(error)
+    }
+    let operation!: Promise<string[]>
+    operation = (async (): Promise<string[]> => {
+      try {
+        // WebBrowser tokens must use finalizelogin; refreshAccessToken is not supported for this platform.
+        const cookies = await request
+        if (!this.isCurrentRuntime(runtime)) throw new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更')
+        const candidate = this.createCommunity(runtime.accountId, cookies)
+        await candidate.verifySession()
+        if (!this.isCurrentRuntime(runtime)) throw new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更')
+        this.persistChangedToken(runtime.accountId, runtime.loginSession)
+        const verifiedCookies = candidate.getCookies()
+        runtime.community.replaceCookies(verifiedCookies)
+        runtime.cookies = [...verifiedCookies]
+        runtime.refreshFailures = 0
+        runtime.refreshAt = this.now() + this.keepAliveMs()
+        const recovered = runtime.recovering
+        runtime.recovering = false
+        if (recovered) {
+          this.setStatus(runtime.accountId, 'authenticated', 'Steam 会话已自动恢复；请手动继续暂停的任务')
+          this.emit({ type: 'notice', level: 'success', message: 'Steam 会话已自动恢复，原任务仍保持暂停，请手动继续' })
+        }
+        this.diagnostic(phase, 'success', 'verified')
+        return [...verifiedCookies]
+      } catch (error) {
+        if (!this.isCurrentRuntime(runtime)) throw error
+        if (isDefinitiveAuthenticationError(error)) {
+          const alreadyPaused = runtime.recovering
+          this.runtime = null
+          this.releaseLoginSession(runtime.loginSession)
+          this.setStatus(runtime.accountId, 'expired', 'Steam 自动登录令牌已失效，请重新登录；原任务保持暂停')
+          if (!alreadyPaused) this.onSessionExpired(runtime.accountId)
+          this.diagnostic(phase, 'expired', 'credentials_rejected')
+        } else {
+          if (error instanceof DomainError && error.code === 'SESSION_EXPIRED' && !runtime.recovering) {
+            runtime.recovering = true
+            this.onSessionExpired(runtime.accountId)
+          }
+          runtime.refreshAt = this.now() + this.retryDelay(runtime.refreshFailures++)
+          if (runtime.recovering) {
+            this.setStatus(runtime.accountId, 'restoring', 'Steam 会话恢复暂时失败，将稍后重试；原任务保持暂停')
+          }
+          this.diagnostic(phase, 'transient', error instanceof DomainError ? safeDiagnosticReason(error.code) : 'network_or_service')
+        }
+        throw error
+      } finally {
+        if (runtime.refresh === operation) runtime.refresh = null
+        if (this.isCurrentRuntime(runtime)) this.scheduleKeepAlive(runtime)
+      }
+    })()
+    runtime.refresh = operation
+    return operation
+  }
+
+  private persistChangedToken(accountId: string, session: LoginSession): void {
+    if (!session.refreshToken || !this.store.getSecretStorageInfo().available) return
+    if (this.store.getRefreshToken(accountId) !== session.refreshToken) {
+      this.store.saveRefreshToken(accountId, session.refreshToken)
+    }
+  }
+
+  private scheduleKeepAlive(runtime: RuntimeSession): void {
+    this.clearKeepAliveTimer()
+    if (!this.isCurrentRuntime(runtime)) return
+    this.keepAliveTimer = setTimeout(() => {
+      this.keepAliveTimer = null
+      if (this.isCurrentRuntime(runtime)) void this.refreshWebSession(runtime).catch(() => undefined)
+    }, Math.max(1, runtime.refreshAt - this.now()))
+    this.keepAliveTimer.unref?.()
+  }
+
+  private clearKeepAliveTimer(): void {
+    if (this.keepAliveTimer) clearTimeout(this.keepAliveTimer)
+    this.keepAliveTimer = null
+  }
+
+  private beginSessionTransition(): number {
+    this.generation += 1
+    this.clearKeepAliveTimer()
+    if (this.runtime) this.releaseLoginSession(this.runtime.loginSession)
+    this.runtime = null
+    this.cancelPendingLogins()
+    for (const session of [...this.loginAgents.keys()]) this.releaseLoginSession(session)
+    return this.generation
+  }
+
+  private cancelPendingLogins(): void {
+    for (const loginId of [...this.pendingLogins.keys()]) this.cancelLogin(loginId)
+  }
+
+  private prepareManualLogin(): void {
+    this.cancelPendingLogins()
+    // A delayed automatic restore must never cancel or overwrite a new manual login.
+    if (!this.runtime) {
+      this.generation += 1
+      this.clearKeepAliveTimer()
+      for (const session of [...this.loginAgents.keys()]) this.releaseLoginSession(session)
+    }
+  }
+
+  private releaseLoginSession(session: LoginSession | undefined): void {
+    if (!session) return
+    session.cancelLoginAttempt?.()
+    this.loginAgents.get(session)?.destroy()
+    this.loginAgents.delete(session)
+  }
+
+  private isCurrentTransition(generation: number, accountId: string): boolean {
+    return !this.disposed && this.generation === generation && this.store.getActiveAccountId() === accountId && !!this.store.getAccount(accountId)
+  }
+
+  private isCurrentRuntime(runtime: RuntimeSession): boolean {
+    return !this.disposed && this.runtime === runtime && this.store.getActiveAccountId() === runtime.accountId && !!this.store.getAccount(runtime.accountId)
+  }
+
+  private requireOpen(): void {
+    if (this.disposed) throw new DomainError('STEAM_SERVICE_CLOSED', 'Steam 服务已关闭')
+  }
+
+  private now(): number { return (this.options.now ?? Date.now)() }
+  private keepAliveMs(): number { return this.options.keepAliveMs ?? KEEP_ALIVE_MS }
+  private retryDelay(failures: number): number {
+    const delays = this.options.retryDelaysMs?.length ? this.options.retryDelaysMs : RETRY_DELAYS_MS
+    return delays[Math.min(failures, delays.length - 1)]!
+  }
+
+  private diagnostic(phase: 'restore' | 'refresh' | 'recover', outcome: 'success' | 'transient' | 'expired', reason: string): void {
+    this.options.onDiagnostic?.({ phase, outcome, reason })
   }
 
   private requireActiveCommunity(accountId: string): SteamCommunityClient {
@@ -440,11 +719,13 @@ export class SteamService {
 
   private async tryGetProfile(
     community: SteamCommunityClient,
-    steamId: string
+    steamId: string,
+    rejectExpired = false
   ): Promise<ProfileSummary | null> {
     try {
       return await community.getProfileSummary(steamId)
-    } catch {
+    } catch (error) {
+      if (rejectExpired && error instanceof DomainError && error.code === 'SESSION_EXPIRED') throw error
       return null
     }
   }
@@ -460,8 +741,10 @@ export class SteamService {
   }
 
   private async refreshStaleAccountData(accountId: string, force = false): Promise<void> {
+    const runtime = this.runtime
+    if (!runtime || !this.isCurrentRuntime(runtime) || !this.isAuthenticated(accountId)) return
     const account = this.store.getAccount(accountId)
-    if (!account || !this.isAuthenticated(accountId)) return
+    if (!account) return
     const staleBefore = Date.now() - 6 * 60 * 60 * 1000
     const friendsStale =
       force || !account.lastFriendSyncAt || Date.parse(account.lastFriendSyncAt) < staleBefore
@@ -471,17 +754,61 @@ export class SteamService {
       try {
         await this.syncFriends(accountId)
       } catch (error) {
+        if (!this.isCurrentRuntime(runtime)) return
         this.emit({ type: 'notice', level: 'warning', message: `好友同步失败：${publicErrorMessage(error)}` })
       }
     }
+    if (!this.isCurrentRuntime(runtime)) return
     if (emoticonsStale && this.isAuthenticated(accountId)) {
       try {
         await this.syncEmoticons(accountId)
       } catch (error) {
+        if (!this.isCurrentRuntime(runtime)) return
         this.emit({ type: 'notice', level: 'warning', message: `表情同步失败：${publicErrorMessage(error)}` })
       }
     }
   }
+}
+
+export class BoundedLoginAgent extends Agent {
+  private closed = false
+  constructor(private readonly requestTimeoutMs: number) {
+    super({ keepAlive: true })
+  }
+
+  addRequest(request: ClientRequest, options: RequestOptions): void {
+    if (this.closed) {
+      queueMicrotask(() => request.destroy(new Error('Steam login request cancelled')))
+      return
+    }
+    const timer = setTimeout(() => request.destroy(new Error('Steam login network request timed out')), this.requestTimeoutMs)
+    timer.unref?.()
+    request.once('close', () => clearTimeout(timer))
+    const parent = Agent.prototype as Agent & { addRequest(request: ClientRequest, options: RequestOptions): void }
+    try {
+      parent.addRequest.call(this, request, options)
+    } catch (error) {
+      clearTimeout(timer)
+      throw error
+    }
+  }
+
+  override destroy(): void {
+    this.closed = true
+    super.destroy()
+  }
+}
+
+function isDefinitiveAuthenticationError(error: unknown): boolean {
+  if (error instanceof DomainError) return false
+  if (!error || typeof error !== 'object' || !('eresult' in error)) return false
+  // AccessDenied alone may be a temporary endpoint denial, not a revoked refresh token.
+  return [5, 21, 26, 27, 121, 126].includes(Number(error.eresult))
+}
+
+function safeDiagnosticReason(code: string): string {
+  return ['RATE_LIMITED', 'COMMUNITY_ACCESS_DENIED', 'SESSION_CHECK_FAILED', 'SESSION_CHANGED'].includes(code)
+    ? code.toLowerCase() : 'network_or_service'
 }
 
 function mapGuardTypes(types: EAuthSessionGuardType[]): GuardType[] {

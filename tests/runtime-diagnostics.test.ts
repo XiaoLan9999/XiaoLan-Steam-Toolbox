@@ -52,6 +52,20 @@ describe('bounded local runtime diagnostics', () => {
     for (const name of readdirSync(directory)) expect(statSync(join(directory, name)).size).toBeLessThanOrEqual(16_384)
   })
 
+  it('records only safe session classifications, not arbitrary diagnostic fields or secret strings', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.sessionEvent({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method: 'POST',
+      cookie: 'synthetic-private-cookie', url: 'synthetic-private-url' } as never)
+    diagnostics.sessionEvent({ phase: 'synthetic-private-phase', outcome: 'synthetic-private-outcome', reason: 'synthetic-private-token', httpStatus: 9999, method: 'synthetic-private-method' })
+    const contents = readFileSync(join(directory, 'runtime-current.jsonl'), 'utf8')
+    expect(contents).not.toContain('synthetic-private')
+    const events = contents.trim().split('\n').map(line => JSON.parse(line))
+    expect(events[0]).toMatchObject({ event: 'session', phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method: 'POST' })
+    expect(events[1]).toMatchObject({ phase: 'unknown', outcome: 'unknown', reason: 'unknown' })
+    expect(events[1]).not.toHaveProperty('httpStatus')
+    expect(events[1]).not.toHaveProperty('method')
+  })
+
   it('ignores collection/storage failures and does not write arbitrary exit strings', () => {
     const { directory, diagnostics, metrics } = fixture()
     metrics.mockImplementation(() => { throw new Error('synthetic-private-error') })

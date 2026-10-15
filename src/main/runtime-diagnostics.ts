@@ -28,6 +28,12 @@ interface Options {
 const processTypes = new Set(['Browser', 'Tab', 'Utility', 'Zygote', 'Sandbox helper', 'GPU', 'Unknown'])
 const exitReasons = new Set(['clean-exit', 'abnormal-exit', 'killed', 'crashed', 'oom', 'launch-failed', 'integrity-failure', 'memory-eviction'])
 const taskStatuses = new Set(['queued', 'running', 'paused', 'completed', 'cancelled'])
+const sessionPhases = new Set(['restore', 'refresh', 'recover', 'community-request', 'session-probe'])
+const sessionOutcomes = new Set(['success', 'transient', 'expired', 'auth-rejected', 'access-denied', 'rate-limited', 'unverified', 'request-failed', 'stale-response'])
+const sessionReasons = new Set(['http-401', 'login-redirect', 'not-logged-on', 'http-403', 'http-429', 'identity-match',
+  'identity-mismatch', 'identity-guest', 'identity-missing', 'transport-error', 'network', 'timeout', 'token-rejected',
+  'token-missing', 'session-changed', 'scheduled', 'on-demand', 'cookie-expired', 'unknown', 'verified',
+  'credentials_rejected', 'network_or_service', 'rate_limited', 'community_access_denied', 'session_check_failed', 'session_changed'])
 const number = (value: number | undefined): number | null =>
   value !== undefined && Number.isFinite(value) && value >= 0 ? Math.round(value) : null
 
@@ -73,6 +79,15 @@ export class RuntimeDiagnostics {
       reason: exitReasons.has(reason) ? reason : 'unknown',
       exitCode: Number.isFinite(exitCode) ? Math.trunc(exitCode) : null })
     this.sample('memory')
+  }
+
+  sessionEvent(event: { phase: string; outcome: string; reason: string; httpStatus?: number; method?: string }): void {
+    if (this.stopped) return
+    this.write({ event: 'session', phase: sessionPhases.has(event.phase) ? event.phase : 'unknown',
+      outcome: sessionOutcomes.has(event.outcome) ? event.outcome : 'unknown',
+      reason: sessionReasons.has(event.reason) ? event.reason : 'unknown',
+      ...(Number.isInteger(event.httpStatus) && event.httpStatus! >= 100 && event.httpStatus! <= 599 ? { httpStatus: event.httpStatus } : {}),
+      ...(event.method === 'GET' || event.method === 'POST' ? { method: event.method } : {}) })
   }
 
   shutdown(): void {
