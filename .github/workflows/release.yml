@@ -57,7 +57,7 @@ jobs:
           }
           $global:LASTEXITCODE = 0
       - run: npm ci
-      - run: npm test
+      - run: npm test -- --maxWorkers=1
       - run: npm run build
       - name: Build Windows packages
         run: npx electron-builder --win nsis portable --publish never
