@@ -2,11 +2,12 @@ import { DomainError } from './domain'
 import type { BatchStopCode } from './types'
 
 export const MAX_BATCH_RETRIES = 5
+export const MAX_ACCESS_DENIED_RETRIES = 1
+export const ACCESS_DENIED_COOLDOWN_MS = 300_000
 export const MAX_BATCH_RETRY_DELAY_MS = 24 * 60 * 60 * 1000
 
 const standardDelays = [60_000, 120_000, 300_000, 600_000, 900_000]
 const sessionDelays = [30_000, 60_000, 120_000, 300_000, 600_000]
-const accessDelays = [300_000, 600_000, 900_000, 1_800_000, 3_600_000]
 
 export interface BatchInterruption {
   code: BatchStopCode
@@ -45,7 +46,8 @@ export function batchInterruption(error: unknown): BatchInterruption {
 export function batchRetryDelay(code: BatchStopCode, attempt: number, retryAfterMs?: number): number | null {
   if (!Number.isInteger(attempt) || attempt < 1 || attempt > MAX_BATCH_RETRIES) return null
   if (retryAfterMs !== undefined && (!Number.isFinite(retryAfterMs) || retryAfterMs > MAX_BATCH_RETRY_DELAY_MS)) return null
-  const delays = code === 'ACCESS_DENIED' ? accessDelays
-    : ['SESSION_EXPIRED', 'SESSION_PREPARATION'].includes(code) ? sessionDelays : standardDelays
-  return Math.max(delays[attempt - 1]!, Math.max(0, retryAfterMs ?? 0))
+  if (code === 'ACCESS_DENIED_PERSISTENT') return null
+  const delay = code === 'ACCESS_DENIED' ? ACCESS_DENIED_COOLDOWN_MS
+    : (['SESSION_EXPIRED', 'SESSION_PREPARATION'].includes(code) ? sessionDelays : standardDelays)[attempt - 1]!
+  return Math.max(delay, Math.max(0, retryAfterMs ?? 0))
 }

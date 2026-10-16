@@ -325,8 +325,8 @@ export function ComposerPanel({
             <input type="checkbox" checked={autoRetryEnabled} disabled={submitting}
               onChange={(event) => setAutoRetryEnabled(event.target.checked)} />
             <span>{t('临时错误后自动重试并继续待发', 'Automatically retry temporary errors and resume pending deliveries')}
-              <small>{t('按退避间隔继续；不重发已发送、已接受或结果不确定的对象。手动暂停后需手动继续。',
-                'Resume with backoff; never resend sent, accepted, or uncertain deliveries. A manual pause requires a manual resume.')}</small></span>
+              <small>{t('403 冷却后仅自动重试一次，持续拒绝会停止；不重发已发送、已接受或结果不确定的对象。手动暂停后需手动继续。',
+                'HTTP 403 allows one retry after cooldown; persistent denials stop. Sent, accepted, or uncertain deliveries are never resent. A manual pause requires a manual resume.')}</small></span>
           </label>
           <div id="send-readiness" aria-live="polite">
             {issues.length > 0 && <div className="inline-warning"><strong>{t('暂时不能发送：', 'Cannot send yet:')}</strong><ul>

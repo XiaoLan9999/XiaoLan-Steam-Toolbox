@@ -17,6 +17,11 @@
 .batch-stop-reason > strong { color: var(--yellow); font-size: 13px; }
 .batch-stop-reason > small, .batch-stop-reason > span { color: var(--muted); font-size: 10px; }
 .batch-stop-reason p, .batch-retry-state, .batch-retry-attempt { margin: 0; }
+.batch-access-denied { display: grid; gap: 6px; padding: 10px; border: 1px solid rgba(229, 185, 92, 0.35); border-radius: 6px; }
+.batch-access-denied > strong { color: var(--yellow); }
+.batch-access-denied p { margin: 0; }
+.batch-access-cooldown { display: grid; gap: 3px; }
+.batch-access-cooldown > span { color: var(--muted); font-size: 10px; }
 .batch-retry-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .batch-retry-heading label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .batch-retry-heading input { width: 14px; height: 14px; margin: 0; }

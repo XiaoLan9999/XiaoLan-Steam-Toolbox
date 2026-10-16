@@ -66,6 +66,35 @@ describe('bounded local runtime diagnostics', () => {
     expect(events[1]).not.toHaveProperty('method')
   })
 
+  it('persists only enum response shapes, small integer codes and finite nonnegative retry hints', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.sessionEvent({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403,
+      endpoint: 'profile-comment', responseKind: 'json', denialKind: 'access-denied', responseCode: 15, retryAfterMs: 20_000,
+      responseBody: 'synthetic-private-body', error: 'synthetic-private-error', headers: { cookie: 'synthetic-private-cookie' } } as never)
+    diagnostics.sessionEvent({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403',
+      endpoint: 'synthetic-private-endpoint', responseKind: 'synthetic-private-kind', denialKind: 'synthetic-private-kind',
+      responseCode: 76561198000000001, retryAfterMs: Infinity })
+    for (const value of [-1, 1.2, NaN, Infinity, '15', true]) {
+      diagnostics.sessionEvent({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403',
+        responseCode: value, retryAfterMs: -1 } as never)
+    }
+    diagnostics.sessionEvent({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403',
+      endpoint: 'session-verify', responseKind: 'html', denialKind: 'challenge', responseCode: 0, retryAfterMs: 0 })
+    const contents = readFileSync(join(directory, 'runtime-current.jsonl'), 'utf8')
+    expect(contents).not.toContain('synthetic-private')
+    expect(contents).not.toContain('7656119')
+    const events = contents.trim().split('\n').map(line => JSON.parse(line))
+    expect(events[0]).toMatchObject({ endpoint: 'profile-comment', responseKind: 'json', denialKind: 'access-denied', responseCode: 15, retryAfterMs: 20_000 })
+    for (const event of events.slice(1, -1)) {
+      expect(event).not.toHaveProperty('responseCode')
+      expect(event).not.toHaveProperty('retryAfterMs')
+    }
+    expect(events[1]).not.toHaveProperty('endpoint')
+    expect(events[1]).not.toHaveProperty('responseKind')
+    expect(events[1]).not.toHaveProperty('denialKind')
+    expect(events.at(-1)).toMatchObject({ endpoint: 'session-verify', responseKind: 'html', denialKind: 'challenge', responseCode: 0, retryAfterMs: 0 })
+  })
+
   it('ignores collection/storage failures and does not write arbitrary exit strings', () => {
     const { directory, diagnostics, metrics } = fixture()
     metrics.mockImplementation(() => { throw new Error('synthetic-private-error') })

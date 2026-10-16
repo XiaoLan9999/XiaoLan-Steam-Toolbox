@@ -119,7 +119,8 @@ describe('Community authentication evidence and read-only verification', () => {
     await expect(new SteamCommunityClient(account, cookies('private-cookie-token'), vi.fn(), diagnostic)
       .postProfileComment(friend, 'private-message')).rejects.toThrow()
     expect(diagnostic.mock.calls).toEqual([[{
-      phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method: 'POST'
+      phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method: 'POST',
+      endpoint: 'profile-comment', responseKind: 'json', denialKind: 'unknown'
     }]])
     expect(JSON.stringify(diagnostic.mock.calls)).not.toMatch(/private|7656119|https/)
   })

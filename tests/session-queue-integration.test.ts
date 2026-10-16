@@ -88,20 +88,26 @@ afterEach(async () => {
 describe('real login, community client and persistent queue integration', () => {
   it.each([403, 429])('pauses an HTTP %s delivery without expiring the QR login or resending its POST', async status => {
     const fixture = await createFixture()
-    fixture.postReplies.push(success('100'), new Response('Request denied', { status }), success('300'))
+    fixture.postReplies.push(success('100'), new Response('Request denied', { status }), success('300'), success('400'))
     const batch = start(fixture)
     await vi.advanceTimersByTimeAsync(100)
 
-    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'paused', succeeded: 1, failed: 1, pending: 1 })
+    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'paused', succeeded: 1,
+      failed: status === 403 ? 0 : 1, pending: status === 403 ? 2 : 1 })
     expect(fixture.service.isAuthenticated(accountA)).toBe(true)
     expect(mocks.webCookies).toHaveBeenCalledTimes(1)
     expect(posts(fixture)).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(5000)
     expect(posts(fixture)).toHaveLength(2)
 
+    if (status === 403) {
+      expect(() => fixture.queue.resume(batch.id)).toThrow('HTTP 403 冷却尚未结束')
+      await vi.advanceTimersByTimeAsync(300_000)
+    }
     fixture.queue.resume(batch.id)
-    await flush()
-    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed', succeeded: 2, failed: 1 })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed',
+      succeeded: status === 403 ? 3 : 2, failed: status === 403 ? 0 : 1 })
     expect(new Set(posts(fixture).map(([url]) => String(url))).size).toBe(3)
   })
 

@@ -27,6 +27,7 @@ import {
   SteamEmoticon
 } from '../shared/types'
 import { DomainError, MIN_DELAY_MS, validateDelay } from '../shared/domain'
+import { ACCESS_DENIED_COOLDOWN_MS } from '../shared/batch-retry-policy'
 import type { UpdatePreferences } from '../shared/update-types'
 import { defaultUpdatePreferences, normalizeUpdatePreferences } from '../shared/update-preferences'
 
@@ -117,6 +118,8 @@ interface BatchRow {
   paused_at: string | null
   next_retry_at: string | null
   retry_count: number
+  access_denied_count: number
+  access_denied_until: string | null
 }
 
 interface BatchSummaryRow extends BatchRow {
@@ -189,7 +192,7 @@ export interface DeliverySeed {
 const now = (): string => new Date().toISOString()
 const batchStatuses: readonly BatchStatus[] = ['queued', 'running', 'paused', 'completed', 'cancelled']
 const batchStopCodes: readonly BatchStopCode[] = [
-  'MANUAL_PAUSE', 'RATE_LIMITED', 'ACCESS_DENIED', 'SESSION_EXPIRED', 'SESSION_PREPARATION',
+  'MANUAL_PAUSE', 'RATE_LIMITED', 'ACCESS_DENIED', 'ACCESS_DENIED_PERSISTENT', 'SESSION_EXPIRED', 'SESSION_PREPARATION',
   'LOGIN_REQUIRED', 'NETWORK_ERROR', 'SERVER_ERROR', 'UNCERTAIN_RESULT', 'SESSION_CHANGED',
   'ACCOUNT_CHANGED', 'APP_RESTARTED', 'APP_SHUTDOWN', 'RETRY_EXHAUSTED', 'QUEUE_ERROR',
   'LEGACY_PAUSED', 'CANCELLED'
@@ -1093,6 +1096,36 @@ export class SqliteStore {
     this.db.prepare('UPDATE batches SET retry_count = 0 WHERE id = ?').run(batchId)
   }
 
+  recordBatchAccessDenied(batchId: string, retryAfterMs?: number): void {
+    this.updateBatchAccessDenied(batchId, retryAfterMs, 1)
+  }
+
+  extendBatchAccessDeniedCooldown(batchId: string, retryAfterMs?: number): void {
+    this.updateBatchAccessDenied(batchId, retryAfterMs, 0)
+  }
+
+  private updateBatchAccessDenied(batchId: string, retryAfterMs: number | undefined, increment: 0 | 1): void {
+    this.transaction(() => {
+      const row = this.db.prepare('SELECT access_denied_until FROM batches WHERE id = ?')
+        .get(batchId) as unknown as { access_denied_until: string | null } | undefined
+      if (!row) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
+      const hint = typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs >= 0
+        ? Math.ceil(retryAfterMs) : 0
+      const maximumDate = 8_640_000_000_000_000
+      const deadline = Math.min(maximumDate, Date.now() + Math.max(ACCESS_DENIED_COOLDOWN_MS, hint))
+      const previous = row.access_denied_until ? Date.parse(row.access_denied_until) : NaN
+      const until = new Date(Number.isFinite(previous) ? Math.max(previous, deadline) : deadline).toISOString()
+      this.db.prepare(`UPDATE batches SET access_denied_count = access_denied_count + ?,
+        access_denied_until = ? WHERE id = ?`).run(increment, until, batchId)
+    })
+  }
+
+  resetBatchAccessDenials(batchId: string): void {
+    this.requireBatch(batchId)
+    this.db.prepare(`UPDATE batches SET access_denied_count = 0, access_denied_until = NULL WHERE id = ?`)
+      .run(batchId)
+  }
+
   cancelBatch(batchId: string): void {
     this.requireBatch(batchId)
     this.transaction(() => {
@@ -1593,6 +1626,30 @@ export class SqliteStore {
         }
         this.db.exec('PRAGMA user_version = 5;')
       }
+      if (version.user_version < 6) {
+        const columns = new Set((this.db.prepare('PRAGMA table_info(batches)').all() as unknown as
+          Array<{ name: string }>).map((column) => column.name))
+        for (const [name, definition] of [
+          ['access_denied_count', 'INTEGER NOT NULL DEFAULT 0'],
+          ['access_denied_until', 'TEXT']
+        ] as const) {
+          if (!columns.has(name)) this.db.exec(`ALTER TABLE batches ADD COLUMN ${name} ${definition}`)
+        }
+        const previousDenials = this.db.prepare(`SELECT id, next_retry_at, access_denied_until FROM batches
+          WHERE stop_code = 'ACCESS_DENIED' AND next_retry_at IS NOT NULL`).all() as unknown as
+          Array<{ id: string; next_retry_at: string; access_denied_until: string | null }>
+        const preserveDeadline = this.db.prepare('UPDATE batches SET access_denied_until = ? WHERE id = ?')
+        for (const row of previousDenials) {
+          const deadline = Date.parse(row.next_retry_at)
+          if (!Number.isFinite(deadline) || deadline <= Date.now() ||
+            new Date(deadline).toISOString() !== row.next_retry_at) continue
+          const existing = row.access_denied_until ? Date.parse(row.access_denied_until) : NaN
+          if (!Number.isFinite(existing) || existing < deadline) {
+            preserveDeadline.run(row.next_retry_at, row.id)
+          }
+        }
+        this.db.exec('PRAGMA user_version = 6;')
+      }
     })
   }
 }
@@ -1738,7 +1795,9 @@ function mapBatchFields(row: BatchRow): Omit<BatchRecord, 'deliveries'> {
     stopMessage: row.stop_message,
     pausedAt: row.paused_at,
     nextRetryAt: row.next_retry_at,
-    retryCount: row.retry_count
+    retryCount: row.retry_count,
+    accessDeniedCount: row.access_denied_count,
+    accessDeniedUntil: row.access_denied_until
   }
 }
 

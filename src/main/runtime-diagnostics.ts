@@ -34,6 +34,9 @@ const sessionReasons = new Set(['http-401', 'login-redirect', 'not-logged-on', '
   'identity-mismatch', 'identity-guest', 'identity-missing', 'transport-error', 'network', 'timeout', 'token-rejected',
   'token-missing', 'session-changed', 'scheduled', 'on-demand', 'cookie-expired', 'unknown', 'verified',
   'credentials_rejected', 'network_or_service', 'rate_limited', 'community_access_denied', 'session_check_failed', 'session_changed'])
+const communityEndpoints = new Set(['profile-comment', 'session-verify', 'other'])
+const responseKinds = new Set(['json', 'html', 'empty', 'other'])
+const denialKinds = new Set(['access-denied', 'challenge', 'unknown'])
 const number = (value: number | undefined): number | null =>
   value !== undefined && Number.isFinite(value) && value >= 0 ? Math.round(value) : null
 
@@ -81,13 +84,19 @@ export class RuntimeDiagnostics {
     this.sample('memory')
   }
 
-  sessionEvent(event: { phase: string; outcome: string; reason: string; httpStatus?: number; method?: string }): void {
+  sessionEvent(event: { phase: string; outcome: string; reason: string; httpStatus?: number; method?: string;
+    endpoint?: string; responseKind?: string; denialKind?: string; responseCode?: number; retryAfterMs?: number }): void {
     if (this.stopped) return
     this.write({ event: 'session', phase: sessionPhases.has(event.phase) ? event.phase : 'unknown',
       outcome: sessionOutcomes.has(event.outcome) ? event.outcome : 'unknown',
       reason: sessionReasons.has(event.reason) ? event.reason : 'unknown',
       ...(Number.isInteger(event.httpStatus) && event.httpStatus! >= 100 && event.httpStatus! <= 599 ? { httpStatus: event.httpStatus } : {}),
-      ...(event.method === 'GET' || event.method === 'POST' ? { method: event.method } : {}) })
+      ...(event.method === 'GET' || event.method === 'POST' ? { method: event.method } : {}),
+      ...(event.endpoint && communityEndpoints.has(event.endpoint) ? { endpoint: event.endpoint } : {}),
+      ...(event.responseKind && responseKinds.has(event.responseKind) ? { responseKind: event.responseKind } : {}),
+      ...(event.denialKind && denialKinds.has(event.denialKind) ? { denialKind: event.denialKind } : {}),
+      ...(Number.isInteger(event.responseCode) && event.responseCode! >= 0 && event.responseCode! <= 255 ? { responseCode: event.responseCode } : {}),
+      ...(typeof event.retryAfterMs === 'number' && Number.isFinite(event.retryAfterMs) && event.retryAfterMs >= 0 ? { retryAfterMs: event.retryAfterMs } : {}) })
   }
 
   shutdown(): void {

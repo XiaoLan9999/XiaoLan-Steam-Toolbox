@@ -415,6 +415,38 @@ describe('SteamService web-session lifecycle', () => {
   })
 })
 
+describe('read-only comment recovery identity checks', () => {
+  it('uses the current Community session without renewing credentials or sending comments', async () => {
+    const { service } = await createService()
+    mocks.verify.mockClear()
+    mocks.webCookies.mockClear()
+    await service.verifyCommentSession(accountA)
+    expect(mocks.verify).toHaveBeenCalledTimes(1)
+    expect(mocks.webCookies).not.toHaveBeenCalled()
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('preserves the original 403 Retry-After without turning it into expired credentials', async () => {
+    const { service } = await createService()
+    mocks.verify.mockRejectedValueOnce(new DomainError('COMMUNITY_ACCESS_DENIED', 'Synthetic check 403', true, 1_200_000))
+    await expect(service.verifyCommentSession(accountA)).rejects.toMatchObject({ code: 'COMMUNITY_ACCESS_DENIED', retryAfterMs: 1_200_000 })
+    expect(service.isAuthenticated(accountA)).toBe(true)
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('rejects an identity check that finishes after the account changes', async () => {
+    const { service } = await createService()
+    const pending = deferred<void>()
+    mocks.verify.mockReturnValueOnce(pending.promise)
+    const check = service.verifyCommentSession(accountA)
+    const checked = expect(check).rejects.toMatchObject({ code: 'SESSION_CHANGED' })
+    await service.activateAccount(accountB)
+    pending.resolve()
+    await checked
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+})
+
 describe('Steam login request timeout', () => {
   it('destroys a stalled request at its wall deadline and clears completed request timers', async () => {
     vi.useFakeTimers()

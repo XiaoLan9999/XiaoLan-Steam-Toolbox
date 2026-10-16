@@ -144,6 +144,7 @@ export type BatchStopCode =
   | 'MANUAL_PAUSE'
   | 'RATE_LIMITED'
   | 'ACCESS_DENIED'
+  | 'ACCESS_DENIED_PERSISTENT'
   | 'SESSION_EXPIRED'
   | 'SESSION_PREPARATION'
   | 'LOGIN_REQUIRED'
@@ -185,6 +186,8 @@ export interface BatchRecord {
   pausedAt: string | null
   nextRetryAt: string | null
   retryCount: number
+  accessDeniedCount?: number
+  accessDeniedUntil?: string | null
   deliveries: DeliveryRecord[]
 }
 

@@ -24,6 +24,11 @@ export interface CommunityDiagnosticEvent {
   reason: 'http-401' | 'login-redirect' | 'not-logged-on' | 'http-403' | 'http-429' | 'identity-match' | 'identity-mismatch' | 'identity-guest' | 'identity-missing' | 'transport-error'
   httpStatus?: number
   method?: 'GET' | 'POST'
+  endpoint?: 'profile-comment' | 'session-verify' | 'other'
+  responseKind?: 'json' | 'html' | 'empty' | 'other'
+  denialKind?: 'access-denied' | 'challenge' | 'unknown'
+  responseCode?: number
+  retryAfterMs?: number
 }
 
 interface CommunityCookie {
@@ -438,9 +443,16 @@ export class SteamCommunityClient {
           }
           if (!response.ok) {
             if (response.status === 403) {
-              this.diagnostic({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method })
-              throw new DomainError('COMMUNITY_ACCESS_DENIED', 'Steam 拒绝了本次请求（HTTP 403），可能是访问或频率限制；尚未确认登录失效，请稍后再试', true,
-                parseRetryAfterMs(response.headers.get('retry-after')))
+              const shape = forbiddenResponseShape(text)
+              const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
+              this.diagnostic({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method,
+                endpoint: communityEndpoint(url.pathname), ...shape,
+                ...(retryAfterMs === undefined ? {} : { retryAfterMs }) })
+              const responseDescription = shape.denialKind === 'challenge' ? '验证页面拒绝'
+                : shape.responseKind === 'json' ? 'JSON 拒绝'
+                  : shape.responseKind === 'html' ? 'HTML 拒绝' : '访问拒绝'
+              throw new DomainError('COMMUNITY_ACCESS_DENIED', `Steam 返回${responseDescription}（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试`, true,
+                retryAfterMs)
             }
             throw new Error(`Steam HTTP error ${response.status}`)
           }
@@ -557,6 +569,40 @@ function isNotLoggedOnResponse(value: string): boolean {
   } catch {
     return false
   }
+}
+
+function communityEndpoint(path: string): NonNullable<CommunityDiagnosticEvent['endpoint']> {
+  if (/^\/comment\/Profile\/post\/\d+\/-1\/?$/.test(path)) return 'profile-comment'
+  if (/^\/profiles\/\d+\/edit\/info\/?$/.test(path)) return 'session-verify'
+  return 'other'
+}
+
+function forbiddenResponseShape(text: string): Pick<CommunityDiagnosticEvent, 'responseKind' | 'denialKind' | 'responseCode'> {
+  const trimmed = text.trim()
+  if (!trimmed) return { responseKind: 'empty', denialKind: 'unknown' }
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    let responseCode: number | undefined
+    if (isRecord(parsed) && !Array.isArray(parsed)) {
+      // Only small numeric protocol codes are diagnostics; never coerce strings or booleans.
+      for (const field of ['eresult', 'error_code', 'errorcode', 'code', 'error', 'success']) {
+        if (!Object.hasOwn(parsed, field)) continue
+        const value = parsed[field]
+        if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 255) {
+          responseCode = value
+          break
+        }
+      }
+    }
+    return { responseKind: 'json', denialKind: responseCode === 15 ? 'access-denied' : 'unknown',
+      ...(responseCode === undefined ? {} : { responseCode }) }
+  } catch { /* Non-JSON rejection pages are classified without retaining their content. */ }
+  if (/^(?:<!doctype\s+html\b|<!--|<[a-z][\w:-]*(?:\s|>))/i.test(trimmed)) {
+    const challenge = /\b(?:g-recaptcha|h-captcha|cf-turnstile|cf-chl-[\w-]+|challenge-platform)\b|(?:id|name)\s*=\s*["'][^"']*captcha|\b(?:verify (?:that )?you are (?:a )?human|human verification|complete (?:the )?captcha)\b|人机验证/i.test(trimmed)
+    const denied = /\baccess\s+denied\b|\bpermission\s+denied\b/i.test(trimmed)
+    return { responseKind: 'html', denialKind: challenge ? 'challenge' : denied ? 'access-denied' : 'unknown' }
+  }
+  return { responseKind: 'other', denialKind: 'unknown' }
 }
 
 function avatarUrlFromValue(value: unknown): string {

@@ -351,7 +351,8 @@ export function TaskPagination({ page, loading, loaded, onChange }: {
 function batchRevision(batch: BatchSummary): string {
   return [batch.id, batch.status, batch.completed, batch.pending, batch.sending, batch.sentVerified,
     batch.acceptedUnverified, batch.failedCount, batch.uncertain, batch.cancelled, batch.startedAt, batch.finishedAt,
-    batch.autoRetryEnabled, batch.stopCode, batch.stopMessage, batch.pausedAt, batch.nextRetryAt, batch.retryCount].join(':')
+    batch.autoRetryEnabled, batch.stopCode, batch.stopMessage, batch.pausedAt, batch.nextRetryAt, batch.retryCount,
+    batch.accessDeniedCount, batch.accessDeniedUntil].join(':')
 }
 
 function statusCount(batch: BatchSummary, status: DeliveryStatus): number {

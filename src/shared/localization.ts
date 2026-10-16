@@ -1,4 +1,6 @@
 const messages = new Map<string, string>([
+  ['HTTP 403 冷却尚未结束，未提交新留言；当前对象和剩余好友保留待发', 'The HTTP 403 cooldown has not ended. No new comment was submitted; the current and remaining recipients stay pending.'],
+  ['账号或会话已变更，本次留言恢复核验已取消', 'The account or session changed. This comment recovery check was cancelled.'],
   ['Steam 会话已自动恢复，请查看任务的恢复状态', 'The Steam session was restored. Check the task recovery status.'],
   ['Steam 会话已自动恢复，请在任务列表查看继续安排', 'The Steam session was restored. Check the task list for the resume schedule.'],
   ['自动重试设置无效', 'Invalid automatic retry setting.'],
@@ -38,6 +40,10 @@ const messages = new Map<string, string>([
   ['Steam 会话需要更新，尚未提交留言，请稍后继续原任务', 'The Steam session needs renewal. No comment was submitted; resume the original task later.'],
   ['暂时无法核验 Steam 登录状态，请稍后重试', 'The Steam sign-in state could not be verified temporarily. Try again later.'],
   ['Steam 拒绝了本次请求（HTTP 403），可能是访问或频率限制；尚未确认登录失效，请稍后再试', 'Steam denied this request (HTTP 403), possibly due to access or rate restrictions. Sign-in expiry is not confirmed. Try again later.'],
+  ['Steam 返回JSON 拒绝（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试', 'Steam returned a JSON refusal (HTTP 403). Sign-in expiry and the specific restriction are not confirmed. Try again later.'],
+  ['Steam 返回HTML 拒绝（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试', 'Steam returned an HTML refusal (HTTP 403). Sign-in expiry and the specific restriction are not confirmed. Try again later.'],
+  ['Steam 返回验证页面拒绝（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试', 'Steam returned a verification-page refusal (HTTP 403). Sign-in expiry and the specific restriction are not confirmed. Try again later.'],
+  ['Steam 返回访问拒绝（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试', 'Steam returned an access refusal (HTTP 403). Sign-in expiry and the specific restriction are not confirmed. Try again later.'],
   ['Steam 登录会话已更新，旧请求结果待核对，请继续原任务', 'The Steam sign-in session changed. The old request result needs review; continue the original task.'],
   ['任务分页参数无效', 'Invalid task pagination parameters.'],
   ['任务状态筛选无效', 'Invalid task status filter.'],
@@ -149,7 +155,15 @@ export function localizeMessage(message: string, language: 'zh-CN' | 'en'): stri
   const translated = messages.get(message)
   if (translated !== undefined) return translated
 
-  let match = /^Steam 会话准备失败，尚未提交留言。原因：([\s\S]*)$/.exec(message)
+  let match = /^留言请求持续被拒绝（HTTP 403），已停止自动重试。当前对象和剩余好友保留待发；尚不能确定是好友权限、账号限制或网络拦截，请处理原因后再手动继续。([\s\S]*)$/.exec(message)
+  if (match) return `Comment access remains denied (HTTP 403). Automatic retries stopped. The current and remaining recipients stay pending. Friend permissions, account restrictions, and network filtering cannot yet be distinguished. Resolve the cause before resuming manually. ${localizeMessage(match[1]!, language)}`
+  match = /^恢复前的登录核验未通过，尚未提交新留言。([\s\S]*)$/.exec(message)
+  if (match) return `The sign-in check before recovery did not pass. No new comment was submitted. ${localizeMessage(match[1]!, language)}`
+  match = /^HTTP 403 冷却时间超出自动恢复范围，请等待后手动继续。([\s\S]*)$/.exec(message)
+  if (match) return `The HTTP 403 cooldown is too long for automatic recovery. Wait before resuming manually. ${localizeMessage(match[1]!, language)}`
+  match = /^HTTP 403 冷却尚未结束，最早可再试：([^；]+)；手动继续、关闭自动重试或重启不会缩短冷却时间$/.exec(message)
+  if (match) return `The HTTP 403 cooldown has not ended. Earliest retry: ${match[1]}. Manual resume, disabling retries, or restarting will not shorten this cooldown.`
+  match = /^Steam 会话准备失败，尚未提交留言。原因：([\s\S]*)$/.exec(message)
   if (match) return `Steam session preparation failed. No comment was submitted. Reason: ${localizeMessage(match[1]!, language)}`
   match = /^连续自动恢复已达 (\d+) 次，请检查原因后手动继续。([\s\S]*)$/.exec(message)
   if (match) return `The limit of ${match[1]} consecutive automatic retries was reached. Review the reason before resuming manually. ${localizeMessage(match[2]!, language)}`

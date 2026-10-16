@@ -4,6 +4,12 @@ import { localizeMessage } from '../src/shared/localization'
 describe('localizeMessage', () => {
   it.each([
     '用户手动暂停任务', '用户取消任务', '任务暂停原因或重试计划无效',
+    '账号或会话已变更，本次留言恢复核验已取消',
+    'HTTP 403 冷却尚未结束，未提交新留言；当前对象和剩余好友保留待发',
+    'HTTP 403 冷却尚未结束，最早可再试：2026-10-16T00:20:00.000Z；手动继续、关闭自动重试或重启不会缩短冷却时间',
+    '恢复前的登录核验未通过，尚未提交新留言。暂时无法核验 Steam 登录状态，请稍后重试',
+    'HTTP 403 冷却时间超出自动恢复范围，请等待后手动继续。Steam 会话尚未准备完成',
+    '留言请求持续被拒绝（HTTP 403），已停止自动重试。当前对象和剩余好友保留待发；尚不能确定是好友权限、账号限制或网络拦截，请处理原因后再手动继续。恢复前的登录核验未通过，尚未提交新留言。Steam 返回HTML 拒绝（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试',
     '应用已重启，任务保持暂停，请手动继续',
     '连续自动恢复已达 5 次，请检查原因后手动继续。Steam 会话尚未准备完成',
     '服务器要求的等待时间超出自动恢复范围，请稍后手动继续。Steam 会话尚未准备完成',
@@ -31,6 +37,19 @@ describe('localizeMessage', () => {
     'Steam 登录会话已更新，旧请求结果待核对，请继续原任务'
   ])('translates session maintenance messages without exposing internal data: %s', message => {
     expect(localizeMessage(message, 'en')).not.toMatch(/\p{Script=Han}/u)
+    expect(localizeMessage(message, 'zh-CN')).toBe(message)
+  })
+
+  it.each([
+    ['JSON 拒绝', 'JSON refusal'], ['HTML 拒绝', 'HTML refusal'],
+    ['验证页面拒绝', 'verification-page refusal'], ['访问拒绝', 'access refusal']
+  ])('translates a safe 403 response shape without claiming expired authentication: %s', (shape, expected) => {
+    const message = `Steam 返回${shape}（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试`
+    const translated = localizeMessage(message, 'en')
+    expect(translated).toContain(expected)
+    expect(translated).toContain('not confirmed')
+    expect(translated).not.toMatch(/\p{Script=Han}/u)
+    expect(localizeMessage(`Steam 会话准备失败，尚未提交留言。原因：${message}`, 'en')).toContain(translated)
     expect(localizeMessage(message, 'zh-CN')).toBe(message)
   })
 

@@ -1,5 +1,5 @@
 import { DomainError } from '../shared/domain'
-import { batchInterruption, batchRetryDelay, MAX_BATCH_RETRIES } from '../shared/batch-retry-policy'
+import { batchInterruption, batchRetryDelay, MAX_ACCESS_DENIED_RETRIES, MAX_BATCH_RETRIES, MAX_BATCH_RETRY_DELAY_MS } from '../shared/batch-retry-policy'
 import type { AccountView, BatchStopCode, BatchSummary } from '../shared/types'
 import type { SqliteStore } from './store'
 
@@ -35,7 +35,8 @@ export class BatchRecoveryController {
 
   constructor(
     private readonly store: Pick<SqliteStore,
-      'getBatchSummary' | 'getActiveAccountId' | 'pauseBatch' | 'setBatchRunning'>,
+      'getBatchSummary' | 'getActiveAccountId' | 'pauseBatch' | 'setBatchRunning'>
+      & Partial<Pick<SqliteStore, 'extendBatchAccessDeniedCooldown'>>,
     private readonly steam: RecoverySteam,
     private readonly callbacks: RecoveryCallbacks
   ) {}
@@ -76,6 +77,12 @@ export class BatchRecoveryController {
       this.pause(batchId, 'LOGIN_REQUIRED', loginMessage, batch.retryCount)
       return
     }
+    if (reason.code === 'ACCESS_DENIED_PERSISTENT' || (batch.accessDeniedCount ?? 0) > MAX_ACCESS_DENIED_RETRIES) {
+      this.pause(batchId, 'ACCESS_DENIED_PERSISTENT',
+        `留言请求持续被拒绝（HTTP 403），已停止自动重试。当前对象和剩余好友保留待发；尚不能确定是好友权限、账号限制或网络拦截，请处理原因后再手动继续。${message}`,
+        batch.retryCount)
+      return
+    }
     if (!reason.allowAuto || !batch.autoRetryEnabled || batch.pending === 0) {
       this.pause(batchId, reason.code, message, batch.retryCount)
       return
@@ -94,8 +101,12 @@ export class BatchRecoveryController {
         `服务器要求的等待时间超出自动恢复范围，请稍后手动继续。${message}`, batch.retryCount)
       return
     }
+    if (batch.accessDeniedUntil && Date.parse(batch.accessDeniedUntil) - Date.now() > MAX_BATCH_RETRY_DELAY_MS) {
+      this.pause(batchId, reason.code, `HTTP 403 冷却时间超出自动恢复范围，请等待后手动继续。${message}`, batch.retryCount)
+      return
+    }
     const nextRetryAt = new Date(Math.max(sameIncident ? Date.parse(batch.nextRetryAt!) : 0,
-      Date.now() + delay)).toISOString()
+      batch.accessDeniedUntil ? Date.parse(batch.accessDeniedUntil) : 0, Date.now() + delay)).toISOString()
     this.store.pauseBatch(batchId, { code: reason.code, message, retryCount: attempt, nextRetryAt })
     this.callbacks.changed(batchId)
     if (this.isCurrent(batchId, token)) this.arm(batchId, token, nextRetryAt)
@@ -202,8 +213,11 @@ export class BatchRecoveryController {
         return
       }
       const interruption = batchInterruption(error)
-      this.interrupt(batchId, { code: interruption.code === 'QUEUE_ERROR' ? 'SESSION_PREPARATION' : interruption.code,
-        message: safeMessage(error), allowAuto: interruption.code !== 'ACCOUNT_CHANGED',
+      const denied = interruption.code === 'ACCESS_DENIED'
+      if (denied) this.store.extendBatchAccessDeniedCooldown?.(batchId, interruption.retryAfterMs)
+      this.interrupt(batchId, { code: denied && (batch.accessDeniedCount ?? 0) > 0 ? 'ACCESS_DENIED_PERSISTENT'
+        : interruption.code === 'QUEUE_ERROR' ? 'SESSION_PREPARATION' : interruption.code,
+        message: safeMessage(error), allowAuto: !denied && interruption.code !== 'ACCOUNT_CHANGED',
         retryAfterMs: interruption.retryAfterMs, advance: true }, token)
     } finally {
       this.attempting.delete(batchId)

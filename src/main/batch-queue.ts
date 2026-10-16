@@ -96,6 +96,10 @@ export class BatchQueue {
     if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
       throw new DomainError('NOT_AUTHENTICATED', '恢复批次前必须登录对应 Steam 账号')
     }
+    if (batch.accessDeniedUntil && Date.parse(batch.accessDeniedUntil) > Date.now()) {
+      throw new DomainError('ACCESS_DENIED_COOLDOWN',
+        `HTTP 403 冷却尚未结束，最早可再试：${batch.accessDeniedUntil}；手动继续、关闭自动重试或重启不会缩短冷却时间`)
+    }
     this.recovery.invalidate(batchId)
     this.store.clearBatchRetryCount(batchId)
     this.store.setBatchRunning(batchId)
@@ -198,6 +202,12 @@ export class BatchQueue {
         const batch = this.store.getBatchSummary(batchId)
         if (!batch || batch.status !== 'running') return
         const intent = this.recovery.capture(batchId)
+        if (batch.accessDeniedUntil && Date.parse(batch.accessDeniedUntil) > Date.now()) {
+          this.recovery.interrupt(batchId, { code: 'ACCESS_DENIED',
+            message: 'HTTP 403 冷却尚未结束，未提交新留言；当前对象和剩余好友保留待发',
+            allowAuto: true, retryAfterMs: Date.parse(batch.accessDeniedUntil) - Date.now() }, intent)
+          return
+        }
         if (!this.steam.isAuthenticated(batch.accountId)) {
           this.recovery.interrupt(batchId, { code: 'SESSION_PREPARATION',
             message: 'Steam 会话尚未准备完成', allowAuto: true }, intent)
@@ -211,16 +221,41 @@ export class BatchQueue {
         if (typeof this.steam.ensureSessionFresh === 'function') {
           try { await this.steam.ensureSessionFresh(batch.accountId) }
           catch (error) {
-            if (this.stopped) return
+            if (this.stopped || !this.recovery.isCurrent(batchId, intent)) return
             const detail = batchInterruption(error)
-            this.recovery.interrupt(batchId, { code: detail.code === 'QUEUE_ERROR' ? 'SESSION_PREPARATION' : detail.code,
-              message: publicErrorMessage(error), allowAuto: !['ACCOUNT_CHANGED', 'LOGIN_REQUIRED'].includes(detail.code),
+            const denied = detail.code === 'ACCESS_DENIED'
+            if (denied) this.store.extendBatchAccessDeniedCooldown(batchId, detail.retryAfterMs)
+            this.recovery.interrupt(batchId, { code: denied && (batch.accessDeniedCount ?? 0) > 0 ? 'ACCESS_DENIED_PERSISTENT'
+              : detail.code === 'QUEUE_ERROR' ? 'SESSION_PREPARATION' : detail.code,
+              message: publicErrorMessage(error), allowAuto: !denied && !['ACCOUNT_CHANGED', 'LOGIN_REQUIRED'].includes(detail.code),
               retryAfterMs: detail.retryAfterMs }, intent)
             return
           }
           if (this.stopped) return
           const current = this.store.getBatchSummary(batchId)
           if (!current || current.status !== 'running' || !this.recovery.isCurrent(batchId, intent)) return
+          if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
+            this.recovery.interrupt(batchId, { code: 'ACCOUNT_CHANGED',
+              message: '当前账号或登录状态已改变，自动继续已停止', allowAuto: false }, intent)
+            return
+          }
+        }
+        if ((batch.accessDeniedCount ?? 0) > 0 && typeof this.steam.verifyCommentSession === 'function') {
+          try { await this.steam.verifyCommentSession(batch.accountId) }
+          catch (error) {
+            if (this.stopped || !this.recovery.isCurrent(batchId, intent)) return
+            const detail = batchInterruption(error)
+            if (detail.code === 'ACCESS_DENIED') this.store.extendBatchAccessDeniedCooldown(batchId, detail.retryAfterMs)
+            this.recovery.interrupt(batchId, {
+              code: detail.code === 'ACCESS_DENIED' ? 'ACCESS_DENIED_PERSISTENT' : detail.code,
+              message: `恢复前的登录核验未通过，尚未提交新留言。${publicErrorMessage(error)}`,
+              allowAuto: detail.canRetry && detail.code !== 'ACCESS_DENIED', retryAfterMs: detail.retryAfterMs
+            }, intent)
+            return
+          }
+          if (this.stopped || !this.recovery.isCurrent(batchId, intent)) return
+          const checked = this.store.getBatchSummary(batchId)
+          if (checked?.status !== 'running') return
           if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
             this.recovery.interrupt(batchId, { code: 'ACCOUNT_CHANGED',
               message: '当前账号或登录状态已改变，自动继续已停止', allowAuto: false }, intent)
@@ -275,6 +310,7 @@ export class BatchQueue {
             result.commentId ? 'sent_verified' : 'accepted_unverified',
             { remoteCommentId: result.commentId ?? undefined }
           )
+          this.store.resetBatchAccessDenials(batchId)
           this.clearRetryCountAfterProgress(batchId)
         } catch (error) {
           if (this.stopped) return
@@ -287,8 +323,10 @@ export class BatchQueue {
           }
           const classification = classifyDeliveryError(error)
           interruption = batchInterruption(error)
+          const accessDenied = error instanceof DomainError && error.code === 'COMMUNITY_ACCESS_DENIED'
+          if (accessDenied) this.store.recordBatchAccessDenied(batchId, error.retryAfterMs)
           const current = this.store.getBatchSummary(batchId)
-          if (classification.pauseBatch && interruption.rejectedBeforeAcceptance && current?.autoRetryEnabled) {
+          if (accessDenied || (classification.pauseBatch && interruption.rejectedBeforeAcceptance && current?.autoRetryEnabled)) {
             this.store.resetDeliveryToPending(delivery.id)
           } else {
             this.store.completeDelivery(delivery.id, classification.status, { error: publicErrorMessage(error) })

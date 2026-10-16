@@ -412,6 +412,15 @@ export class SteamService {
     return result
   }
 
+  async verifyCommentSession(accountId: string): Promise<void> {
+    const community = this.requireActiveCommunity(accountId)
+    await community.verifySession()
+    if (this.runtime?.community !== community || this.store.getActiveAccountId() !== accountId
+      || !this.isAuthenticated(accountId)) {
+      throw new DomainError('SESSION_CHANGED', '账号或会话已变更，本次留言恢复核验已取消')
+    }
+  }
+
   isAuthenticated(accountId: string): boolean {
     return !this.disposed && this.runtime?.accountId === accountId && !this.runtime.recovering
   }

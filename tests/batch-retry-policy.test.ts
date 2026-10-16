@@ -5,6 +5,8 @@ import { batchInterruption, batchRetryDelay, MAX_BATCH_RETRIES } from '../src/sh
 describe('bounded batch recovery policy', () => {
   it('uses a conservative cooldown for access denials and respects server retry hints', () => {
     expect(batchRetryDelay('ACCESS_DENIED', 1)).toBe(300_000)
+    expect(batchRetryDelay('ACCESS_DENIED', 5)).toBe(300_000)
+    expect(batchRetryDelay('ACCESS_DENIED_PERSISTENT', 1)).toBeNull()
     expect(batchRetryDelay('RATE_LIMITED', 1)).toBe(60_000)
     expect(batchRetryDelay('RATE_LIMITED', 1, 500_000)).toBe(500_000)
     expect(batchRetryDelay('RATE_LIMITED', 1, 0)).toBe(60_000)
