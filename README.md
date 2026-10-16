@@ -1,12 +1,15 @@
 # 小蓝Steam工具箱 / XiaoLan Steam Toolbox
 
-Windows 桌面端 Steam 工具箱，由 [XiaoLan9999](https://xiaolan9999.net) 开发。提供艺术作品长图上传助手、静态背景裁剪、多账号好友管理、独立分组和黑名单、昵称与解除好友历史、Steam 表情及资料页留言。
+Windows 桌面端 Steam 工具箱，由 [XiaoLan9999](https://xiaolan9999.net) 开发。提供本地截图导入、艺术作品长图上传助手、静态背景裁剪、多账号好友管理、独立分组和黑名单、昵称与解除好友历史、Steam 表情及资料页留言。
 
 > 当前 MVP 的“留言”指 **Steam 好友个人资料页的公开评论**，不是 Steam 私聊消息。
 
 ## 已实现
 
 - Steam 手机应用二维码登录
+- 天蓝与茶色搭配的轻简浅色界面，中文 / English
+- 内置 Steam 截图工具：用户与游戏名称识别、启动自动刷新、手动刷新、图片预览、JPEG 与缩略图转换、安全备份和截图索引登记
+- 当前账号的只读登录状态刷新检查，显示核验时间与失败原因，不发送测试留言
 - 工具箱内置艺术作品上传、展柜配置与一键长图设置，无需外部浏览器或控制台
 - 静态 PNG/JPEG 背景的本地裁剪预览、普通双图与精选作品尺寸预设、PNG 导出
 - 读取当前账号已装备及已拥有的资料背景，选择静态原图后自动生成主图 / 侧图并准备到内置上传页
@@ -56,6 +59,27 @@ npm.cmd run dist
 ```
 
 安装版和便携版可从 [GitHub Releases](https://github.com/XiaoLan9999/XiaoLan-Steam-Toolbox/releases) 下载。为延续旧版数据，内部包名和数据目录仍使用 `steam-friend-commenter`。
+
+## Steam 截图工具
+
+侧栏的“Steam 截图工具”参考 [SteaScree](https://github.com/awthwathje/SteaScree) 的本地截图准备流程，使用独立 TypeScript 实现，不捆绑原 Qt 程序或复制其源码。无需在工具箱登录，也不需要启动游戏：选择本地 Steam 用户、目标游戏和图片，即可准备 Steam 能读取的 JPEG、缩略图及 `screenshots.vdf` 记录，最后从 Steam 客户端自行确认上传与可见性。详细实现及恢复说明见 [截图工具说明](docs/steam-screenshots.md)。
+
+1. 启动时自动读取一次 Steam 安装位置、`userdata`、登录用户名称、各游戏库清单和已有截图记录。可手动选择目录并记住，下次无需重新定位。
+2. 用户选项同时显示昵称、AccountID 与 SteamID64。游戏支持按名称 / AppID 搜索，已发现的非 Steam 64 位 GameID 也会保留，不要求玩家自己换算 ID。
+3. 缺失的游戏名称通过 Steam 官方 Store 域名查询；用户名称通过公开 Steam 资料补全。后台最多 3 个匿名请求，不携带登录令牌或 Cookie。启动与手动刷新会重新拉取，离线保留本地资料和名称缓存；查名失败仍可按有效 AppID 使用，不擅自替换为其它游戏。
+4. 添加 PNG / JPEG / WebP / BMP 图片，检查预览、目标用户 / 游戏、JPEG 质量及大图自动缩放。源图不修改；图片一次最多 100 张、单张 32 MiB，以限制内存占用，这与好友发送数量没有关系。
+5. **先完全退出 Steam 客户端**，再确认“备份并准备本地截图”。工具会再次检查进程、备份原始索引、同步写入新 JPEG 与缩略图，最后原子提交索引。处理失败不删除已有截图，也不会强行关闭 Steam。
+6. 启动 Steam，在该游戏的截图管理器中选择新图片，再自行确认云端上传。工具箱的“已准备”只表示本地文件已写好，不表示已经上传到 Steam Cloud。
+
+图片转换在不含应用 preload / Node API 的隔离内存窗口中进行，禁止访问网络。目标目录、索引、源图变化及符号链接会在写入前检查。原始索引和事务清单位于目标用户 `760/.xiaolan-screenshot-backups/`，需手动恢复时先退出 Steam 并备份当前索引。
+
+名称缓存和选中目录分别位于工具箱数据目录的 `screenshot-catalog-names.json` 与 `screenshot-preferences.json`；它们不是登录凭据，删除后可重新识别。图片队列只保存在内存中；准备完成的截图与原索引备份保存在 Steam 的 `userdata` 中，不属于工具箱 SQLite 导出文件。
+
+**English:** Open **Steam screenshots**, choose the named local user and game, add images, review the destination and prepare them with Steam fully exited. The toolbox creates local JPEGs, thumbnails and screenshot metadata with a backup; use Steam's screenshot manager for the final cloud upload. Names refresh once at startup and manually, with anonymous official-host lookups and offline caching. The queue is local and source images stay unchanged.
+
+## 账号状态检查
+
+侧栏“当前账号状态 → 刷新检查”会只读核验当前账号的 Steam 网页登录身份，显示检查时间与结果。网络失败或普通 403 会显示“未能核验”，不会因此假定登录已失效；明确的认证拒绝仍沿用安全恢复流程。检查不会发送测试留言、自动扫码或切换到其它账号，也不会重启已暂停的发送任务。检查通过仅证明网页身份匹配，不证明该好友允许留言，也不代表 Steam 客户端正在运行。
 
 ## 艺术作品与背景适配
 
@@ -313,6 +337,10 @@ Clicking a friend row now toggles only that friend without clearing other select
 ## 0.8.1 持续 403 熔断与诊断
 
 修复持续拒绝时同一对象反复退避、数小时无进展的问题。403 冷却后仅允许一次自动重试，再次拒绝停止自动计划，保留当前及剩余待发；恢复前只读核验当前登录身份，不强制换凭据。拒绝计数及冷却期限持久保存，覆盖手动继续、开关重试、重启和过时请求的竞态。增加不含原始响应或凭据的响应形态诊断及双语提示。本次修复不表示已经解除 Steam 端的拒绝或确认其具体原因。
+
+## 0.9.0 截图工具与轻简界面
+
+加入完整本地截图导入流程、可读用户与游戏选择、启动及手动刷新、匿名名称补全和离线缓存；加入当前账号的只读状态检查。全工具箱改为天蓝与茶色搭配的浅色界面，保留中英文和原有好友、任务、艺术作品及签名更新功能。截图最终上传仍由用户在 Steam 客户端确认；此前的持续 HTTP 403 若仍发生，需依据实际响应继续定位，不能以新工具完成代替访问问题已解决。
 
 ## 当前边界
 

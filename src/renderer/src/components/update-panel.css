@@ -3,7 +3,7 @@
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(4, 10, 16, 0.2);
+  background: var(--panel-2);
 }
 
 .update-panel-heading {

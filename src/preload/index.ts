@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { UpdateState } from '../shared/update-types'
+import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from '../shared/steam-screenshots'
 import type { ArtworkBrowserState } from '../shared/artwork-browser'
 import type { ProfileBackgroundCatalog, ProfileBackgroundImage } from '../shared/profile-backgrounds'
 import {
   AppEvent,
   AppSnapshot,
+  AccountView,
   AuthStartResult,
   BatchSummary,
   BatchTaskPage,
@@ -20,6 +22,14 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<IpcResult<T>> =
   ipcRenderer.invoke(channel, ...args) as Promise<IpcResult<T>>
 
 const api: SteamFriendCommenterApi = {
+  getScreenshotCatalog: () => invoke<ScreenshotCatalog>('screenshots:catalog'),
+  refreshScreenshotCatalog: () => invoke<ScreenshotCatalog>('screenshots:refresh'),
+  chooseScreenshotSteamDirectory: () => invoke<ScreenshotCatalog | null>('screenshots:chooseSteam'),
+  getScreenshotImages: () => invoke<ScreenshotImage[]>('screenshots:images'),
+  chooseScreenshotImages: () => invoke<ScreenshotImage[]>('screenshots:chooseImages'),
+  clearScreenshotImages: imageIds => invoke<ScreenshotImage[]>('screenshots:clearImages', imageIds),
+  resolveScreenshotGame: appId => invoke<ScreenshotGame>('screenshots:resolveGame', appId),
+  prepareScreenshots: (input: ScreenshotPrepareInput) => invoke<ScreenshotPrepareResult>('screenshots:prepare', input),
   getProfileBackgrounds: (accountId) => invoke<ProfileBackgroundCatalog>('backgrounds:list', accountId),
   loadProfileBackground: (accountId, backgroundId) => invoke<ProfileBackgroundImage>('backgrounds:load', accountId, backgroundId),
   cancelProfileBackgroundLoad: () => invoke<void>('backgrounds:cancel'),
@@ -41,6 +51,7 @@ const api: SteamFriendCommenterApi = {
   openArtworkSource: (source) => invoke<void>('artwork:openSource', source),
   getSnapshot: () => invoke<AppSnapshot>('snapshot:get'),
   activateAccount: (accountId) => invoke<AppSnapshot>('account:activate', accountId),
+  refreshAccountStatus: (accountId) => invoke<AccountView>('account:refreshStatus', accountId),
   removeAccount: (accountId) => invoke<void>('account:remove', accountId),
   startQrLogin: () => invoke<AuthStartResult>('auth:startQr'),
   startCredentialsLogin: (accountName, password) =>

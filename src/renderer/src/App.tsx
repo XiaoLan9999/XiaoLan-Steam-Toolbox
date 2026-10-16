@@ -7,12 +7,14 @@ import { HistoryPanel } from './components/HistoryPanel'
 import { LoginModal } from './components/LoginModal'
 import { SettingsModal } from './components/SettingsModal'
 import ArtworkToolsPanel from './components/ArtworkToolsPanel'
+import { AccountStatusPanel } from './components/AccountStatusPanel'
+import ScreenshotToolsPanel from './components/ScreenshotToolsPanel'
 import { I18nProvider, type Translate } from './i18n'
 import { avatarFallback, unwrap } from './ui'
 import { applyBatchProgress, applyProgressUpdates, createSnapshotRefresh, type BatchProgressUpdate } from './snapshot-refresh'
 import './task-list.css'
 
-type Tab = 'friends' | 'compose' | 'history' | 'tools'
+type Tab = 'friends' | 'compose' | 'history' | 'tools' | 'screenshots'
 
 interface Toast {
   id: number
@@ -146,14 +148,17 @@ export default function App(): React.JSX.Element {
           <div className="brand-mark">S</div>
           <div>
             <strong>{t(APP_NAME_ZH, APP_NAME_EN)}</strong>
-            <span>{t('好友管理与艺术作品小工具', 'Friends and artwork tools')}</span>
+            <span>{t('好友管理 · 艺术作品 · 截图工具', 'Friends · Artwork · Screenshots')}</span>
           </div>
         </div>
 
         <button className={`sidebar-tools-button ${tab === 'tools' ? 'active' : ''}`} onClick={() => setTab('tools')}>
           {t('艺术作品与小工具', 'Artwork & tools')}
         </button>
-        {tab === 'tools' && activeAccount && <button className="sidebar-tools-button" onClick={() => setTab('friends')}>
+        <button className={`sidebar-tools-button ${tab === 'screenshots' ? 'active' : ''}`} onClick={() => setTab('screenshots')}>
+          {t('Steam 截图工具', 'Steam screenshots')}
+        </button>
+        {(tab === 'tools' || tab === 'screenshots') && activeAccount && <button className="sidebar-tools-button" onClick={() => setTab('friends')}>
           {t('返回好友管理', 'Back to friends')}
         </button>}
 
@@ -199,6 +204,7 @@ export default function App(): React.JSX.Element {
           )}
         </div>
 
+        {activeAccount && <AccountStatusPanel key={activeAccount.id} account={activeAccount} runAction={runAction} />}
         <div className="sidebar-footer">
           <span className={snapshot.security.secretStorageAvailable ? 'secure' : 'warning'}>
             {snapshot.security.secretStorageAvailable ? t('● 登录令牌已加密', '● Login tokens encrypted') : t('● 安全存储不可用', '● Secure storage unavailable')}
@@ -225,7 +231,15 @@ export default function App(): React.JSX.Element {
       </aside>
 
       <main className="workspace">
-        {tab === 'tools' ? (
+        {tab === 'screenshots' ? (
+          <>
+            <header className="topbar tools-topbar">
+              <div><h1>{t('Steam 截图工具', 'Steam screenshots')}</h1><p>{t('选择用户与游戏 · 准备本地截图 · 从 Steam 上传', 'Choose a user and game · Prepare screenshots · Upload from Steam')}</p></div>
+              <button className="ghost" onClick={() => setTab('friends')}>{t('返回', 'Back')}</button>
+            </header>
+            <section className="content"><ScreenshotToolsPanel visible={!settingsOpen && !loginOpen} runAction={runAction} /></section>
+          </>
+        ) : tab === 'tools' ? (
           <>
             <header className="topbar tools-topbar">
               <div><h1>{t('艺术作品与小工具', 'Artwork & tools')}</h1><p>{t('长图上传助手 · 背景裁剪预览', 'Long artwork assistant · Background crop preview')}</p></div>

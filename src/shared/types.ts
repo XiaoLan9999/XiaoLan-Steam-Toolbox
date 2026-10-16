@@ -2,6 +2,7 @@ import type { ArtworkSource } from './artwork-links'
 import type { ArtworkBounds, ArtworkBrowserState, ArtworkTool } from './artwork-browser'
 import type { ArtworkUploadDraft, ProfileBackgroundCatalog, ProfileBackgroundImage } from './profile-backgrounds'
 import type { UpdatePreferences, UpdateState } from './update-types'
+import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from './steam-screenshots'
 
 export type SessionState = 'offline' | 'restoring' | 'authenticated' | 'expired' | 'error'
 
@@ -20,6 +21,9 @@ export interface AccountRecord {
 export interface AccountView extends AccountRecord {
   sessionState: SessionState
   sessionMessage: string | null
+  statusCheckState?: 'checking' | 'verified' | 'unverified'
+  statusCheckedAt?: string | null
+  statusCheckMessage?: string | null
 }
 
 export interface FriendRecord {
@@ -285,6 +289,7 @@ export interface BatchStartInput {
 }
 
 export type AppEvent =
+  | { type: 'screenshotsChanged'; scope?: 'catalog' | 'images' | 'all' }
   | { type: 'artworkChanged'; state: ArtworkBrowserState }
   | { type: 'updateChanged'; state: UpdateState }
   | { type: 'snapshotChanged' }
@@ -295,6 +300,14 @@ export type AppEvent =
   | { type: 'batchProgress'; batchId: string; summary?: BatchSummary | null }
 
 export interface SteamFriendCommenterApi {
+  getScreenshotCatalog(): Promise<IpcResult<ScreenshotCatalog>>
+  refreshScreenshotCatalog(): Promise<IpcResult<ScreenshotCatalog>>
+  chooseScreenshotSteamDirectory(): Promise<IpcResult<ScreenshotCatalog | null>>
+  getScreenshotImages(): Promise<IpcResult<ScreenshotImage[]>>
+  chooseScreenshotImages(): Promise<IpcResult<ScreenshotImage[]>>
+  clearScreenshotImages(imageIds?: string[]): Promise<IpcResult<ScreenshotImage[]>>
+  resolveScreenshotGame(appId: string): Promise<IpcResult<ScreenshotGame>>
+  prepareScreenshots(input: ScreenshotPrepareInput): Promise<IpcResult<ScreenshotPrepareResult>>
   getProfileBackgrounds(accountId: string): Promise<IpcResult<ProfileBackgroundCatalog>>
   loadProfileBackground(accountId: string, backgroundId: string): Promise<IpcResult<ProfileBackgroundImage>>
   cancelProfileBackgroundLoad(): Promise<IpcResult<void>>
@@ -316,6 +329,7 @@ export interface SteamFriendCommenterApi {
   openArtworkSource(source: ArtworkSource): Promise<IpcResult<void>>
   getSnapshot(): Promise<IpcResult<AppSnapshot>>
   activateAccount(accountId: string): Promise<IpcResult<AppSnapshot>>
+  refreshAccountStatus(accountId: string): Promise<IpcResult<AccountView>>
   removeAccount(accountId: string): Promise<IpcResult<void>>
   startQrLogin(): Promise<IpcResult<AuthStartResult>>
   startCredentialsLogin(accountName: string, password: string): Promise<IpcResult<AuthStartResult>>

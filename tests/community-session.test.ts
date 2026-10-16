@@ -120,7 +120,8 @@ describe('Community authentication evidence and read-only verification', () => {
       .postProfileComment(friend, 'private-message')).rejects.toThrow()
     expect(diagnostic.mock.calls).toEqual([[{
       phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method: 'POST',
-      endpoint: 'profile-comment', responseKind: 'json', denialKind: 'unknown'
+      endpoint: 'profile-comment', responseKind: 'json', denialKind: 'unknown',
+      commentDenialReason: 'unknown', errorPresent: true
     }]])
     expect(JSON.stringify(diagnostic.mock.calls)).not.toMatch(/private|7656119|https/)
   })

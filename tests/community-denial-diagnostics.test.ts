@@ -41,7 +41,8 @@ describe('privacy-safe forbidden-response diagnostics', () => {
     const { events, error, expired, fetch } = await rejectResponse(body)
     expect(error).toMatchObject({ code: 'COMMUNITY_ACCESS_DENIED', retryable: true })
     expect(events).toEqual([{ phase: 'community-request', outcome: 'access-denied', reason: 'http-403',
-      httpStatus: 403, method: 'POST', endpoint: 'profile-comment', responseKind, denialKind }])
+      httpStatus: 403, method: 'POST', endpoint: 'profile-comment', responseKind, denialKind,
+      ...(body.includes('"error":"private-error"') ? { commentDenialReason: 'unknown', errorPresent: true } : {}) }])
     expect(JSON.stringify(events)).not.toMatch(/private|7656119|https|csrf/)
     expect(String(error)).not.toMatch(/private|7656119|https|csrf/)
     expect(expired).not.toHaveBeenCalled()

@@ -87,7 +87,19 @@
   grid-template-columns: minmax(120px, 1fr) 100px minmax(140px, 1.2fr) 125px;
 }
 
-.task-delivery-list .delivery-row.uncertain { background: rgba(229, 189, 103, 0.055); }
+.task-delivery-list .delivery-row.uncertain { background: var(--tea-soft); }
+
+.task-center .task-list-filter {
+  background: var(--tea-soft);
+}
+
+.task-status-counts .delivery-badge {
+  background: var(--panel);
+}
+
+.task-status-counts .delivery-badge.active {
+  background: var(--sky-soft);
+}
 
 @media (max-width: 1120px) {
   .task-center { grid-template-columns: minmax(0, 1fr); }

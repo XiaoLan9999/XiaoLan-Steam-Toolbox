@@ -68,6 +68,10 @@ export class SteamService {
   private readonly pendingLogins = new Map<string, LoginSession>()
   private readonly completingLogins = new Set<string>()
   private readonly statuses = new Map<string, SessionStatus>()
+  private readonly statusChecks = new Map<string, {
+    generation: number; state: 'checking' | 'verified' | 'unverified'; checkedAt: string | null;
+    message: string | null; promise?: Promise<AccountView>
+  }>()
   private generation = 0
   private disposed = false
   private keepAliveTimer: ReturnType<typeof setTimeout> | null = null
@@ -98,6 +102,7 @@ export class SteamService {
     }
     this.loginAgents.clear()
     this.restorationFailures.clear()
+    this.statusChecks.clear()
   }
 
   getAccountViews(): AccountView[] {
@@ -107,8 +112,58 @@ export class SteamService {
         state: account.id === activeAccountId ? 'offline' : 'offline',
         message: null
       }
-      return { ...account, sessionState: status.state, sessionMessage: status.message }
+      const check = this.statusChecks.get(account.id)
+      return { ...account, sessionState: status.state, sessionMessage: status.message,
+        ...(check?.generation === this.generation ? { statusCheckState: check.state,
+          statusCheckedAt: check.checkedAt, statusCheckMessage: check.message } : {}) }
     })
+  }
+
+  refreshAccountStatus(accountId: string): Promise<AccountView> {
+    this.requireOpen()
+    if (this.store.getActiveAccountId() !== accountId) {
+      throw new DomainError('STATUS_CHECK_ACCOUNT_CHANGED', '请先切换到需要检查的账号')
+    }
+    const previous = this.statusChecks.get(accountId)
+    if (previous?.generation === this.generation && previous.promise) return previous.promise
+    const entry = { generation: this.generation, state: 'checking' as 'checking' | 'verified' | 'unverified',
+      checkedAt: previous?.checkedAt ?? null, message: null as string | null, promise: undefined as Promise<AccountView> | undefined }
+    this.statusChecks.set(accountId, entry)
+    this.emit({ type: 'snapshotChanged' })
+    entry.promise = (async () => {
+      try {
+        if (!this.runtime) {
+          if (this.pendingLogins.size || this.statuses.get(accountId)?.state === 'restoring') {
+            throw new DomainError('STATUS_CHECK_BUSY', '账号正在登录或恢复，请稍后检查')
+          }
+          await this.activateAccount(accountId, false)
+          entry.generation = this.generation
+        }
+        const runtime = this.runtime
+        if (!runtime || runtime.accountId !== accountId) {
+          throw new DomainError('STATUS_CHECK_UNAVAILABLE', '当前没有可核验的网页会话，请先登录或稍后重试')
+        }
+        await this.ensureSessionFresh(accountId)
+        if (this.runtime !== runtime) throw new DomainError('STATUS_CHECK_ACCOUNT_CHANGED', '账号或会话已改变，本次检查已取消')
+        await runtime.community.verifySession()
+        if (this.runtime !== runtime || !this.isAuthenticated(accountId)) {
+          throw new DomainError('STATUS_CHECK_ACCOUNT_CHANGED', '账号或会话已改变，本次检查已取消')
+        }
+        entry.state = 'verified'
+        entry.message = '已核验当前 Steam 网页登录身份；不代表留言权限或客户端在线状态'
+      } catch (error) {
+        entry.state = 'unverified'
+        entry.message = publicErrorMessage(error)
+      }
+      if (this.disposed || this.store.getActiveAccountId() !== accountId
+        || this.statusChecks.get(accountId) !== entry || entry.generation !== this.generation) {
+        throw new DomainError('STATUS_CHECK_ACCOUNT_CHANGED', '账号或会话已改变，本次检查已取消')
+      }
+      entry.checkedAt = new Date(this.now()).toISOString()
+      this.emit({ type: 'snapshotChanged' })
+      return this.getAccountViews().find(account => account.id === accountId)!
+    })().finally(() => { if (this.statusChecks.get(accountId) === entry) entry.promise = undefined })
+    return entry.promise
   }
 
   async restoreActiveAccount(): Promise<void> {

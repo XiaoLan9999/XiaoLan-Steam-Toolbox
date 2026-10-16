@@ -37,6 +37,8 @@ const sessionReasons = new Set(['http-401', 'login-redirect', 'not-logged-on', '
 const communityEndpoints = new Set(['profile-comment', 'session-verify', 'other'])
 const responseKinds = new Set(['json', 'html', 'empty', 'other'])
 const denialKinds = new Set(['access-denied', 'challenge', 'unknown'])
+const commentDenialReasons = new Set(['unknown', 'csrf-sessionid', 'posting-too-frequently',
+  'target-comments-disabled', 'friends-only', 'target-blocked', 'account-restricted', 'challenge'])
 const number = (value: number | undefined): number | null =>
   value !== undefined && Number.isFinite(value) && value >= 0 ? Math.round(value) : null
 
@@ -85,7 +87,8 @@ export class RuntimeDiagnostics {
   }
 
   sessionEvent(event: { phase: string; outcome: string; reason: string; httpStatus?: number; method?: string;
-    endpoint?: string; responseKind?: string; denialKind?: string; responseCode?: number; retryAfterMs?: number }): void {
+    endpoint?: string; responseKind?: string; denialKind?: string; responseCode?: number; retryAfterMs?: number;
+    commentDenialReason?: string; errorPresent?: boolean }): void {
     if (this.stopped) return
     this.write({ event: 'session', phase: sessionPhases.has(event.phase) ? event.phase : 'unknown',
       outcome: sessionOutcomes.has(event.outcome) ? event.outcome : 'unknown',
@@ -95,6 +98,8 @@ export class RuntimeDiagnostics {
       ...(event.endpoint && communityEndpoints.has(event.endpoint) ? { endpoint: event.endpoint } : {}),
       ...(event.responseKind && responseKinds.has(event.responseKind) ? { responseKind: event.responseKind } : {}),
       ...(event.denialKind && denialKinds.has(event.denialKind) ? { denialKind: event.denialKind } : {}),
+      ...(event.commentDenialReason && commentDenialReasons.has(event.commentDenialReason) ? { commentDenialReason: event.commentDenialReason } : {}),
+      ...(typeof event.errorPresent === 'boolean' ? { errorPresent: event.errorPresent } : {}),
       ...(Number.isInteger(event.responseCode) && event.responseCode! >= 0 && event.responseCode! <= 255 ? { responseCode: event.responseCode } : {}),
       ...(typeof event.retryAfterMs === 'number' && Number.isFinite(event.retryAfterMs) && event.retryAfterMs >= 0 ? { retryAfterMs: event.retryAfterMs } : {}) })
   }

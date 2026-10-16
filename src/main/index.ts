@@ -22,6 +22,12 @@ import type { ArtworkBounds, ArtworkTool } from '../shared/artwork-browser'
 import { UpdateService } from './update-service'
 import { createUpdateFetch } from './update-fetch'
 import { RuntimeDiagnostics } from './runtime-diagnostics'
+import { SteamScreenshotService } from './steam-screenshots'
+import { ScreenshotNameService } from './steam-screenshot-names'
+import { ScreenshotController } from './screenshot-controller'
+import { ScreenshotBrowserImageAdapter } from './screenshot-image-adapter'
+import { discoverScreenshotSteamPaths, isSteamClientRunning } from './steam-screenshot-runtime'
+import type { ScreenshotPrepareInput } from '../shared/steam-screenshots'
 import { prepareWindowsUpdate } from './update-installer'
 import { UPDATE_REPOSITORY, type UpdatePreferences, type UpdatePackageKind } from '../shared/update-types'
 import {
@@ -45,6 +51,10 @@ let recoveringRenderer = false
 let shuttingDown = false
 let exportInProgress = false
 let installInProgress = false
+let screenshotImportInProgress = false
+let screenshotService: SteamScreenshotService
+let screenshotController: ScreenshotController
+let screenshotImageAdapter: ScreenshotBrowserImageAdapter
 const accountTransition = new AccountTransition()
 let updater: UpdateService
 let artworkBrowser: ArtworkBrowser | null = null
@@ -118,6 +128,14 @@ app.whenReady().then(async () => {
     }
   })
   diagnostics.start()
+  screenshotImageAdapter = new ScreenshotBrowserImageAdapter()
+  screenshotService = new SteamScreenshotService({ imageAdapter: screenshotImageAdapter,
+    findSteamPaths: discoverScreenshotSteamPaths, isSteamRunning: isSteamClientRunning })
+  screenshotController = new ScreenshotController(screenshotService,
+    new ScreenshotNameService({ cachePath: join(app.getPath('userData'), 'screenshot-catalog-names.json') }), {
+      preferencesPath: join(app.getPath('userData'), 'screenshot-preferences.json'), accounts: () => store.getAccounts(),
+      changed: () => emit({ type: 'screenshotsChanged', scope: 'catalog' })
+    })
   updater = new UpdateService({
     currentVersion: app.getVersion(), packageKind: updatePackageKind,
     cacheDirectory: join(app.getPath('userData'), 'updates'),
@@ -127,6 +145,7 @@ app.whenReady().then(async () => {
   })
   registerIpcHandlers()
   createWindow()
+  void screenshotController.refresh().catch(() => { /* The screenshot page offers a manual directory selector. */ })
   void steam.restoreActiveAccount()
   const automaticCheck = (): void => {
     if (app.isPackaged && store.getUpdatePreferences().autoCheck && updater.getState().phase !== 'downloading') {
@@ -158,6 +177,8 @@ app.on('will-quit', () => {
   queue?.shutdown()
   commentScans?.shutdown()
   steam?.dispose()
+  screenshotController?.dispose()
+  screenshotImageAdapter?.dispose()
   diagnostics?.shutdown()
   store?.close()
 })
@@ -167,11 +188,12 @@ app.on('child-process-gone', (_event, details) => {
 })
 
 app.on('before-quit', (event) => {
-  if (!exportInProgress) { shuttingDown = true; return }
+  if (!exportInProgress && !screenshotImportInProgress) { shuttingDown = true; return }
   event.preventDefault()
   if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, {
-    type: 'info', message: store.getLanguage() === 'en'
-      ? 'Please wait for the data export to finish before closing.' : '数据正在导出，请完成后再退出。'
+    type: 'info', message: screenshotImportInProgress ? store.getLanguage() === 'en'
+      ? 'Screenshot preparation is committing local files. Please wait before closing.' : '截图正在准备并写入本地文件，请完成后再退出。'
+      : store.getLanguage() === 'en' ? 'Please wait for the data export to finish before closing.' : '数据正在导出，请完成后再退出。'
   })
 })
 
@@ -185,7 +207,8 @@ function createWindow(): void {
     minWidth: 1040,
     minHeight: 680,
     show: false,
-    backgroundColor: '#0e1721',
+    autoHideMenuBar: true,
+    backgroundColor: '#f3f6f7',
     title: APP_NAME_ZH,
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -215,6 +238,7 @@ function createWindow(): void {
     artworkUploads?.invalidate()
     backgroundMedia?.invalidate()
     browser.shutdown()
+    screenshotImageAdapter?.closeWorker()
   })
 
   mainWindow.once('ready-to-show', () => mainWindow?.show())
@@ -228,11 +252,12 @@ function createWindow(): void {
     })
   })
   mainWindow.on('close', (event) => {
-    if (exportInProgress) {
+    if (exportInProgress || screenshotImportInProgress) {
       event.preventDefault()
       if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, {
-        type: 'info', message: store.getLanguage() === 'en'
-          ? 'Please wait for the data export to finish before closing.' : '数据正在导出，请完成后再退出。'
+        type: 'info', message: screenshotImportInProgress ? store.getLanguage() === 'en'
+          ? 'Screenshot preparation is committing local files. Please wait before closing.' : '截图正在准备并写入本地文件，请完成后再退出。'
+          : store.getLanguage() === 'en' ? 'Please wait for the data export to finish before closing.' : '数据正在导出，请完成后再退出。'
       })
     }
   })
@@ -280,6 +305,45 @@ function createWindow(): void {
 }
 
 function registerIpcHandlers(): void {
+  handle('screenshots:catalog', () => screenshotController.getCatalog())
+  handle('screenshots:refresh', () => screenshotController.refresh())
+  handle('screenshots:images', () => screenshotService.getImages())
+  handle('screenshots:chooseSteam', async () => {
+    if (!mainWindow || screenshotImportInProgress) throw new DomainError('SCREENSHOT_BUSY', '正在准备截图，请稍后重试')
+    const chosen = await dialog.showOpenDialog(mainWindow, {
+      title: store.getLanguage() === 'en' ? 'Choose the Steam installation directory' : '选择 Steam 安装目录',
+      properties: ['openDirectory'], defaultPath: screenshotController.getCatalog().steamPath ?? undefined
+    })
+    return chosen.canceled || !chosen.filePaths[0] ? null : screenshotController.refresh(chosen.filePaths[0])
+  })
+  handle('screenshots:chooseImages', async () => {
+    if (!mainWindow || screenshotImportInProgress) throw new DomainError('SCREENSHOT_BUSY', '正在准备截图，请稍后重试')
+    const chosen = await dialog.showOpenDialog(mainWindow, {
+      title: store.getLanguage() === 'en' ? 'Add screenshots' : '添加截图图片', properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }]
+    })
+    if (!chosen.canceled && chosen.filePaths.length) await screenshotService.addImages(chosen.filePaths)
+    mainWindow?.webContents.send('app:event', { type: 'screenshotsChanged', scope: 'images' })
+    return screenshotService.getImages()
+  })
+  handle('screenshots:clearImages', (ids?: string[]) => {
+    if (ids !== undefined && (!Array.isArray(ids) || ids.length > 100 || ids.some(id => typeof id !== 'string' || id.length > 128))) {
+      throw new DomainError('SCREENSHOT_INVALID_QUEUE', '截图队列参数无效')
+    }
+    screenshotService.clearImages(ids)
+    mainWindow?.webContents.send('app:event', { type: 'screenshotsChanged', scope: 'images' })
+    return screenshotService.getImages()
+  })
+  handle('screenshots:resolveGame', (appId: string) => screenshotController.resolveGame(appId))
+  handle('screenshots:prepare', async (input: ScreenshotPrepareInput) => {
+    if (screenshotImportInProgress) throw new DomainError('SCREENSHOT_BUSY', '正在准备截图，请稍后重试')
+    screenshotImportInProgress = true
+    try {
+      const result = await screenshotService.prepare(input)
+      mainWindow?.webContents.send('app:event', { type: 'screenshotsChanged', scope: 'images' })
+      return result
+    } finally { screenshotImportInProgress = false }
+  })
   handle('update:check', () => updater.checkForUpdates())
   handle('update:download', (routeId?: string) => updater.downloadUpdate(routeId))
   handle('update:cancel', () => updater.cancel())
@@ -345,6 +409,7 @@ function registerIpcHandlers(): void {
     await requireArtworkBrowser().open(source === 'steam-design' ? 'design' : source)
   })
   handle('snapshot:get', () => getSnapshot())
+  handle('account:refreshStatus', (accountId: string) => steam.refreshAccountStatus(accountId))
   handle('account:activate', (accountId: string) => accountTransition.run(async () => {
     artworkUploads?.invalidate()
     backgroundMedia?.invalidate()
@@ -489,7 +554,7 @@ function ensureInstallationIdle(): void {
     return batch?.status === 'running' || batch?.status === 'queued' ||
       Boolean(batch?.sending) || scan?.status === 'running'
   })
-  if (exportInProgress || installInProgress || hasActiveWork || queue.hasPendingRequests()) throw new DomainError('update.installBusy', 'update.installBusy')
+  if (exportInProgress || screenshotImportInProgress || installInProgress || hasActiveWork || queue.hasPendingRequests()) throw new DomainError('update.installBusy', 'update.installBusy')
 }
 
 function requireArtworkBrowser(): ArtworkBrowser {
@@ -543,8 +608,10 @@ function handle<TArgs extends unknown[], TResult>(
     }
     try {
       const data = await operation(...args)
+      if (shuttingDown) return { ok: false, error: { code: 'APP_SHUTTING_DOWN', message: '应用正在退出' } }
       return { ok: true, data }
     } catch (error) {
+      if (shuttingDown) return { ok: false, error: { code: 'APP_SHUTTING_DOWN', message: '应用正在退出' } }
       return { ok: false, error: toAppError(error) }
     }
   })

@@ -4,7 +4,7 @@
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: rgba(8, 20, 30, 0.45);
+  background: var(--panel-2);
   font-size: 11px;
   line-height: 1.6;
   overflow-wrap: anywhere;
@@ -12,12 +12,12 @@
 
 .task-details > .batch-recovery { margin: 0 20px 16px; }
 .active-batch-card > .batch-recovery { margin: 14px 0; }
-.batch-recovery.scheduled { border-color: rgba(102, 192, 244, 0.5); }
+.batch-recovery.scheduled { border-color: #a5ccdf; background: var(--sky-soft); }
 .batch-stop-reason { display: grid; gap: 4px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
 .batch-stop-reason > strong { color: var(--yellow); font-size: 13px; }
 .batch-stop-reason > small, .batch-stop-reason > span { color: var(--muted); font-size: 10px; }
 .batch-stop-reason p, .batch-retry-state, .batch-retry-attempt { margin: 0; }
-.batch-access-denied { display: grid; gap: 6px; padding: 10px; border: 1px solid rgba(229, 185, 92, 0.35); border-radius: 6px; }
+.batch-access-denied { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--tea-line); border-radius: 6px; background: var(--tea-soft); }
 .batch-access-denied > strong { color: var(--yellow); }
 .batch-access-denied p { margin: 0; }
 .batch-access-cooldown { display: grid; gap: 3px; }

@@ -416,6 +416,55 @@ describe('SteamService web-session lifecycle', () => {
 })
 
 describe('read-only comment recovery identity checks', () => {
+  it('coalesces explicit account status checks and records actual web identity verification', async () => {
+    const { service } = await createService()
+    mocks.verify.mockClear()
+    mocks.webCookies.mockClear()
+    const pending = deferred<void>()
+    mocks.verify.mockReturnValueOnce(pending.promise)
+    const first = service.refreshAccountStatus(accountA)
+    const second = service.refreshAccountStatus(accountA)
+    expect(first).toBe(second)
+    expect(service.getAccountViews().find(account => account.id === accountA)?.statusCheckState).toBe('checking')
+    pending.resolve()
+    expect(await first).toMatchObject({ id: accountA, sessionState: 'authenticated', statusCheckState: 'verified',
+      statusCheckedAt: expect.any(String) })
+    expect(mocks.verify).toHaveBeenCalledTimes(1)
+    expect(mocks.webCookies).not.toHaveBeenCalled()
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('records an unverified 403 without falsely expiring a valid login or posting a comment', async () => {
+    const { service } = await createService()
+    mocks.verify.mockRejectedValueOnce(new DomainError('COMMUNITY_ACCESS_DENIED', 'Synthetic status check 403'))
+    expect(await service.refreshAccountStatus(accountA)).toMatchObject({ sessionState: 'authenticated',
+      statusCheckState: 'unverified', statusCheckMessage: 'Synthetic status check 403' })
+    expect(service.isAuthenticated(accountA)).toBe(true)
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it.each(['switch', 'dispose'] as const)('does not publish a stale status check after %s', async action => {
+    const { service, events } = await createService()
+    const pending = deferred<void>()
+    mocks.verify.mockReturnValueOnce(pending.promise)
+    const checking = service.refreshAccountStatus(accountA)
+    const result = expect(checking).rejects.toMatchObject({ code: 'STATUS_CHECK_ACCOUNT_CHANGED' })
+    await Promise.resolve()
+    if (action === 'switch') await service.activateAccount(accountB)
+    else service.dispose()
+    const count = events.length
+    pending.resolve()
+    await result
+    expect(events).toHaveLength(count)
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('does not activate a different account just to check its status', async () => {
+    const { service } = await createService()
+    expect(() => service.refreshAccountStatus(accountB)).toThrow('请先切换')
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
+
   it('uses the current Community session without renewing credentials or sending comments', async () => {
     const { service } = await createService()
     mocks.verify.mockClear()

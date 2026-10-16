@@ -29,7 +29,12 @@ export interface CommunityDiagnosticEvent {
   denialKind?: 'access-denied' | 'challenge' | 'unknown'
   responseCode?: number
   retryAfterMs?: number
+  commentDenialReason?: CommentDenialReason
+  errorPresent?: boolean
 }
+
+export type CommentDenialReason = 'unknown' | 'csrf-sessionid' | 'posting-too-frequently'
+  | 'target-comments-disabled' | 'friends-only' | 'target-blocked' | 'account-restricted' | 'challenge'
 
 interface CommunityCookie {
   name: string
@@ -444,14 +449,17 @@ export class SteamCommunityClient {
           if (!response.ok) {
             if (response.status === 403) {
               const shape = forbiddenResponseShape(text)
+              const detail = commentDenialDetail(text)
               const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
               this.diagnostic({ phase: 'community-request', outcome: 'access-denied', reason: 'http-403', httpStatus: 403, method,
                 endpoint: communityEndpoint(url.pathname), ...shape,
+                ...detail.diagnostic,
                 ...(retryAfterMs === undefined ? {} : { retryAfterMs }) })
               const responseDescription = shape.denialKind === 'challenge' ? '验证页面拒绝'
                 : shape.responseKind === 'json' ? 'JSON 拒绝'
                   : shape.responseKind === 'html' ? 'HTML 拒绝' : '访问拒绝'
-              throw new DomainError('COMMUNITY_ACCESS_DENIED', `Steam 返回${responseDescription}（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试`, true,
+              const explanation = detail.message ? `。Steam 原因：${detail.message}` : ''
+              throw new DomainError('COMMUNITY_ACCESS_DENIED', `Steam 返回${responseDescription}（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试${explanation}`, true,
                 retryAfterMs)
             }
             throw new Error(`Steam HTTP error ${response.status}`)
@@ -603,6 +611,81 @@ function forbiddenResponseShape(text: string): Pick<CommunityDiagnosticEvent, 'r
     return { responseKind: 'html', denialKind: challenge ? 'challenge' : denied ? 'access-denied' : 'unknown' }
   }
   return { responseKind: 'other', denialKind: 'unknown' }
+}
+
+function commentDenialDetail(text: string): {
+  message: string | null
+  diagnostic: Pick<CommunityDiagnosticEvent, 'commentDenialReason' | 'errorPresent'>
+} {
+  try {
+    const body: unknown = JSON.parse(text)
+    if (!isRecord(body) || Array.isArray(body) || !Object.hasOwn(body, 'error') || typeof body.error !== 'string') {
+      return { message: null, diagnostic: {} }
+    }
+    const errorPresent = body.error.trim().length > 0
+    const normalized = normalizeCommentError(body.error)
+    return {
+      message: normalized === null ? null : safeCommentErrorMessage(normalized),
+      diagnostic: { errorPresent, commentDenialReason: normalized === null ? 'unknown' : classifyCommentError(normalized) }
+    }
+  } catch { return { message: null, diagnostic: {} } }
+}
+
+function normalizeCommentError(value: string): string | null {
+  if (!value || value.length > 4096) return null
+  const removeControls = (input: string) => input.replace(/[\u0000-\u001f\u007f-\u009f\p{Cf}]/gu, '')
+  let plain = removeControls(value)
+  // Decode only inert character references, never scripts, URLs, or other JSON fields.
+  for (let pass = 0; pass < 2; pass++) {
+    plain = plain.replace(/&(?:#(\d{1,7})|#x([\da-f]{1,6})|(amp|lt|gt|quot|apos|nbsp));/gi, (_match, decimal: string | undefined, hex: string | undefined, named: string | undefined) => {
+      if (named) return ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' } as Record<string, string>)[named.toLowerCase()]!
+      const number = Number.parseInt(decimal ?? hex!, decimal ? 10 : 16)
+      return number > 0 && number <= 0x10ffff && !(number >= 0xd800 && number <= 0xdfff) ? String.fromCodePoint(number) : ''
+    })
+    plain = removeControls(plain)
+  }
+  if (/\\(?:u[\da-f]{4}|x[\da-f]{2})|%[\da-f]{2}|&(?:[a-z][a-z\d]{1,31}|#[^;\s]+);/i.test(plain)) return null
+  plain = plain.replace(/<(script|style|iframe|object|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<[^>]*>/g, '').replace(/\s+/gu, ' ').trim()
+  return plain || null
+}
+
+function safeCommentErrorMessage(value: string): string | null {
+  // Suppress credential-shaped messages entirely; partial redaction is not reliable for tokens.
+  if (/\b(?:steam\s*Login\s*(?:Secure)?|steamMachineAuth\d*|session[_ -]*id|(?:access|refresh)[_ -]*token|auth(?:orization|[_ -]*(?:token|key|code))?|bearer|(?:set-)?cookie|api[_ -]*key|password|token|csrf[_ -]*(?:token|key))["']?\s*(?:[=:：]|\bis\s+(?!invalid\b|missing\b|expired\b|incorrect\b))/i.test(value)
+    || /\b(?:steamLogin(?:Secure)?|steamMachineAuth\d*|(?:access|refresh)[_ -]?token|authorization|bearer|(?:set-)?cookie|password|api[_ -]?key)\s+(?!invalid\b|missing\b|expired\b|incorrect\b|denied\b|failed\b|required\b|rejected\b)\S+/i.test(value)
+    || /\bBearer\s+\S+/i.test(value)
+    || /\b[A-Za-z\d_-]{8,}\.[A-Za-z\d_-]{8,}\.[A-Za-z\d_-]{8,}\b/.test(value)
+    || /[A-Za-z\d_+/=-]{24,}/.test(value)) return null
+  let safe = value.replace(/[A-Z\d.!#$%&'*+/=?^_`{|}~-]+@[A-Z\d.-]+\.[A-Z]{2,}/gi, '[redacted]')
+    .replace(/\b(?:https?|ftp|file|steam):\/\/[^\s<>]+|\bwww\.[^\s<>]+|\b(?:[A-Z\d](?:[A-Z\d-]*[A-Z\d])?\.)+[A-Z]{2,63}(?::\d{1,5})?(?:\/[^\s<>]*)?/gi, '[redacted]')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:\/[^\s<>]*)?|\b[A-Z]:[\\/][^\s<>]+/gi, '[redacted]')
+    .replace(/\b\d{17}\b/g, '[redacted]')
+    .replace(/[<>]/g, '').trim()
+  if (!safe || (!/\s|\p{Script=Han}/u.test(safe) && !/^(?:forbidden|denied|error)[.!]?$/i.test(safe))) return null
+  safe = Array.from(safe).slice(0, 160).join('')
+  return safe
+}
+
+function classifyCommentError(value: string): CommentDenialReason {
+  const assertion = value.replace(/^your comment was not posted because /i, '')
+    .replace(/^your account does not have permission to post comments\b/i, 'account restriction')
+  if (/\b(?:example|sample|quotation|quoted|says?|means?)\b|示例|引用|并非|并未|没有|不是|不需要|无需|未(?:被|遭|受)|\b(?:is|are|was|were|has|have|does|do) not\b|\bnot (?:invalid|missing|expired|restricted|limited|banned|blocked|disabled|posting)\b/i.test(assertion)) return 'unknown'
+  if (/^(?:(?:invalid|missing|expired|incorrect) (?:csrf )?session\s*id\b|(?:the )?(?:csrf )?session\s*id (?:is|was) (?:invalid|missing|expired|incorrect)\b)/i.test(value)
+    || /^(?:(?:您的|你的|当前)?(?:会话标识|会话\s*id|sessionid)(?:无效|已过期|缺失|不匹配))/i.test(value)) return 'csrf-sessionid'
+  if (/^(?:(?:you(?:'ve| have) been |you are )?posting too frequently\b|your comment was not posted because you (?:have been|are) posting too frequently\b)/i.test(value)
+    || /^(?:由于)?(?:您|你)(?:发帖|发表(?:评论|留言)|留言|评论)(?:过于|太过|太|过)频繁/.test(value)) return 'posting-too-frequently'
+  if (/^(?:the profile owner has disabled (?:comments|commenting)\b|comments (?:have been|are) disabled (?:on|for) this profile\b|comments (?:have been|are) disabled by the (?:profile )?owner\b|this user has disabled comments\b)/i.test(value)
+    || /^(?:(?:该|此|这个)?(?:用户|个人资料)(?:的)?(?:已关闭|已禁用|关闭了)(?:评论|留言)|(?:该|此)?(?:个人资料|用户)?的?(?:评论|留言)(?:已关闭|被禁用|已禁用))/.test(value)) return 'target-comments-disabled'
+  if (/^(?:only friends (?:of this user )?can (?:post|leave|add) comments?\b|you (?:must|need to) be (?:a )?friends? with (?:this user|the (?:profile )?owner) (?:to|before) (?:post|leave|add)\b)/i.test(value)
+    || /^(?:只有|仅允许|仅限)(?:(?:该|此)用户的)?好友(?:才能|可以|可)?(?:留言|评论|发表|发布)/.test(value)) return 'friends-only'
+  if (/^(?:you (?:have been|are) blocked by (?:this user|the (?:profile )?owner)\b|this user has blocked you\b)/i.test(value)
+    || /^(?:(?:该|此)用户(?:已)?(?:将您|将你|把您|把你)(?:加入黑名单|屏蔽|拉黑)|(?:您|你)(?:已)?被(?:该|此)用户(?:屏蔽|拉黑))/.test(value)) return 'target-blocked'
+  if (/^(?:your account (?:is|has been) (?:restricted|limited|banned|suspended) from (?:posting|commenting)\b|you (?:are|have been) (?:banned|restricted) from (?:posting|commenting)\b|your account does not have permission to post comments\b)/i.test(value)
+    || /^(?:您的|你的)账号(?:已被|被|已)?(?:限制|禁止|封禁)[^。！？]*(?:留言|评论|发帖)/.test(value)) return 'account-restricted'
+  if (/^(?:(?:please )?(?:complete|solve) (?:the |a )?(?:captcha|human verification)\b|(?:please )?verify (?:that )?you are (?:a )?human\b)/i.test(value)
+    || /^(?:请|需要先|请先)(?:完成|通过|进行)(?:人机验证|验证码验证)/.test(value)) return 'challenge'
+  return 'unknown'
 }
 
 function avatarUrlFromValue(value: unknown): string {

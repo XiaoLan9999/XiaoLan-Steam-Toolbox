@@ -34,7 +34,7 @@
 .scan-readonly-badge {
   flex-shrink: 0;
   padding: 5px 9px;
-  border: 1px solid rgba(102, 192, 244, 0.23);
+  border: 1px solid #bddbe9;
   border-radius: 15px;
   color: var(--blue);
   font-size: 10px;
@@ -72,7 +72,7 @@
 .scan-counts small,
 .scan-background-note,
 .scan-help {
-  color: #7891a5;
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.7;
 }
@@ -86,7 +86,7 @@
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: rgba(3, 9, 14, 0.2);
+  background: var(--panel-2);
 }
 
 .scan-progress-heading {
@@ -110,7 +110,7 @@
 }
 
 .comment-scan-progress progress::-webkit-progress-bar {
-  background: rgba(102, 192, 244, 0.12);
+  background: var(--panel-3);
 }
 
 .comment-scan-progress progress::-webkit-progress-value {
@@ -136,7 +136,7 @@
 
 .scan-error {
   margin: 10px 0 0;
-  color: #e7b56f;
+  color: var(--yellow);
   font-size: 11px;
   overflow-wrap: anywhere;
 }
@@ -160,8 +160,8 @@
 
 .friend-view-tabs button.active {
   color: var(--blue);
-  border-color: rgba(102, 192, 244, 0.28);
-  background: rgba(102, 192, 244, 0.09);
+  border-color: #bddbe9;
+  background: var(--sky-soft);
 }
 
 .friend-view-tabs b {
@@ -170,7 +170,7 @@
 }
 
 .friend-view-tabs > span {
-  color: #7891a5;
+  color: var(--muted);
   font-size: 10px;
   margin-left: auto;
 }
@@ -201,12 +201,12 @@
 }
 
 .friend-bulk-toolbar > span strong {
-  color: #b5d3e6;
+  color: var(--tea);
 }
 
 .friend-selection-help {
   padding: 0 16px 13px;
-  color: #8095a8;
+  color: var(--muted);
   font-size: 10px;
   line-height: 1.8;
 }
@@ -217,7 +217,7 @@
   margin: 0;
   padding: 11px 16px;
   border-top: 1px solid var(--line);
-  background: rgba(26, 159, 255, 0.035);
+  background: var(--panel-2);
 }
 
 .friend-management .friend-selected-tools .primary {
@@ -242,7 +242,7 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: #10202e;
+  background: var(--panel-2);
   white-space: nowrap;
 }
 
@@ -256,11 +256,11 @@
 
 .friend-management .friend-table tr.selected td,
 .friend-management .friend-table tr.selected:hover td {
-  background: rgba(26, 159, 255, 0.13);
+  background: var(--sky-soft);
 }
 
 .friend-management .friend-table tr.selected td:first-child {
-  box-shadow: inset 3px 0 #66c0f4;
+  box-shadow: inset 3px 0 var(--blue-2);
 }
 
 .friend-management .is-dragging,
@@ -297,7 +297,7 @@
 
 .blacklist-badge {
   align-self: flex-start;
-  color: #d59b8e;
+  color: var(--red);
   font-size: 9px;
 }
 
@@ -309,26 +309,26 @@
 }
 
 .comment-status {
-  color: #8195a6;
+  color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
 }
 
 .comment-status.allowed {
-  color: #8dcc91;
+  color: var(--green);
 }
 
 .comment-status.blocked {
-  color: #e29488;
+  color: var(--red);
 }
 
 .comment-status.unknown {
-  color: #dcbe7a;
+  color: var(--yellow);
 }
 
 .friend-comment-check .check-reason,
 .friend-comment-check time {
-  color: #7890a2;
+  color: var(--muted);
   font-size: 9px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -338,14 +338,14 @@
 .friend-removals-note,
 .friend-name-changes-note {
   padding: 0 16px 15px;
-  color: #8095a8;
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.8;
 }
 
 .friend-removals-note strong,
 .friend-name-changes-note strong {
-  color: #b5d3e6;
+  color: var(--tea);
   font-size: 12px;
   font-weight: 550;
 }
@@ -378,7 +378,7 @@
   top: 0;
   z-index: 1;
   padding: 12px;
-  background: #10202e;
+  background: var(--panel-2);
   color: var(--muted);
   font-size: 10px;
   font-weight: 500;
@@ -397,7 +397,7 @@
 .friend-name-changes-table td:nth-child(2),
 .friend-name-changes-table time,
 .removal-legacy-time {
-  color: #8ca5b9;
+  color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -417,11 +417,11 @@
 }
 
 .removal-status.removed {
-  color: #dcbe7a;
+  color: var(--yellow);
 }
 
 .removal-status.restored {
-  color: #8dcc91;
+  color: var(--green);
 }
 
 .friend-removals-table a,
@@ -451,7 +451,7 @@
 }
 
 .friend-old-name {
-  color: #8ca5b9;
+  color: var(--muted);
 }
 
 .friend-name-change-arrow {

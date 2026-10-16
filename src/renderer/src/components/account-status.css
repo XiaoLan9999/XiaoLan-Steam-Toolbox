@@ -1,0 +1,7 @@
+.account-status-check { margin: 10px 6px 18px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 12px; }
+.account-status-check > div { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.account-status-check button { padding: 6px 8px; font-size: 11px; }
+.account-status-check > span, .account-status-check small, .account-status-check time { display: block; margin-top: 7px; line-height: 1.5; overflow-wrap: anywhere; }
+.account-status-check small, .account-status-check time { color: var(--muted); }
+.account-status-check .status-verified { color: #3b7457; }
+.account-status-check .status-unverified { color: #82644a; }

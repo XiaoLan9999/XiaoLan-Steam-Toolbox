@@ -1,4 +1,12 @@
 const messages = new Map<string, string>([
+  ['请先切换到需要检查的账号', 'Switch to the account you want to check first.'],
+  ['账号正在登录或恢复，请稍后检查', 'The account is signing in or recovering. Check again shortly.'],
+  ['当前没有可核验的网页会话，请先登录或稍后重试', 'There is no verifiable web session. Sign in first or try again later.'],
+  ['账号或会话已改变，本次检查已取消', 'The account or session changed. This check was cancelled.'],
+  ['已核验当前 Steam 网页登录身份；不代表留言权限或客户端在线状态', 'The current Steam web identity is verified. This does not verify comment permissions or Steam client online status.'],
+  ['公开名称接口暂时限流，已保留本地名称，请稍后手动刷新', 'The public name service is rate-limited. Local names were retained; refresh manually later.'],
+  ['请输入有效的 Steam AppID', 'Enter a valid Steam AppID.'],
+  ['截图名称查询已取消', 'Screenshot name lookup was cancelled.'],
   ['HTTP 403 冷却尚未结束，未提交新留言；当前对象和剩余好友保留待发', 'The HTTP 403 cooldown has not ended. No new comment was submitted; the current and remaining recipients stay pending.'],
   ['账号或会话已变更，本次留言恢复核验已取消', 'The account or session changed. This comment recovery check was cancelled.'],
   ['Steam 会话已自动恢复，请查看任务的恢复状态', 'The Steam session was restored. Check the task recovery status.'],
@@ -155,7 +163,9 @@ export function localizeMessage(message: string, language: 'zh-CN' | 'en'): stri
   const translated = messages.get(message)
   if (translated !== undefined) return translated
 
-  let match = /^留言请求持续被拒绝（HTTP 403），已停止自动重试。当前对象和剩余好友保留待发；尚不能确定是好友权限、账号限制或网络拦截，请处理原因后再手动继续。([\s\S]*)$/.exec(message)
+  let match = /^(Steam 返回(?:JSON 拒绝|HTML 拒绝|验证页面拒绝|访问拒绝)（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试)。Steam 原因：([\s\S]*)$/.exec(message)
+  if (match) return `${localizeMessage(match[1]!, language)} Steam reason: ${match[2]}`
+  match = /^留言请求持续被拒绝（HTTP 403），已停止自动重试。当前对象和剩余好友保留待发；尚不能确定是好友权限、账号限制或网络拦截，请处理原因后再手动继续。([\s\S]*)$/.exec(message)
   if (match) return `Comment access remains denied (HTTP 403). Automatic retries stopped. The current and remaining recipients stay pending. Friend permissions, account restrictions, and network filtering cannot yet be distinguished. Resolve the cause before resuming manually. ${localizeMessage(match[1]!, language)}`
   match = /^恢复前的登录核验未通过，尚未提交新留言。([\s\S]*)$/.exec(message)
   if (match) return `The sign-in check before recovery did not pass. No new comment was submitted. ${localizeMessage(match[1]!, language)}`

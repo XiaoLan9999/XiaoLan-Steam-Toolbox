@@ -1,0 +1,137 @@
+.screenshot-tools {
+  --shot-ink: #253c48;
+  --shot-muted: #6d818a;
+  --shot-line: #dae8eb;
+  --shot-sky: #2396c4;
+  --shot-tea: #94784d;
+  color: var(--shot-ink);
+  padding: 30px 32px 24px;
+  max-width: 1580px;
+  margin: 0 auto;
+}
+.screenshot-tools[hidden] { display: none; }
+.screenshot-tools h2, .screenshot-tools h3, .screenshot-tools p { margin: 0; }
+.screenshot-tools h2 { font-size: clamp(24px, 2vw, 32px); letter-spacing: -.7px; font-weight: 650; line-height: 1.35; }
+.screenshot-tools h3 { font-size: 17px; font-weight: 650; }
+.screenshot-tools p, .screenshot-tools small { color: var(--shot-muted); line-height: 1.65; }
+.screenshot-tools button { border: 1px solid #d1e1e6; border-radius: 9px; color: #42616f; background: #fff; padding: 10px 14px; font-size: 13px; box-shadow: none; }
+.screenshot-tools button:hover:not(:disabled) { background: #edf8fc; border-color: #82cce5; transform: none; }
+.screenshot-tools button.primary { color: #fff; background: #359fca; border-color: #359fca; }
+.screenshot-tools button.primary:hover:not(:disabled) { background: #248db8; }
+.screenshot-tools button:disabled { opacity: .48; cursor: not-allowed; }
+.screenshot-tools button:focus-visible, .screenshot-tools input:focus-visible, .screenshot-tools select:focus-visible, .screenshot-tools textarea:focus-visible { outline: 3px solid #a6dcef; outline-offset: 2px; }
+.screenshot-tools input:not([type="checkbox"]), .screenshot-tools select, .screenshot-tools textarea { background: #f9fcfd; color: var(--shot-ink); border: 1px solid #d5e3e7; border-radius: 8px; box-shadow: none; width: 100%; min-width: 0; font-size: 13px; padding: 10px 11px; }
+.screenshot-tools input[type="checkbox"] { accent-color: var(--shot-sky); width: 16px; height: 16px; flex-shrink: 0; }
+.screenshot-tools label { color: #486371; font-size: 12px; font-weight: 600; }
+.screenshot-tools input::placeholder, .screenshot-tools textarea::placeholder { color: #91a3ab; }
+.screenshot-hero { display: flex; gap: 24px; justify-content: space-between; align-items: center; padding: 3px 0 26px; }
+.screenshot-eyebrow { display: block; color: var(--shot-tea); font-size: 10px; font-weight: 700; letter-spacing: 1.9px; margin-bottom: 10px; }
+.screenshot-hero p { font-size: 13px; max-width: 660px; margin-top: 11px; }
+.screenshot-local-badge { display: inline-flex; align-items: center; gap: 8px; color: #6c8078; background: #f2f6ed; padding: 9px 12px; border-radius: 20px; font-size: 11px; white-space: nowrap; }
+.screenshot-local-badge span { width: 6px; height: 6px; border-radius: 50%; background: #88a96d; }
+.screenshot-card { border: 1px solid var(--shot-line); border-radius: 15px; background: #fff; box-shadow: 0 4px 20px #6c9aaa06; }
+.screenshot-directory { display: flex; align-items: center; gap: 20px; justify-content: space-between; padding: 20px 22px; background: linear-gradient(110deg, #f7fcff, #fffdfa); margin-bottom: 18px; }
+.screenshot-directory-main { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.screenshot-status-dot { width: 8px; height: 8px; background: #8cb79d; border: 4px solid #e4f1e8; box-sizing: content-box; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+.screenshot-status-dot.running { background: #b89b61; border-color: #f6eedb; }
+.screenshot-directory h3 { font-size: 14px; margin-bottom: 6px; }
+.screenshot-directory code { font-size: 12px; color: #526d7a; overflow-wrap: anywhere; }
+.screenshot-directory p { font-size: 11px; margin-top: 5px; }
+.screenshot-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-shrink: 0; }
+.screenshot-warnings { list-style: none; display: grid; gap: 5px; padding: 12px 16px; margin: 0 0 18px; border-radius: 10px; background: #fbf6ec; color: #8a734d; font-size: 12px; line-height: 1.7; }
+.screenshot-warnings li::before { content: '·'; margin-right: 7px; }
+.screenshot-alert { background: #fff0e9; border: 1px solid #efd6c8; border-radius: 10px; padding: 12px 16px; margin-bottom: 16px !important; color: #a36647 !important; font-size: 13px; }
+.screenshot-metadata-progress { display: flex; flex-wrap: wrap; gap: 8px 14px; color: #5289a0 !important; background: #edf8fd; border: 1px solid #d9edf5; border-radius: 10px; padding: 11px 16px; margin-bottom: 16px !important; font-size: 12px; }
+.screenshot-metadata-progress span { font-size: 11px; color: #91acb9; }
+.screenshot-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 285px; gap: 20px; align-items: start; }
+.screenshot-main-column { display: grid; gap: 20px; min-width: 0; }
+.screenshot-targets { display: grid; grid-template-columns: minmax(0, .88fr) minmax(0, 1.12fr); padding: 24px; gap: 24px; }
+.screenshot-user-select, .screenshot-game-select { min-width: 0; }
+.screenshot-user-select { border-right: 1px solid #edf1ef; padding-right: 24px; }
+.screenshot-step { font-size: 11px; font-weight: 700; color: #b49a70; letter-spacing: 1px; display: inline-block; margin-bottom: 9px; }
+.screenshot-targets h3 { margin-bottom: 8px; }
+.screenshot-targets p { font-size: 12px; margin-bottom: 18px; }
+.screenshot-targets label { display: block; margin-bottom: 7px; }
+.screenshot-meta { color: #8c9da4; font-size: 10px; display: block; margin-top: 9px; overflow-wrap: anywhere; }
+.screenshot-game-list { display: grid; gap: 5px; max-height: 190px; overflow-y: auto; padding: 8px 0 5px; scrollbar-width: thin; scrollbar-color: #d4e5e9 transparent; }
+.screenshot-tools .screenshot-game-option { text-align: left; display: grid; gap: 3px; padding: 9px 11px; background: #fff; border: 1px solid transparent; border-radius: 8px; }
+.screenshot-game-option strong { font-size: 12px; font-weight: 550; overflow-wrap: anywhere; }
+.screenshot-game-option span { color: #91a0a6; font-size: 10px; }
+.screenshot-tools .screenshot-game-option.selected { background: #eaf7fd; border-color: #b4dfed; color: #237da3; }
+.screenshot-game-list > p { font-size: 11px; padding: 8px 4px; margin-bottom: 0; }
+.screenshot-manual-game { padding-top: 13px; border-top: 1px solid #edf1ef; margin-top: 8px; }
+.screenshot-manual-game > div { display: flex; gap: 7px; }
+.screenshot-manual-game > div button { white-space: nowrap; padding-left: 10px; padding-right: 10px; }
+.screenshot-manual-game small { display: block; margin-top: 7px; font-size: 10px; font-weight: 400; }
+.screenshot-queue { padding: 24px; }
+.screenshot-card-heading { display: flex; gap: 15px; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.screenshot-card-heading h3 { margin-bottom: 7px; }
+.screenshot-card-heading p { font-size: 12px; max-width: 460px; }
+.screenshot-tools .screenshot-empty { min-height: 195px; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; border: 1px dashed #c9e2e9; background: #f7fcfe; border-radius: 12px; }
+.screenshot-empty svg { fill: none; stroke: #83bbce; stroke-width: 1.7; width: 46px; height: 46px; margin-bottom: 5px; }
+.screenshot-empty strong { font-size: 14px; font-weight: 500; color: #578295; }
+.screenshot-empty span { font-size: 11px; color: #91a7b0; }
+.screenshot-queue-count { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; color: #4e7d90; margin: 0 0 12px; }
+.screenshot-queue-count span { color: #9aa9af; font-size: 10px; }
+.screenshot-image-grid { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 14px; max-height: 520px; overflow-y: auto; }
+.screenshot-image { min-width: 0; display: grid; align-content: start; gap: 5px; }
+.screenshot-preview { position: relative; aspect-ratio: 16/10; border: 1px solid #e0eaed; background: #f2f7f8; display: grid; place-items: center; border-radius: 9px; overflow: hidden; }
+.screenshot-preview img { max-width: 100%; width: 100%; height: 100%; object-fit: contain; }
+.screenshot-preview > span { color: #8a9aa2; font-size: 11px; }
+.screenshot-tools button.screenshot-remove { position: absolute; top: 5px; right: 5px; width: 23px; height: 23px; border: 1px solid #fff8; border-radius: 50%; background: #ffffffeb; padding: 0; font-size: 16px; line-height: 18px; color: #59717c; }
+.screenshot-image > strong { font-size: 11px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.screenshot-image > span { color: #8b9da7; font-size: 10px; }
+.screenshot-image .screenshot-resize-tag { color: #9c804d; font-size: 10px; }
+.screenshot-output { padding: 24px 20px; position: sticky; top: 18px; background: #fffdfa; }
+.screenshot-output > h3 { margin-bottom: 9px; }
+.screenshot-output > p { font-size: 12px; }
+.screenshot-summary { margin: 22px 0; padding: 16px 0; border-top: 1px solid #eee8de; border-bottom: 1px solid #eee8de; display: grid; gap: 15px; }
+.screenshot-summary > div { display: flex; gap: 10px; justify-content: space-between; }
+.screenshot-summary dt { font-size: 11px; color: #9b907f; flex-shrink: 0; }
+.screenshot-summary dd { font-size: 12px; color: #55666c; font-weight: 550; text-align: right; margin: 0; overflow-wrap: anywhere; min-width: 0; }
+.screenshot-summary dd small { display: block; font-size: 10px; color: #9f9c95; margin-top: 3px; font-weight: 400; }
+.screenshot-quality { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.screenshot-quality span small { display: block; font-size: 10px; font-weight: 400; margin-top: 3px; }
+.screenshot-tools .screenshot-quality input { width: 68px; padding: 9px 7px; background: #fff; }
+.screenshot-resize-choice { display: flex; align-items: flex-start; gap: 9px; margin: 19px 0; }
+.screenshot-resize-choice small { font-size: 10px; font-weight: 400; display: block; margin-top: 4px; }
+.screenshot-caption { display: block; }
+.screenshot-caption textarea { margin-top: 8px; resize: vertical; font-weight: 400; }
+.screenshot-tools .screenshot-prepare { width: 100%; padding: 13px; margin-top: 18px; }
+.screenshot-write-note { display: block; text-align: center; font-size: 10px; margin-top: 11px; }
+.screenshot-tools .screenshot-field-error { display: block; color: #a76845; font-size: 10px; margin-top: 6px; }
+.screenshot-result { border: 1px solid #c4dfd3; background: #f2faf5; border-radius: 13px; padding: 20px 24px; margin-top: 20px; font-size: 13px; color: #537966; }
+.screenshot-result strong { font-weight: 600; }
+.screenshot-result ol { padding-left: 20px; color: #71887d; line-height: 1.9; font-size: 12px; }
+.screenshot-result summary { cursor: pointer; font-size: 11px; color: #6c8f7d; }
+.screenshot-result dl { display: grid; gap: 10px; margin-bottom: 0; font-size: 11px; }
+.screenshot-result dt { color: #7b9585; }
+.screenshot-result dd { margin: 4px 0 0; color: #527361; overflow-wrap: anywhere; font-family: Consolas, monospace; }
+.screenshot-footer { text-align: center; color: #9aabae; font-size: 10px; line-height: 1.7; padding-top: 24px; }
+.screenshot-confirm-backdrop { z-index: 200; background: #2d4a574d; backdrop-filter: blur(3px); }
+.screenshot-confirm { background: #fffdf9; border: 1px solid #e0e7e5; padding: 28px; max-width: 520px; width: calc(100% - 40px); border-radius: 17px; box-shadow: 0 16px 80px #294e6130; }
+.screenshot-confirm h3 { margin-bottom: 12px; font-size: 20px; }
+.screenshot-confirm > p { font-size: 12px; }
+.screenshot-confirm dl { display: grid; gap: 12px; background: #f3f8fa; border-radius: 10px; padding: 15px; font-size: 12px; }
+.screenshot-confirm dl > div { display: grid; grid-template-columns: 50px minmax(0, 1fr); gap: 15px; }
+.screenshot-confirm dt { color: #91a1a5; }
+.screenshot-confirm dd { margin: 0; overflow-wrap: anywhere; }
+.screenshot-confirm .screenshot-confirm-note { font-size: 11px; color: #9f875e; margin-bottom: 22px; }
+.screenshot-confirm .screenshot-actions { justify-content: flex-end; }
+@media (max-width: 1250px) {
+  .screenshot-tools { padding: 24px; }
+  .screenshot-workspace { grid-template-columns: minmax(0, 1fr) 250px; gap: 16px; }
+  .screenshot-targets { grid-template-columns: 1fr; gap: 22px; padding: 20px; }
+  .screenshot-user-select { border-right: 0; border-bottom: 1px solid #edf1ef; padding-right: 0; padding-bottom: 20px; }
+  .screenshot-card-heading { align-items: flex-start; flex-direction: column; }
+  .screenshot-local-badge { display: none; }
+}
+@media (max-width: 900px) {
+  .screenshot-tools { padding: 20px 16px; }
+  .screenshot-workspace { grid-template-columns: 1fr; }
+  .screenshot-output { position: static; }
+  .screenshot-directory { align-items: flex-start; flex-direction: column; gap: 14px; padding: 18px; }
+  .screenshot-queue { padding: 20px; }
+  .screenshot-queue-count { flex-wrap: wrap; }
+  .screenshot-hero { padding-bottom: 20px; }
+}
