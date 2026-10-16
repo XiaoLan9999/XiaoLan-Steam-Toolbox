@@ -31,7 +31,7 @@ const adapter = (): ScreenshotImageAdapter => ({
   encode: vi.fn(async (_data, options) => ({ jpeg: jpeg(options.width, options.height), thumbnail: jpeg(options.thumbnailWidth, options.thumbnailHeight) }))
 })
 async function fixture(options: { original?: string | null; imageWidth?: number; imageHeight?: number } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'steam-screenshots-fixture-'))
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'steam-screenshots-fixture-')))
   roots.push(root)
   await fs.mkdir(path.join(root, 'config'), { recursive: true })
   await fs.mkdir(path.join(root, 'steamapps'), { recursive: true })
