@@ -125,7 +125,9 @@ code {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   padding: 24px 16px 18px;
+  overflow-y: auto;
   border-right: 1px solid var(--line);
   background: linear-gradient(180deg, #fdfcf9, #f7f4ee);
   box-shadow: 3px 0 18px rgba(94, 78, 61, 0.025);
@@ -211,7 +213,7 @@ code {
   flex: 1;
   flex-direction: column;
   gap: 7px;
-  min-height: 0;
+  min-height: 72px;
   overflow-y: auto;
 }
 

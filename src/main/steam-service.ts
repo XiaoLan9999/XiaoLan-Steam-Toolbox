@@ -22,6 +22,7 @@ import { SqliteStore } from './store'
 import { SteamCommunityClient } from './community-client'
 import type { CommunityDiagnosticEvent } from './community-client'
 import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
+import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
 
 interface RuntimeSession {
   accountId: string
@@ -524,7 +525,7 @@ export class SteamService {
 
   private createLoginSession(): LoginSession {
     const agent = new BoundedLoginAgent(LOGIN_REQUEST_TIMEOUT_MS)
-    const session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent })
+    const session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent, userAgent: STEAM_WEB_USER_AGENT })
     session.loginTimeout = 5 * 60 * 1000
     this.loginAgents.set(session, agent)
     return session

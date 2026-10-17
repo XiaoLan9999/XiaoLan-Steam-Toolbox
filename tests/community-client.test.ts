@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SteamCommunityClient } from '../src/main/community-client'
+import { STEAM_WEB_USER_AGENT } from '../src/main/steam-user-agent'
 
 const cookies = [
   'steamLoginSecure=76561198000000001%7C%7Ctoken; Path=/; Secure; Domain=steamcommunity.com',
@@ -12,6 +13,22 @@ afterEach(() => {
 })
 
 describe('SteamCommunityClient', () => {
+  it('uses the authentication browser identity for both identity GET and comment POST', async () => {
+    const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) => init?.method === 'POST'
+      ? jsonResponse({ success: true, comments_html: '<div id="comment_7788"></div>' })
+      : new Response('<script>g_steamID="76561198000000001";</script>'))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await client.verifySession()
+    await client.postProfileComment('76561198000000002', 'synthetic-comment')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    for (const [, init] of fetchMock.mock.calls) {
+      const userAgent = new Headers(init?.headers).get('User-Agent')
+      expect(userAgent).toBe(STEAM_WEB_USER_AGENT)
+      expect(userAgent).not.toMatch(/toolbox|xiaolan|Chrome\/136\./i)
+    }
+  })
+
   it('parses the authenticated compact friend relationship response', async () => {
     vi.stubGlobal(
       'fetch',

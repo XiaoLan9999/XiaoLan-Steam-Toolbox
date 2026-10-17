@@ -5,6 +5,7 @@ import { parseFriendPage } from './friend-page-parser'
 import { parseCommentEligibility } from './comment-eligibility-parser'
 import { extractCommunityPageIdentity, extractProfileWebApiToken, getProfileBackgroundCatalog } from './profile-backgrounds'
 import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
+import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
 
 export interface CommunityProfileSummary {
   steamId: string
@@ -403,8 +404,7 @@ export class SteamCommunityClient {
             Accept: 'application/json, text/plain, */*',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
             Cookie: cookieHeader,
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0 Safari/537.36',
+            'User-Agent': STEAM_WEB_USER_AGENT,
             ...(init.headers as Record<string, string> | undefined)
           }
         })

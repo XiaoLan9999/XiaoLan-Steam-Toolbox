@@ -10,6 +10,7 @@ import type { ClientRequest, RequestOptions } from 'node:http'
 import { Agent } from 'node:https'
 import { SecretCipher, SqliteStore } from '../src/main/store'
 import { AccountRecord, AppEvent, FriendRecord } from '../src/shared/types'
+import { STEAM_WEB_USER_AGENT } from '../src/main/steam-user-agent'
 
 const mocks = vi.hoisted(() => ({
   relationships: vi.fn(),
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   replaceCookies: vi.fn(),
   post: vi.fn(),
   emoticons: vi.fn(),
+  sessionOptions: [] as Array<{ platform: number; options: { userAgent?: string; agent?: Agent } }>,
   sessions: [] as Array<{refreshToken: string; emit: (event: string) => void}>,
   instances: [] as Array<{ accountId: string; expire: () => void }>
 }))
@@ -32,7 +34,11 @@ vi.mock('steam-session', async () => {
   EAuthTokenPlatformType: { WebBrowser: 2 },
   ESessionPersistence: { Persistent: 1 },
   LoginSession: class extends MockEmitter {
-    constructor() { super(); mocks.sessions.push(this) }
+    constructor(platform: number, options: { userAgent?: string; agent?: Agent }) {
+      super()
+      mocks.sessions.push(this)
+      mocks.sessionOptions.push({ platform, options })
+    }
     refreshToken = ''
     loginTimeout = 0
     async getWebCookies(): Promise<string[]> {
@@ -79,6 +85,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   mocks.instances.splice(0)
   mocks.sessions.splice(0)
+  mocks.sessionOptions.splice(0)
   mocks.profile.mockResolvedValue(null)
   mocks.webCookies.mockResolvedValue(['sessionid=test-session'])
   mocks.backgrounds.mockResolvedValue({ accountId: accountA, items: [], issues: [], ownedComplete: true, fetchedAt: new Date().toISOString() })
@@ -98,6 +105,21 @@ afterEach(() => {
 })
 
 describe('SteamService web-session lifecycle', () => {
+  it.each(['restore', 'qr', 'credentials'] as const)('uses the Community browser identity for %s authentication and cookie renewal', async mode => {
+    const { service } = await createService(false)
+    if (mode === 'qr') await service.startQrLogin()
+    else if (mode === 'credentials') await service.startCredentialsLogin('fixture', 'fixture-only')
+    const config = mocks.sessionOptions.at(-1)!
+    expect(config.platform).toBe(2)
+    expect(config.options).toMatchObject({ userAgent: STEAM_WEB_USER_AGENT, agent: expect.any(BoundedLoginAgent) })
+    expect(config.options.userAgent).not.toMatch(/toolbox|xiaolan|Chrome\/136\./i)
+    if (mode === 'restore') {
+      await service.getArtworkWebCookies(accountA)
+      expect(mocks.sessionOptions).toHaveLength(1)
+      expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+    }
+  })
+
   it.each(['friends', 'emoticons'] as const)('ignores QR background %s results after shutdown without events or closed-store reads', async phase => {
     const { service, store, events } = await createService()
     const friends = deferred<Record<string, number>>()

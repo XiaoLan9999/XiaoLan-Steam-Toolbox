@@ -8,6 +8,7 @@ import { LoginModal } from './components/LoginModal'
 import { SettingsModal } from './components/SettingsModal'
 import ArtworkToolsPanel from './components/ArtworkToolsPanel'
 import { AccountStatusPanel } from './components/AccountStatusPanel'
+import { UpdateNotice } from './components/UpdateNotice'
 import ScreenshotToolsPanel from './components/ScreenshotToolsPanel'
 import { I18nProvider, type Translate } from './i18n'
 import { avatarFallback, unwrap } from './ui'
@@ -205,6 +206,7 @@ export default function App(): React.JSX.Element {
         </div>
 
         {activeAccount && <AccountStatusPanel key={activeAccount.id} account={activeAccount} runAction={runAction} />}
+        <UpdateNotice state={snapshot.updater} onOpenSettings={() => setSettingsOpen(true)} />
         <div className="sidebar-footer">
           <span className={snapshot.security.secretStorageAvailable ? 'secure' : 'warning'}>
             {snapshot.security.secretStorageAvailable ? t('● 登录令牌已加密', '● Login tokens encrypted') : t('● 安全存储不可用', '● Secure storage unavailable')}
