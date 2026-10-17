@@ -17,6 +17,34 @@ afterEach(() => {
 })
 
 describe('bounded batch automatic recovery', () => {
+  it('invalidates a recovery refresh already in flight after an unresolved POST requires manual review', async () => {
+    const f = fixture()
+    const refresh = deferred()
+    f.steam.ensureSessionFresh.mockImplementationOnce(() => refresh.promise)
+    f.controller.interrupt(batchId, rate)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(f.steam.ensureSessionFresh).toHaveBeenCalledTimes(1)
+    f.update({ pending: 1, uncertain: 1 })
+    f.controller.interrupt(batchId, { code: 'UNCERTAIN_RESULT', message: 'Synthetic unresolved POST', allowAuto: false })
+    refresh.resolve()
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(f.read()).toMatchObject({ status: 'paused', stopCode: 'UNCERTAIN_RESULT', stopMessage: 'Synthetic unresolved POST',
+      nextRetryAt: null, pending: 1, uncertain: 1 })
+    expect(f.resume).not.toHaveBeenCalled()
+    expect(f.steam.ensureSessionFresh).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['authenticated', 'expired'] as const)
+  ('preserves the concrete unresolved POST stop despite a previous denial circuit and %s session', state => {
+    const f = fixture({ accessDeniedCount: 6 })
+    f.sessionState = state
+    f.controller.interrupt(batchId, { code: 'UNCERTAIN_RESULT', message: 'Synthetic result needs review', allowAuto: false })
+    expect(f.read()).toMatchObject({ status: 'paused', stopCode: 'UNCERTAIN_RESULT',
+      stopMessage: 'Synthetic result needs review', nextRetryAt: null, retryCount: 0 })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('persists a visible stop and deadline, then resumes only after refreshing the matching account', async () => {
     const f = fixture()
     f.controller.interrupt(batchId, rate)

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SteamCommunityClient } from '../src/main/community-client'
 import { STEAM_WEB_USER_AGENT } from '../src/main/steam-user-agent'
+import { stubCommentBaseline } from './helpers/comment-baseline'
 
 const cookies = [
   'steamLoginSecure=76561198000000001%7C%7Ctoken; Path=/; Secure; Domain=steamcommunity.com',
@@ -17,12 +18,14 @@ describe('SteamCommunityClient', () => {
     const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) => init?.method === 'POST'
       ? jsonResponse({ success: true, comments_html: '<div id="comment_7788"></div>' })
       : new Response('<script>g_steamID="76561198000000001";</script>'))
-    vi.stubGlobal('fetch', fetchMock)
+    const { baselineReads, wrappedFetch } = stubCommentBaseline(fetchMock, '76561198000000001', '76561198000000002')
     const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
     await client.verifySession()
     await client.postProfileComment('76561198000000002', 'synthetic-comment')
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    for (const [, init] of fetchMock.mock.calls) {
+    expect(baselineReads).toHaveBeenCalledOnce()
+    expect(wrappedFetch).toHaveBeenCalledTimes(3)
+    for (const [, init] of wrappedFetch.mock.calls) {
       const userAgent = new Headers(init?.headers).get('User-Agent')
       expect(userAgent).toBe(STEAM_WEB_USER_AGENT)
       expect(userAgent).not.toMatch(/toolbox|xiaolan|Chrome\/136\./i)
@@ -302,7 +305,7 @@ describe('SteamCommunityClient', () => {
     const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) =>
       jsonResponse({ success: true, comments_html: '<div id="comment_7788"></div>' })
     )
-    vi.stubGlobal('fetch', fetchMock)
+    const { baselineReads } = stubCommentBaseline(fetchMock, '76561198000000001', '76561198000000002')
     const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
     await expect(client.postProfileComment('76561198000000002', 'hello')).resolves.toEqual({
       commentId: '7788'
@@ -311,6 +314,8 @@ describe('SteamCommunityClient', () => {
     const form = new URLSearchParams(String(init?.body))
     expect(form.get('sessionid')).toBe('session-123')
     expect(form.get('comment')).toBe('hello')
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(baselineReads).toHaveBeenCalledOnce()
   })
 
   it('marks HTTP 401 as an expired session', async () => {
@@ -354,7 +359,7 @@ describe('bounded Community response resources', () => {
     const cancel = vi.fn()
     const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => controller.enqueue(new Uint8Array(64)))
     const response = new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), { status, headers })
-    vi.stubGlobal('fetch', vi.fn(async () => response))
+    stubCommentBaseline(vi.fn(async () => response), '76561198000000001', friend)
     const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
     await expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow(error)
     expect(cancel).toHaveBeenCalledOnce()
@@ -373,7 +378,7 @@ describe('bounded Community response resources', () => {
         if (emitted >= 16 * 1024 * 1024) controller.close()
       }, cancel
     }, { highWaterMark: 0 }), { status: 200, headers })
-    vi.stubGlobal('fetch', vi.fn(async () => response))
+    stubCommentBaseline(vi.fn(async () => response), '76561198000000001', friend)
     const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
     await expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow('size limit')
     expect(emitted).toBe(responseLimit + chunkBytes)
@@ -390,7 +395,7 @@ describe('bounded Community response resources', () => {
         else controller.enqueue(bytes.slice(offset, ++offset))
       }
     }, { highWaterMark: 0 }))
-    vi.stubGlobal('fetch', vi.fn(async () => response))
+    stubCommentBaseline(vi.fn(async () => response), '76561198000000001', friend)
     const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
     await expect(client.postProfileComment(friend, 'fixture')).resolves.toEqual({ commentId: '42' })
     expect(response.body?.locked).toBe(false)
@@ -398,7 +403,7 @@ describe('bounded Community response resources', () => {
 
   it('marks an interrupted POST response ambiguous and releases its reader', async () => {
     const response = new Response(new ReadableStream({ pull(controller) { controller.error(new Error('Synthetic broken stream')) } }))
-    vi.stubGlobal('fetch', vi.fn(async () => response))
+    stubCommentBaseline(vi.fn(async () => response), '76561198000000001', friend)
     const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
     await expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow('Steam response interrupted')
     expect(response.body?.locked).toBe(false)
@@ -421,19 +426,21 @@ describe('bounded Community response resources', () => {
     vi.useFakeTimers()
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ success: true }))
       .mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
-    vi.stubGlobal('fetch', fetchMock)
+    const { baselineReads } = stubCommentBaseline(fetchMock, '76561198000000001', friend)
     const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
     await client.postProfileComment(friend, 'fixture')
     expect(vi.getTimerCount()).toBe(0)
     await expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow(/会话已失效/)
     expect(vi.getTimerCount()).toBe(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(baselineReads).toHaveBeenCalledTimes(2)
   })
 
   it('aborts a stalled fetch at its deadline and clears the timer', async () => {
     vi.useFakeTimers()
-    vi.stubGlobal('fetch', vi.fn((_url: URL, init: RequestInit) => new Promise((_resolve, reject) => {
+    stubCommentBaseline(vi.fn((_url: URL, init: RequestInit) => new Promise((_resolve, reject) => {
       init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
-    })))
+    })), '76561198000000001', friend)
     const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
     const checked = expect(client.postProfileComment(friend, 'fixture')).rejects.toThrow('Steam request timed out')
     await vi.advanceTimersByTimeAsync(50_000)

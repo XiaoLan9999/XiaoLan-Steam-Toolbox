@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SteamCommunityClient, type CommunityDiagnosticEvent } from '../src/main/community-client'
+import { stubCommentBaseline } from './helpers/comment-baseline'
 
 const account = '76561198000000001'
 const friend = '76561198000000002'
@@ -14,7 +15,8 @@ async function rejectResponse(body: string, headers: HeadersInit = {}, operation
   const events: CommunityDiagnosticEvent[] = []
   const expired = vi.fn()
   const fetch = vi.fn(async () => new Response(body, { status: 403, headers }))
-  vi.stubGlobal('fetch', fetch)
+  if (operation === 'comment') stubCommentBaseline(fetch, account, friend)
+  else vi.stubGlobal('fetch', fetch)
   const client = new SteamCommunityClient(account, cookies, expired, event => events.push(event))
   const request = operation === 'comment' ? client.postProfileComment(friend, 'private-message')
     : operation === 'verify' ? client.verifySession() : client.getFriendRelationships()
@@ -39,7 +41,7 @@ describe('privacy-safe forbidden-response diagnostics', () => {
     ['[15]', 'json', 'unknown']
   ])('classifies the response without persisting its content: %j', async (body, responseKind, denialKind) => {
     const { events, error, expired, fetch } = await rejectResponse(body)
-    expect(error).toMatchObject({ code: 'COMMUNITY_ACCESS_DENIED', retryable: true })
+    expect(error).toMatchObject({ code: 'COMMENT_POST_UNCERTAIN', retryable: false })
     expect(events).toEqual([{ phase: 'community-request', outcome: 'access-denied', reason: 'http-403',
       httpStatus: 403, method: 'POST', endpoint: 'profile-comment', responseKind, denialKind,
       ...(body.includes('"error":"private-error"') ? { commentDenialReason: 'unknown', errorPresent: true } : {}) }])
@@ -98,6 +100,6 @@ describe('privacy-safe forbidden-response diagnostics', () => {
   it('describes a challenge only as a verification-page refusal, not expired authentication', async () => {
     const { error } = await rejectResponse('<html><div class="cf-turnstile"></div></html>')
     expect(error).toMatchObject({ message: expect.stringContaining('验证页面拒绝') })
-    expect(error).toMatchObject({ code: 'COMMUNITY_ACCESS_DENIED' })
+    expect(error).toMatchObject({ code: 'COMMENT_POST_UNCERTAIN', retryable: false })
   })
 })

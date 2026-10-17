@@ -27,7 +27,7 @@ import {
   SteamEmoticon
 } from '../shared/types'
 import { DomainError, MIN_DELAY_MS, validateDelay } from '../shared/domain'
-import { ACCESS_DENIED_COOLDOWN_MS } from '../shared/batch-retry-policy'
+import { ACCESS_DENIED_COOLDOWN_MS, LEGACY_COMMENT_POST_REVIEW_MESSAGE } from '../shared/batch-retry-policy'
 import type { UpdatePreferences } from '../shared/update-types'
 import { defaultUpdatePreferences, normalizeUpdatePreferences } from '../shared/update-preferences'
 
@@ -939,6 +939,7 @@ export class SqliteStore {
           createdAt
         )
       }
+      this.setMetaInTransaction(`comment-post-safety:${batchId}`, 'reconciliation-v1')
     })
     return this.getBatchSummary(batchId)!
   }
@@ -1061,6 +1062,26 @@ export class SqliteStore {
          WHERE id = ?`
       )
       .run(now(), batchId)
+  }
+
+  quarantineLegacyDeniedPost(batchId: string): boolean {
+    return this.transaction(() => {
+      const batch = this.requireBatch(batchId)
+      const key = `comment-post-safety:${batchId}`
+      if (batch.status !== 'paused' || batch.sending > 0 || batch.pending === 0 ||
+        (batch.accessDeniedCount ?? 0) === 0 || this.db.prepare('SELECT 1 FROM app_meta WHERE key = ?').get(key)) return false
+      const delivery = this.db.prepare(`SELECT id FROM deliveries
+        WHERE batch_id = ? AND status = 'pending' ORDER BY created_at, id LIMIT 1`)
+        .get(batchId) as { id: string } | undefined
+      if (!delivery) return false
+      this.db.prepare(`UPDATE deliveries SET status = 'uncertain', error = ?, remote_comment_id = NULL, sent_at = NULL
+        WHERE id = ? AND status = 'pending'`).run(LEGACY_COMMENT_POST_REVIEW_MESSAGE, delivery.id)
+      this.db.prepare(`UPDATE batches SET stop_code = 'UNCERTAIN_RESULT', stop_message = ?, paused_at = ?,
+        next_retry_at = NULL WHERE id = ? AND status = 'paused'`).run(LEGACY_COMMENT_POST_REVIEW_MESSAGE, now(), batchId)
+      this.recalculateBatchInTransaction(batchId)
+      this.setMetaInTransaction(key, 'reconciliation-v1')
+      return true
+    })
   }
 
   pauseBatch(batchId: string, stop?: BatchPauseDetails): void {

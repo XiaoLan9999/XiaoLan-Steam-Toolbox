@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SteamCommunityClient } from '../src/main/community-client'
+import { stubCommentBaseline } from './helpers/comment-baseline'
 
 const account = '76561198000000001'
 const friend = '76561198000000002'
@@ -9,6 +10,7 @@ const cookies = (token = 'first', session = 'csrf-first') => [
 ]
 const json = (value: unknown, status = 200, headers: HeadersInit = {}) => new Response(JSON.stringify(value), { status, headers })
 const identity = (id = account) => new Response(`<script>var g_steamID = "${id}";</script>`)
+const stubFetch = (operation: (...args: any[]) => any) => stubCommentBaseline(operation, account, friend)
 const deferred = <T>() => {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(done => { resolve = done })
@@ -22,20 +24,21 @@ describe('Community authentication evidence and read-only verification', () => {
     const expired = vi.fn()
     const fetch = vi.fn().mockResolvedValueOnce(json({ success: false, error: 'Access denied' }, 403))
       .mockResolvedValueOnce(json({ success: true, comments_html: '<div id="comment_77"></div>' }))
-    vi.stubGlobal('fetch', fetch)
+    const { baselineReads } = stubFetch(fetch)
     const client = new SteamCommunityClient(account, cookies(), expired)
-    await expect(client.postProfileComment(friend, 'first')).rejects.toMatchObject({ code: 'COMMUNITY_ACCESS_DENIED', retryable: true })
+    await expect(client.postProfileComment(friend, 'first')).rejects.toMatchObject({ code: 'COMMENT_POST_UNCERTAIN', retryable: false })
     expect(fetch).toHaveBeenCalledOnce()
     expect(expired).not.toHaveBeenCalled()
     await expect(client.postProfileComment(friend, 'next explicit action')).resolves.toEqual({ commentId: '77' })
     expect(fetch).toHaveBeenCalledTimes(2)
+    expect(baselineReads).toHaveBeenCalledTimes(2)
     expect(expired).not.toHaveBeenCalled()
   })
 
   it('treats HTTP 429 as throttling before parsing misleading logged-out content', async () => {
     const expired = vi.fn()
     const fetch = vi.fn(async () => json({ success: 21 }, 429))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     await expect(new SteamCommunityClient(account, cookies(), expired).postProfileComment(friend, 'fixture'))
       .rejects.toMatchObject({ code: 'RATE_LIMITED', retryable: true })
     expect(expired).not.toHaveBeenCalled()
@@ -44,7 +47,7 @@ describe('Community authentication evidence and read-only verification', () => {
 
   it.each([200, 403, 500])('recognizes explicit NotLoggedOn 21 at HTTP %i', async status => {
     const expired = vi.fn()
-    vi.stubGlobal('fetch', vi.fn(async () => json({ success: 21 }, status)))
+    stubFetch(vi.fn(async () => json({ success: 21 }, status)))
     await expect(new SteamCommunityClient(account, cookies(), expired).postProfileComment(friend, 'fixture'))
       .rejects.toMatchObject({ code: 'SESSION_EXPIRED' })
     expect(expired).toHaveBeenCalledOnce()
@@ -52,7 +55,7 @@ describe('Community authentication evidence and read-only verification', () => {
 
   it.each([[21], '021', '21.0', { value: 21 }])('does not coerce arbitrary JSON into authentication rejection: %j', async success => {
     const expired = vi.fn()
-    vi.stubGlobal('fetch', vi.fn(async () => json({ success, error: 'Synthetic rejection' })))
+    stubFetch(vi.fn(async () => json({ success, error: 'Synthetic rejection' })))
     await expect(new SteamCommunityClient(account, cookies(), expired).postProfileComment(friend, 'fixture')).rejects.toThrow()
     expect(expired).not.toHaveBeenCalled()
   })
@@ -67,7 +70,7 @@ describe('Community authentication evidence and read-only verification', () => {
   ])('does not mistake an untrusted login-like redirect for expired credentials: %s', async location => {
     const expired = vi.fn()
     const fetch = vi.fn(async () => new Response('', { status: 302, headers: { Location: location } }))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     await expect(new SteamCommunityClient(account, cookies(), expired).postProfileComment(friend, 'fixture')).rejects.toThrow()
     expect(expired).not.toHaveBeenCalled()
     expect(fetch).toHaveBeenCalledOnce()
@@ -81,7 +84,7 @@ describe('Community authentication evidence and read-only verification', () => {
       expect(init.body).toBeUndefined()
       return identity()
     })
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     await expect(new SteamCommunityClient(account, cookies(), vi.fn(), diagnostic).verifySession()).resolves.toBeUndefined()
     expect(fetch).toHaveBeenCalledOnce()
     expect(diagnostic).toHaveBeenCalledWith({ phase: 'session-probe', outcome: 'success', reason: 'identity-match', method: 'GET' })
@@ -89,33 +92,35 @@ describe('Community authentication evidence and read-only verification', () => {
 
   it.each(['false', '"76561198000000003"'])('rejects explicit guest or another account during verification: %s', async literal => {
     const expired = vi.fn()
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(`<script>g_steamID=${literal};</script>`)))
+    stubFetch(vi.fn(async () => new Response(`<script>g_steamID=${literal};</script>`)))
     await expect(new SteamCommunityClient(account, cookies(), expired).verifySession()).rejects.toMatchObject({ code: 'SESSION_EXPIRED' })
     expect(expired).toHaveBeenCalledOnce()
   })
 
   it('does not destroy a session when a verification page has no conclusive account identity', async () => {
     const expired = vi.fn()
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>Temporary maintenance</html>')))
+    stubFetch(vi.fn(async () => new Response('<html>Temporary maintenance</html>')))
     await expect(new SteamCommunityClient(account, cookies(), expired).verifySession())
       .rejects.toMatchObject({ code: 'SESSION_CHECK_FAILED', retryable: true })
     expect(expired).not.toHaveBeenCalled()
   })
 
-  it('does not introduce a probe or retry per comment during a long synthetic batch', async () => {
+  it('captures one read-only baseline and sends once per comment during a long synthetic batch', async () => {
     const fetch = vi.fn(async (_url: URL, init: RequestInit) => {
       expect(init.method).toBe('POST')
       return json({ success: true })
     })
-    vi.stubGlobal('fetch', fetch)
+    const { baselineReads, wrappedFetch } = stubFetch(fetch)
     const client = new SteamCommunityClient(account, cookies(), vi.fn())
     for (let i = 0; i < 100; i++) await client.postProfileComment(friend, `fixture ${i}`)
     expect(fetch).toHaveBeenCalledTimes(100)
+    expect(baselineReads).toHaveBeenCalledTimes(100)
+    expect(wrappedFetch).toHaveBeenCalledTimes(200)
   })
 
   it('emits only bounded classification fields even when the server error and URL contain secrets', async () => {
     const diagnostic = vi.fn()
-    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'private-server-token', success: false }, 403)))
+    stubFetch(vi.fn(async () => json({ error: 'private-server-token', success: false }, 403)))
     await expect(new SteamCommunityClient(account, cookies('private-cookie-token'), vi.fn(), diagnostic)
       .postProfileComment(friend, 'private-message')).rejects.toThrow()
     expect(diagnostic.mock.calls).toEqual([[{
@@ -135,7 +140,7 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     first.headers.append('Set-Cookie', `steamLoginSecure=${account}%7C%7Crotated; Path=/; Secure; Domain=.steamcommunity.com; HttpOnly`)
     first.headers.append('Set-Cookie', 'sessionid=csrf-rotated; Path=/; Secure; Domain=steamcommunity.com')
     fetch.mockReset().mockResolvedValueOnce(first).mockResolvedValueOnce(json({ success: true }))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const client = new SteamCommunityClient(account, cookies(), vi.fn())
     await client.verifySession()
     await client.postProfileComment(friend, 'fixture')
@@ -149,7 +154,7 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     const page = identity()
     page.headers.append('Set-Cookie', 'sessionid=probe-rotated; Path=/; Secure; Max-Age=3600')
     const fetch = vi.fn().mockResolvedValueOnce(page).mockResolvedValueOnce(json({ success: true }))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const candidate = new SteamCommunityClient(account, cookies('candidate'), vi.fn())
     await candidate.verifySession()
     const snapshot = candidate.getCookies()
@@ -178,7 +183,7 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     const first = identity()
     first.headers.set('Set-Cookie', setCookie)
     const fetch = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(json({ success: true }))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const client = new SteamCommunityClient(account, cookies(), vi.fn())
     await client.verifySession()
     await client.postProfileComment(friend, 'fixture')
@@ -193,7 +198,7 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     const removed = identity()
     removed.headers.append('Set-Cookie', 'sessionid=; Path=/; Max-Age=0; Secure')
     const fetch = vi.fn().mockResolvedValueOnce(rotated).mockResolvedValueOnce(json({ success: true })).mockResolvedValueOnce(removed)
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const expired = vi.fn()
     const client = new SteamCommunityClient(account, cookies(), expired)
     await client.verifySession()
@@ -211,13 +216,14 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     vi.setSystemTime(new Date('2026-10-15T00:00:00Z'))
     const fetch = vi.fn()
     const expired = vi.fn()
-    vi.stubGlobal('fetch', fetch)
+    const { wrappedFetch } = stubFetch(fetch)
     const initialCookies = cookies().map(line => line.startsWith(`${name}=`) ? `${line}; Max-Age=1` : line)
     const client = new SteamCommunityClient(account, initialCookies, expired)
     await vi.advanceTimersByTimeAsync(1100)
     await expect(client.postProfileComment(friend, 'never submitted'))
       .rejects.toMatchObject({ code: 'SESSION_PREPARATION_FAILED', retryable: true })
     expect(fetch).not.toHaveBeenCalled()
+    expect(wrappedFetch).not.toHaveBeenCalled()
     expect(expired).toHaveBeenCalledOnce()
   })
 
@@ -225,7 +231,7 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     const expired = vi.fn()
     const fetch = vi.fn().mockResolvedValueOnce(new Response('', { status: 401 })).mockResolvedValueOnce(json({ success: true }))
       .mockResolvedValueOnce(new Response('', { status: 401 }))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const client = new SteamCommunityClient(account, cookies(), expired)
     await expect(client.postProfileComment(friend, 'first')).rejects.toMatchObject({ code: 'SESSION_EXPIRED' })
     expect(() => client.replaceCookies(['sessionid=unsafe; Domain=untrusted.example'])).toThrow()
@@ -241,9 +247,10 @@ describe('Community cookie replacement and same-origin response rotation', () =>
   it('preserves a real in-flight POST success during refresh without allowing old Set-Cookie to roll back credentials', async () => {
     const response = deferred<Response>()
     const fetch = vi.fn().mockReturnValueOnce(response.promise).mockResolvedValueOnce(json({ success: true }))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const client = new SteamCommunityClient(account, cookies(), vi.fn())
     const pending = client.postProfileComment(friend, 'in flight')
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
     client.replaceCookies(cookies('refreshed', 'csrf-refreshed'))
     response.resolve(json({ success: true, comments_html: '<div id="comment_90"></div>' }, 200, { 'Set-Cookie': 'sessionid=old-response; Path=/; Secure' }))
     await expect(pending).resolves.toEqual({ commentId: '90' })
@@ -259,9 +266,10 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     const response = deferred<Response>()
     const expired = vi.fn()
     const fetch = vi.fn().mockReturnValueOnce(response.promise).mockResolvedValueOnce(identity())
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const client = new SteamCommunityClient(account, cookies(), expired)
     const pending = client.postProfileComment(friend, 'in flight')
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
     client.replaceCookies(cookies('refreshed', 'csrf-refreshed'))
     response.resolve(json({ success: 21 }, status))
     await expect(pending).rejects.toMatchObject({ code: 'SESSION_CHANGED', retryable: true })
@@ -276,9 +284,10 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     page.headers.append('Set-Cookie', 'sessionid=rotated-by-get; Path=/; Secure')
     const expired = vi.fn()
     const fetch = vi.fn().mockReturnValueOnce(oldPost.promise).mockResolvedValueOnce(page).mockResolvedValueOnce(json({ success: true }))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const client = new SteamCommunityClient(account, cookies(), expired)
     const pending = client.postProfileComment(friend, 'old in flight')
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
     await client.verifySession()
     oldPost.resolve(json({ success: 21 }, status, { 'Set-Cookie': 'sessionid=; Path=/; Max-Age=0; Secure' }))
     await expect(pending).rejects.toMatchObject({ code: 'SESSION_CHANGED' })
@@ -293,10 +302,11 @@ describe('Community cookie replacement and same-origin response rotation', () =>
     page.headers.append('Set-Cookie', `steamLoginSecure=${account}%7C%7Crotated-by-get; Path=/; Secure`)
     page.headers.append('Set-Cookie', 'sessionid=rotated-by-get; Path=/; Secure')
     const fetch = vi.fn().mockReturnValueOnce(oldPost.promise).mockResolvedValueOnce(page).mockResolvedValueOnce(json({ success: true }))
-    vi.stubGlobal('fetch', fetch)
+    stubFetch(fetch)
     const expired = vi.fn()
     const client = new SteamCommunityClient(account, cookies(), expired)
     const pending = client.postProfileComment(friend, 'old in flight')
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce())
     await client.verifySession()
     oldPost.resolve(json({ success: true, comments_html: '<div id="comment_91"></div>' }, 200, { 'Set-Cookie': 'sessionid=stale-response; Path=/; Secure' }))
     await expect(pending).resolves.toEqual({ commentId: '91' })
@@ -310,7 +320,7 @@ describe('Community cookie replacement and same-origin response rotation', () =>
 
   it.each([401, 200])('does not let a rejecting response disguise its own authentication failure by setting cookies (HTTP %i)', async status => {
     const expired = vi.fn()
-    vi.stubGlobal('fetch', vi.fn(async () => json({ success: 21 }, status, { 'Set-Cookie': 'sessionid=own-response; Path=/; Secure' })))
+    stubFetch(vi.fn(async () => json({ success: 21 }, status, { 'Set-Cookie': 'sessionid=own-response; Path=/; Secure' })))
     const client = new SteamCommunityClient(account, cookies(), expired)
     await expect(client.postProfileComment(friend, 'fixture')).rejects.toMatchObject({ code: 'SESSION_EXPIRED' })
     expect(expired).toHaveBeenCalledOnce()
@@ -319,7 +329,7 @@ describe('Community cookie replacement and same-origin response rotation', () =>
   it('does not let a guest verification response disguise its own identity rejection by setting cookies', async () => {
     const expired = vi.fn()
     const page = new Response('<script>g_steamID=false;</script>', { headers: { 'Set-Cookie': 'sessionid=own-response; Path=/; Secure' } })
-    vi.stubGlobal('fetch', vi.fn(async () => page))
+    stubFetch(vi.fn(async () => page))
     const client = new SteamCommunityClient(account, cookies(), expired)
     await expect(client.verifySession()).rejects.toMatchObject({ code: 'SESSION_EXPIRED' })
     expect(expired).toHaveBeenCalledOnce()

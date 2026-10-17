@@ -68,6 +68,10 @@ export class BatchRecoveryController {
 
     this.clearTimer(batchId)
     const message = safeMessage(reason.message)
+    if (reason.code === 'UNCERTAIN_RESULT' && !reason.allowAuto) {
+      this.pause(batchId, reason.code, message, batch.retryCount)
+      return
+    }
     if (this.store.getActiveAccountId() !== batch.accountId) {
       this.pause(batchId, 'ACCOUNT_CHANGED', '当前账号已切换，任务保持暂停，请切回原账号后手动继续', batch.retryCount)
       return

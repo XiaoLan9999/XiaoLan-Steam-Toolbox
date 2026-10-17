@@ -28,12 +28,12 @@ interface Options {
 const processTypes = new Set(['Browser', 'Tab', 'Utility', 'Zygote', 'Sandbox helper', 'GPU', 'Unknown'])
 const exitReasons = new Set(['clean-exit', 'abnormal-exit', 'killed', 'crashed', 'oom', 'launch-failed', 'integrity-failure', 'memory-eviction'])
 const taskStatuses = new Set(['queued', 'running', 'paused', 'completed', 'cancelled'])
-const sessionPhases = new Set(['restore', 'refresh', 'recover', 'community-request', 'session-probe'])
+const sessionPhases = new Set(['restore', 'refresh', 'recover', 'community-request', 'session-probe', 'comment-reconcile'])
 const sessionOutcomes = new Set(['success', 'transient', 'expired', 'auth-rejected', 'access-denied', 'rate-limited', 'unverified', 'request-failed', 'stale-response'])
 const sessionReasons = new Set(['http-401', 'login-redirect', 'not-logged-on', 'http-403', 'http-429', 'identity-match',
   'identity-mismatch', 'identity-guest', 'identity-missing', 'transport-error', 'network', 'timeout', 'token-rejected',
   'token-missing', 'session-changed', 'scheduled', 'on-demand', 'cookie-expired', 'unknown', 'verified',
-  'credentials_rejected', 'network_or_service', 'rate_limited', 'community_access_denied', 'session_check_failed', 'session_changed'])
+  'credentials_rejected', 'network_or_service', 'rate_limited', 'community_access_denied', 'session_check_failed', 'session_changed', 'comment-reconciled'])
 const communityEndpoints = new Set(['profile-comment', 'session-verify', 'other'])
 const responseKinds = new Set(['json', 'html', 'empty', 'other'])
 const denialKinds = new Set(['access-denied', 'challenge', 'unknown'])

@@ -6,6 +6,13 @@ import { parseCommentEligibility } from './comment-eligibility-parser'
 import { extractCommunityPageIdentity, extractProfileWebApiToken, getProfileBackgroundCatalog } from './profile-backgrounds'
 import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
+import { parseCommentSnapshot, reconcileCommentSnapshots, type CommentSnapshot } from './comment-reconciliation'
+
+interface CommunityResponseMetadata {
+  requestStartedAt: number
+  receivedAt: number
+  serverDate: number | null
+}
 
 export interface CommunityProfileSummary {
   steamId: string
@@ -20,9 +27,9 @@ export interface CommunityProfileSummaries {
 }
 
 export interface CommunityDiagnosticEvent {
-  phase: 'community-request' | 'session-probe'
+  phase: 'community-request' | 'session-probe' | 'comment-reconcile'
   outcome: 'success' | 'auth-rejected' | 'access-denied' | 'rate-limited' | 'unverified' | 'request-failed' | 'stale-response'
-  reason: 'http-401' | 'login-redirect' | 'not-logged-on' | 'http-403' | 'http-429' | 'identity-match' | 'identity-mismatch' | 'identity-guest' | 'identity-missing' | 'transport-error'
+  reason: 'http-401' | 'login-redirect' | 'not-logged-on' | 'http-403' | 'http-429' | 'identity-match' | 'identity-mismatch' | 'identity-guest' | 'identity-missing' | 'transport-error' | 'comment-reconciled'
   httpStatus?: number
   method?: 'GET' | 'POST'
   endpoint?: 'profile-comment' | 'session-verify' | 'other'
@@ -268,33 +275,68 @@ export class SteamCommunityClient {
 
   async postProfileComment(
     friendSteamId: string,
-    message: string
+    message: string,
+    assertCanSubmit: () => void = () => undefined
   ): Promise<{ commentId: string | null }> {
-    const currentCookies = matchingCookies(this.cookies, '/comment/')
-    const rawSessionId = currentCookies.find(cookie => cookie.name === 'sessionid')?.value
-    if (!rawSessionId || !currentCookies.some(cookie => cookie.name === 'steamLoginSecure')) {
-      this.diagnostic({ phase: 'community-request', outcome: 'auth-rejected', reason: 'not-logged-on', method: 'POST' })
-      this.notifyExpired()
-      throw new DomainError('SESSION_PREPARATION_FAILED', 'Steam 会话需要更新，尚未提交留言，请稍后继续原任务', true)
+    assertCanSubmit()
+    this.requireCommentSessionId()
+    let baseline: CommentSnapshot
+    try {
+      baseline = await this.getCommentSnapshot(friendSteamId)
+      if (!baseline.complete || !baseline.threadExists) throw new Error('Comment baseline is incomplete')
+    } catch (error) {
+      throw new DomainError('SESSION_PREPARATION_FAILED', '留言前无法可靠读取目标评论基线，尚未提交留言；请稍后继续原任务', true,
+        error instanceof DomainError ? error.retryAfterMs : undefined)
     }
+    assertCanSubmit()
+    const rawSessionId = this.requireCommentSessionId()
     const form = new URLSearchParams({
       comment: message,
       count: '6',
       sessionid: safeDecodeURIComponent(rawSessionId),
       feature2: '-1'
     })
-    const body = await this.requestJson<unknown>(
-      `/comment/Profile/post/${friendSteamId}/-1/`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          Origin: COMMUNITY_ORIGIN,
-          Referer: `${COMMUNITY_ORIGIN}/profiles/${friendSteamId}/`
+    const version = this.cookieVersion
+    let postMetadata: CommunityResponseMetadata | null = null
+    let body: unknown
+    try {
+      body = await this.requestJson<unknown>(
+        `/comment/Profile/post/${friendSteamId}/-1/`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            Origin: COMMUNITY_ORIGIN,
+            Referer: `${COMMUNITY_ORIGIN}/profiles/${friendSteamId}/`
+          },
+          body: form.toString()
         },
-        body: form.toString()
-      }
-    )
+        metadata => { postMetadata = metadata }
+      )
+    } catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'COMMUNITY_ACCESS_DENIED') throw error
+      // A real Steam POST returned 403/success:2 after creating the comment. Never replay it solely on that response.
+      try {
+        const metadata = postMetadata as CommunityResponseMetadata | null
+        if (metadata?.serverDate !== null && metadata?.serverDate !== undefined && version === this.cookieVersion) {
+          const elapsed = Math.max(0, metadata.receivedAt - metadata.requestStartedAt)
+          const earliest = Math.floor((metadata.serverDate - elapsed) / 1000) - 2
+          const latest = Math.floor(metadata.serverDate / 1000) + 2
+          if (latest - earliest <= 300) {
+            const after = await this.getCommentSnapshot(friendSteamId)
+            if (version === this.cookieVersion) {
+              const result = reconcileCommentSnapshots(baseline, after, this.accountId, message, { earliest, latest })
+              if (result.status === 'confirmed') {
+                this.diagnostic({ phase: 'comment-reconcile', outcome: 'success', reason: 'comment-reconciled', httpStatus: 200,
+                  method: 'GET', endpoint: 'profile-comment' })
+                return { commentId: result.comment.id }
+              }
+            }
+          }
+        }
+      } catch { /* A failed read-back cannot justify another POST or a false success. */ }
+      throw new DomainError('COMMENT_POST_UNCERTAIN', `Steam 拒绝响应，但发送结果待核对；为防重复不会自动重发。${error.message}`, false, error.retryAfterMs)
+    }
     if (!isRecord(body)) throw new Error('Steam returned a malformed comment response')
     if (body.success !== true && Number(body.success) !== 1) {
       throw new Error(typeof body.error === 'string' ? body.error : 'Steam rejected the profile comment')
@@ -302,6 +344,29 @@ export class SteamCommunityClient {
     const commentsHtml = typeof body.comments_html === 'string' ? body.comments_html : ''
     const commentId = commentsHtml.match(/\bid=["']comment_(\d+)["']/i)?.[1] ?? null
     return { commentId }
+  }
+
+  private requireCommentSessionId(): string {
+    const currentCookies = matchingCookies(this.cookies, '/comment/')
+    const rawSessionId = currentCookies.find(cookie => cookie.name === 'sessionid')?.value
+    if (!rawSessionId || !currentCookies.some(cookie => cookie.name === 'steamLoginSecure')) {
+      this.diagnostic({ phase: 'community-request', outcome: 'auth-rejected', reason: 'not-logged-on', method: 'POST' })
+      this.notifyExpired()
+      throw new DomainError('SESSION_PREPARATION_FAILED', 'Steam 会话需要更新，尚未提交留言，请稍后继续原任务', true)
+    }
+    return rawSessionId
+  }
+
+  private async getCommentSnapshot(steamId: string): Promise<CommentSnapshot> {
+    if (!/^7656119\d{10}$/.test(steamId)) throw new DomainError('INVALID_STEAM_ID', '目标 SteamID 无效')
+    const html = await this.requestText(`/profiles/${steamId}/?l=english`, {}, 3, () => undefined, (text, version) => {
+      const identity = extractCommunityPageIdentity(text)
+      if (identity !== this.accountId) {
+        if (identity) this.rejectExpired(version, { phase: 'community-request', outcome: 'auth-rejected', reason: 'identity-mismatch', method: 'GET' })
+        throw new DomainError('SESSION_CHECK_FAILED', '无法核验目标资料页中的当前登录身份', true)
+      }
+    })
+    return parseCommentSnapshot(html, steamId)
   }
 
   async checkCommentEligibility(steamId: string): Promise<CommentCheckResult> {
@@ -372,8 +437,8 @@ export class SteamCommunityClient {
     })
   }
 
-  private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const text = await this.requestText(path, init)
+  private async requestJson<T>(path: string, init?: RequestInit, onResponse?: (metadata: CommunityResponseMetadata) => void): Promise<T> {
+    const text = await this.requestText(path, init, 0, () => undefined, () => undefined, onResponse)
     try {
       return JSON.parse(text) as T
     } catch {
@@ -386,7 +451,8 @@ export class SteamCommunityClient {
     init: RequestInit = {},
     redirectsRemaining = 0,
     assertCurrent: () => void = () => undefined,
-    validateText: (text: string, version: number) => void = () => undefined
+    validateText: (text: string, version: number) => void = () => undefined,
+    onResponse: (metadata: CommunityResponseMetadata) => void = () => undefined
   ): Promise<string> {
     assertCurrent()
     const url = new URL(path, COMMUNITY_ORIGIN)
@@ -396,6 +462,7 @@ export class SteamCommunityClient {
     const cookieHeader = matchingCookies(this.cookies, url.pathname).map(cookie => `${cookie.name}=${cookie.value}`).join('; ')
     try {
       return await withRequestTimeout(50_000, async signal => {
+        const requestStartedAt = Date.now()
         const response = await fetch(url, {
           ...init,
           redirect: 'manual',
@@ -409,6 +476,9 @@ export class SteamCommunityClient {
           }
         })
         try {
+          const rawDate = response.headers.get('date')
+          const parsedDate = rawDate && /GMT$/i.test(rawDate) ? Date.parse(rawDate) : NaN
+          onResponse({ requestStartedAt, receivedAt: Date.now(), serverDate: Number.isFinite(parsedDate) ? parsedDate : null })
           assertCurrent()
           const location = response.headers.get('location') ?? ''
           const redirectedToLogin =
@@ -435,7 +505,7 @@ export class SteamCommunityClient {
               await cancelUnusedBody(response)
               assertCurrent()
               if (version === this.cookieVersion) this.acceptResponseCookies(response, url)
-              return this.requestText(`${target.pathname}${target.search}`, init, redirectsRemaining - 1, assertCurrent, validateText)
+              return this.requestText(`${target.pathname}${target.search}`, init, redirectsRemaining - 1, assertCurrent, validateText, onResponse)
             }
             throw new Error('Steam 好友页面重定向到了不受信任的地址')
           }

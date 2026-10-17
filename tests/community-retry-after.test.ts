@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseRetryAfterMs, RETRY_AFTER_TOO_LONG_MS, SteamCommunityClient } from '../src/main/community-client'
 import { DomainError } from '../src/shared/domain'
+import { stubCommentBaseline } from './helpers/comment-baseline'
 
 const accountId = '76561198000000001'
 const cookies = [
@@ -61,15 +62,16 @@ describe('Retry-After metadata', () => {
     const fetchMock = vi.fn(async (_url: URL, _init?: RequestInit) => new Response('Denied', {
       status, headers: { 'Retry-After': 'Fri, 16 Oct 2026 00:02:00 GMT' }
     }))
-    vi.stubGlobal('fetch', fetchMock)
+    const { baselineReads } = stubCommentBaseline(fetchMock, accountId, '76561198000000002')
     const expired = vi.fn()
     const diagnostic = vi.fn()
     const client = new SteamCommunityClient(accountId, cookies, expired, diagnostic)
     await expect(client.postProfileComment('76561198000000002', 'Hello')).rejects.toMatchObject({
-      code: status === 403 ? 'COMMUNITY_ACCESS_DENIED' : 'RATE_LIMITED',
-      retryable: true, retryAfterMs: 120_000
+      code: status === 403 ? 'COMMENT_POST_UNCERTAIN' : 'RATE_LIMITED',
+      retryable: status !== 403, retryAfterMs: 120_000
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(baselineReads).toHaveBeenCalledOnce()
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
     expect(vi.getTimerCount()).toBe(0)
     expect(expired).not.toHaveBeenCalled()
@@ -89,13 +91,14 @@ describe('Retry-After metadata', () => {
     vi.useFakeTimers()
     vi.setSystemTime(now)
     const fetchMock = vi.fn(async () => new Response('Denied', { status, headers: { 'Retry-After': header } }))
-    vi.stubGlobal('fetch', fetchMock)
+    const { baselineReads } = stubCommentBaseline(fetchMock, accountId, '76561198000000002')
     const expired = vi.fn()
     const client = new SteamCommunityClient(accountId, cookies, expired)
     const result = await client.postProfileComment('76561198000000002', 'Hello').catch(error => error as unknown)
     expect(result).toBeInstanceOf(DomainError)
     expect((result as DomainError).retryAfterMs).toBe(expected)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(baselineReads).toHaveBeenCalledOnce()
     expect(vi.getTimerCount()).toBe(0)
     expect(expired).not.toHaveBeenCalled()
   })

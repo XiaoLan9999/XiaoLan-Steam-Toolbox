@@ -6,6 +6,7 @@ import { BatchQueue } from '../src/main/batch-queue'
 import { SteamService } from '../src/main/steam-service'
 import { SqliteStore, type SecretCipher } from '../src/main/store'
 import type { AccountRecord, AppEvent } from '../src/shared/types'
+import { emptyCommentProfile } from './helpers/comment-baseline'
 
 const mocks = vi.hoisted(() => ({
   nextAccount: '',
@@ -93,21 +94,20 @@ describe('real login, community client and persistent queue integration', () => 
     await vi.advanceTimersByTimeAsync(100)
 
     expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'paused', succeeded: 1,
-      failed: status === 403 ? 0 : 1, pending: status === 403 ? 2 : 1 })
+      failed: 1, pending: 1, uncertain: status === 403 ? 1 : 0, failedCount: status === 403 ? 0 : 1,
+      stopCode: status === 403 ? 'UNCERTAIN_RESULT' : 'RATE_LIMITED', nextRetryAt: null })
     expect(fixture.service.isAuthenticated(accountA)).toBe(true)
     expect(mocks.webCookies).toHaveBeenCalledTimes(1)
     expect(posts(fixture)).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(5000)
     expect(posts(fixture)).toHaveLength(2)
 
-    if (status === 403) {
-      expect(() => fixture.queue.resume(batch.id)).toThrow('HTTP 403 冷却尚未结束')
-      await vi.advanceTimersByTimeAsync(300_000)
-    }
+    if (status === 403) expect(fixture.store.getBatchSummary(batch.id)?.accessDeniedCount).toBe(0)
     fixture.queue.resume(batch.id)
     await vi.advanceTimersByTimeAsync(100)
     expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed',
-      succeeded: status === 403 ? 3 : 2, failed: status === 403 ? 0 : 1 })
+      succeeded: 2, failed: 1, uncertain: status === 403 ? 1 : 0 })
+    expect(posts(fixture)).toHaveLength(3)
     expect(new Set(posts(fixture).map(([url]) => String(url))).size).toBe(3)
   })
 
@@ -243,6 +243,12 @@ async function createFixture(keepAliveMs = 60_000): Promise<Fixture> {
     if (url.pathname.endsWith('/edit/info')) {
       const id = url.pathname.split('/')[2]
       return new Response(`<script>g_steamID = "${id}";</script>`)
+    }
+    const commentTarget = /^\/profiles\/(7656119\d{10})\/$/.exec(url.pathname)?.[1]
+    if (commentTarget && url.search === '?l=english') {
+      const sender = /(?:^|;\s*)steamLoginSecure=(7656119\d{10})%7C/i.exec(new Headers(init?.headers).get('Cookie') ?? '')?.[1]
+      if (!sender) throw new Error('Synthetic baseline has no authenticated sender')
+      return emptyCommentProfile(sender, commentTarget)
     }
     if (url.searchParams.get('xml') === '1') {
       return new Response('<profile><steamID>Synthetic account</steamID><onlineState>online</onlineState></profile>')

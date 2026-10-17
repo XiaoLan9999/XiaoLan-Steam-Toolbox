@@ -37,6 +37,128 @@ function fixture(count = 2) {
 }
 
 describe('automatic recovery through the durable sending queue', () => {
+  it.each([true, false])('stops an unresolved POST denial with auto mode %s without retrying it or advancing recipients', async autoRetryEnabled => {
+    const { queue, store, post, steam, input } = fixture(3)
+    const message = 'Steam 拒绝响应但发送结果待核对，防重复不自动重发'
+    post.mockRejectedValueOnce(new DomainError('COMMENT_POST_UNCERTAIN', message, true, 300_000))
+    const task = queue.start({ ...input, autoRetryEnabled })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getBatchSummary(task.id)).toMatchObject({ status: 'paused', stopCode: 'UNCERTAIN_RESULT',
+      stopMessage: message, pending: 2, uncertain: 1, failedCount: 0, sending: 0,
+      completed: 1, retryCount: 0, nextRetryAt: null, accessDeniedCount: 0 })
+    const deliveries = store.getBatch(task.id)!.deliveries
+    expect(deliveries.filter(delivery => delivery.status === 'uncertain')).toEqual([
+      expect.objectContaining({ friendSteamId: post.mock.calls[0]![1], error: message })
+    ])
+    expect(deliveries.filter(delivery => delivery.status === 'pending')).toHaveLength(2)
+    queue.setAutoRetry(task.id, false)
+    queue.setAutoRetry(task.id, true)
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(steam.verifyCommentSession).not.toHaveBeenCalled()
+    expect(store.getBatchSummary(task.id)?.nextRetryAt).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps the final unresolved POST paused with its reason instead of reporting the task completed', async () => {
+    const { queue, store, post, input } = fixture(1)
+    post.mockRejectedValueOnce(new DomainError('COMMENT_POST_UNCERTAIN', 'Synthetic final POST awaiting review'))
+    const task = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getBatchSummary(task.id)).toMatchObject({ status: 'paused', stopCode: 'UNCERTAIN_RESULT',
+      stopMessage: 'Synthetic final POST awaiting review', uncertain: 1, pending: 0, finishedAt: null, nextRetryAt: null })
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(post).toHaveBeenCalledOnce()
+  })
+
+  it('resumes only other pending recipients after an explicit manual resume from an unresolved POST', async () => {
+    const { queue, store, post, input } = fixture(3)
+    post.mockRejectedValueOnce(new DomainError('COMMENT_POST_UNCERTAIN', 'Synthetic HTTP 403 outcome unknown'))
+    const task = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    const uncertainRecipient = post.mock.calls[0]![1]
+    queue.resume(task.id)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(post).toHaveBeenCalledTimes(3)
+    expect(post.mock.calls.filter(call => call[1] === uncertainRecipient)).toHaveLength(1)
+    expect(store.getBatchSummary(task.id)).toMatchObject({ status: 'completed', uncertain: 1, succeeded: 2, pending: 0 })
+  })
+
+  it.each(['pause-resume', 'session-expiry', 'manual-pause', 'cancel'] as const)
+  ('settles a late unresolved POST safely after %s without any automatic next delivery', async action => {
+    const { queue, store, post, input } = fixture()
+    let reject!: (error: Error) => void
+    post.mockReturnValueOnce(new Promise((_yes, no) => { reject = no }))
+    const task = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    if (action === 'pause-resume') { queue.pause(task.id); queue.resume(task.id) }
+    if (action === 'session-expiry') queue.pauseForSessionExpiry(accountId)
+    if (action === 'manual-pause') queue.pause(task.id)
+    if (action === 'cancel') queue.cancel(task.id)
+    reject(new DomainError('COMMENT_POST_UNCERTAIN', 'Synthetic late POST outcome unknown'))
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(store.getBatchSummary(task.id)).toMatchObject({ status: action === 'cancel' ? 'cancelled' : 'paused',
+      uncertain: 1, pending: action === 'cancel' ? 0 : 1, nextRetryAt: null, sending: 0 })
+    if (action === 'pause-resume' || action === 'session-expiry') {
+      expect(store.getBatchSummary(task.id)?.stopCode).toBe('UNCERTAIN_RESULT')
+    }
+    if (action === 'manual-pause') expect(store.getBatchSummary(task.id)?.stopCode).toBe('MANUAL_PAUSE')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not replace an unresolved POST review stop with a previous access-denied circuit message', async () => {
+    const { queue, store, post, input } = fixture()
+    let reject!: (error: Error) => void
+    post.mockReturnValueOnce(new Promise((_yes, no) => { reject = no }))
+    const task = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    store.recordBatchAccessDenied(task.id)
+    store.recordBatchAccessDenied(task.id)
+    reject(new DomainError('COMMENT_POST_UNCERTAIN', 'Synthetic POST may already exist'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getBatchSummary(task.id)).toMatchObject({ status: 'paused', stopCode: 'UNCERTAIN_RESULT',
+      stopMessage: 'Synthetic POST may already exist', pending: 1, uncertain: 1, accessDeniedCount: 2, nextRetryAt: null })
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(post).toHaveBeenCalledOnce()
+  })
+
+  it('cancels the busy session-recovery poll when the original in-flight POST becomes uncertain', async () => {
+    const { queue, store, post, steam, input } = fixture()
+    let rejectPost!: (error: Error) => void
+    post.mockReturnValueOnce(new Promise((_yes, no) => { rejectPost = no }))
+    const task = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    queue.pauseForSessionExpiry(accountId)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(steam.ensureSessionFresh).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+    rejectPost(new DomainError('COMMENT_POST_UNCERTAIN', 'Synthetic unresolved POST during recovery'))
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(post).toHaveBeenCalledOnce()
+    expect(store.getBatchSummary(task.id)).toMatchObject({ status: 'paused', stopCode: 'UNCERTAIN_RESULT',
+      pending: 1, uncertain: 1, nextRetryAt: null })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retains unresolved POST outcomes across restart and never restores an automatic plan', async () => {
+    const { queue, store, post, steam, input } = fixture()
+    post.mockRejectedValueOnce(new DomainError('COMMENT_POST_UNCERTAIN', 'Synthetic POST awaiting manual review'))
+    const task = queue.start(input)
+    await vi.advanceTimersByTimeAsync(0)
+    const item = resources.find(resource => resource.store === store)!
+    queue.shutdown()
+    store.close()
+    const reopened = new SqliteStore(join(item.directory, 'fixture.sqlite3'), cipher)
+    item.store = reopened
+    item.queue = new BatchQueue(reopened, steam as unknown as SteamService, () => undefined)
+    expect(reopened.getBatchSummary(task.id)).toMatchObject({ status: 'paused', stopCode: 'APP_RESTARTED',
+      pending: 1, uncertain: 1, nextRetryAt: null, stopMessage: expect.stringContaining('Synthetic POST awaiting manual review') })
+    await vi.advanceTimersByTimeAsync(86_400_000)
+    expect(post).toHaveBeenCalledOnce()
+  })
+
   it.each([true, false])('still persists a late 429 cooldown when switching auto mode to %s during a POST', async enabled => {
     const { queue, store, post, input } = fixture()
     let reject!: (error: Error) => void

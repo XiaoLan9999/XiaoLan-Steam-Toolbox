@@ -96,6 +96,13 @@ export class BatchQueue {
     if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
       throw new DomainError('NOT_AUTHENTICATED', '恢复批次前必须登录对应 Steam 账号')
     }
+    if (this.store.quarantineLegacyDeniedPost(batchId)) {
+      this.recovery.invalidate(batchId)
+      this.wake()
+      this.emit({ type: 'batchProgress', batchId })
+      this.emit({ type: 'notice', level: 'warning', message: this.store.getBatchSummary(batchId)!.stopMessage! })
+      return
+    }
     if (batch.accessDeniedUntil && Date.parse(batch.accessDeniedUntil) > Date.now()) {
       throw new DomainError('ACCESS_DENIED_COOLDOWN',
         `HTTP 403 冷却尚未结束，最早可再试：${batch.accessDeniedUntil}；手动继续、关闭自动重试或重启不会缩短冷却时间`)
@@ -302,7 +309,10 @@ export class BatchQueue {
           const result = await this.steam.postProfileComment(
             batch.accountId,
             delivery.friendSteamId,
-            delivery.renderedMessage
+            delivery.renderedMessage,
+            () => !this.stopped && this.recovery.isCurrent(batchId, intent) &&
+              this.store.getBatchSummary(batchId)?.status === 'running' &&
+              this.store.getDeliveryRecordById(delivery.id)?.status === 'sending'
           )
           if (this.stopped) return
           this.store.completeDelivery(
@@ -313,14 +323,18 @@ export class BatchQueue {
           this.store.resetBatchAccessDenials(batchId)
           this.clearRetryCountAfterProgress(batchId)
         } catch (error) {
-          if (this.stopped) return
           if (error instanceof DomainError && error.code === 'SESSION_PREPARATION_FAILED') {
+            if (this.stopped) {
+              try { this.store.resetDeliveryToPending(delivery.id) } catch { /* Storage may already be closed. */ }
+              return
+            }
             this.store.resetDeliveryToPending(delivery.id)
             activeDeliveryId = null
             this.recovery.interrupt(batchId, { code: 'SESSION_PREPARATION',
               message: error.message, allowAuto: true, retryAfterMs: error.retryAfterMs }, intent)
             return
           }
+          if (this.stopped) return
           const classification = classifyDeliveryError(error)
           interruption = batchInterruption(error)
           const accessDenied = error instanceof DomainError && error.code === 'COMMUNITY_ACCESS_DENIED'
@@ -346,6 +360,13 @@ export class BatchQueue {
         this.nextDeliveryAt.set(batchId, Date.now() + batch.delayMs + Math.floor(Math.random() * 3_001))
 
         this.emit({ type: 'batchProgress', batchId })
+        if (interruption?.code === 'UNCERTAIN_RESULT' && !interruption.canRetry) {
+          // An unresolved POST still stops the current worker after an in-flight pause/resume.
+          this.recovery.interrupt(batchId, {
+            code: 'UNCERTAIN_RESULT', message: stopMessage, allowAuto: false
+          })
+          return
+        }
         if (this.store.finishBatchIfDone(batchId)) {
           const finished = this.store.getBatchSummary(batchId)!
           this.emit({
@@ -409,7 +430,7 @@ export function classifyDeliveryError(error: unknown): {
   pauseBatch: boolean
 } {
   if (error instanceof DomainError) {
-    if (error.code === 'SESSION_CHANGED') return { status: 'uncertain', pauseBatch: true }
+    if (['SESSION_CHANGED', 'COMMENT_POST_UNCERTAIN'].includes(error.code)) return { status: 'uncertain', pauseBatch: true }
     if (['COMMUNITY_ACCESS_DENIED', 'RATE_LIMITED', 'SESSION_CHECK_FAILED'].includes(error.code)) {
       return { status: 'failed', pauseBatch: true }
     }

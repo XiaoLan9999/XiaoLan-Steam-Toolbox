@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EAuthTokenPlatformType, LoginSession } from 'steam-session'
 import { SteamCommunityClient } from '../src/main/community-client'
 import { STEAM_WEB_USER_AGENT } from '../src/main/steam-user-agent'
+import { emptyCommentProfile } from './helpers/comment-baseline'
 
 const accountId = '76561198000000001'
 const recipientId = '76561198000000002'
@@ -16,8 +17,10 @@ describe('Steam browser identity', () => {
     const agent = new OfflineLoginAgent()
     const login = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent, userAgent: STEAM_WEB_USER_AGENT })
     login.refreshToken = ['synthetic-header', Buffer.from(JSON.stringify({ sub: accountId, aud: ['web', 'derive'] })).toString('base64url'), 'synthetic-signature'].join('.')
-    const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) => init?.method === 'POST'
+    const fetchMock = vi.fn(async (url: URL, init?: RequestInit) => init?.method === 'POST'
       ? new Response(JSON.stringify({ success: true, comments_html: '<div id="comment_42"></div>' }))
+      : url.pathname === `/profiles/${recipientId}/` && url.search === '?l=english'
+        ? emptyCommentProfile(accountId, recipientId)
       : new Response(`<script>g_steamID="${accountId}";</script>`))
     vi.stubGlobal('fetch', fetchMock)
     try {
@@ -31,12 +34,13 @@ describe('Steam browser identity', () => {
       expect(agent.capturedRequests.map(request => request.path)).toEqual([
         '/jwt/finalizelogin', '/login/settoken', '/jwt/finalizelogin', '/login/settoken'
       ])
-      expect(fetchMock).toHaveBeenCalledTimes(4)
+      expect(fetchMock).toHaveBeenCalledTimes(6)
+      expect(fetchMock.mock.calls.map(([, init]) => init?.method ?? 'GET')).toEqual(['GET', 'GET', 'POST', 'GET', 'GET', 'POST'])
       const userAgents = [
         ...agent.capturedRequests.map(request => request.userAgent),
         ...fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get('User-Agent'))
       ]
-      expect(userAgents).toHaveLength(8)
+      expect(userAgents).toHaveLength(10)
       for (const userAgent of userAgents) {
         expect(userAgent).toBe(STEAM_WEB_USER_AGENT)
         expect(userAgent).not.toMatch(/toolbox|xiaolan|Chrome\/136\./i)

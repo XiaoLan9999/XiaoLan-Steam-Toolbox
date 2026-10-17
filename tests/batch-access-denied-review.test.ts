@@ -43,7 +43,7 @@ function fixture(count = 1) {
     isAuthenticated: vi.fn(() => true),
     ensureSessionFresh: vi.fn<() => Promise<void>>(async () => undefined),
     verifyCommentSession: vi.fn<() => Promise<void>>(async () => undefined),
-    postProfileComment: vi.fn<() => Promise<{ commentId: string | null }>>()
+    postProfileComment: vi.fn<(account: string, friend: string, message: string, canSubmit: () => boolean) => Promise<{ commentId: string | null }>>()
       .mockResolvedValue({ commentId: 'synthetic-comment' })
   }
   const queue = new BatchQueue(store, steam as unknown as SteamService, () => undefined)
@@ -144,7 +144,14 @@ describe('independent access-denial recovery regression review', () => {
     expect(steam.postProfileComment).toHaveBeenCalledTimes(3)
     expect(store.getBatchSummary(task.id)).toMatchObject({ pending: 1, succeeded: 0, accessDeniedCount: 2,
       stopCode: 'ACCESS_DENIED_PERSISTENT', nextRetryAt: null })
-    expect(steam.postProfileComment.mock.calls[0]).toEqual(steam.postProfileComment.mock.calls[1])
+    const first = steam.postProfileComment.mock.calls[0]!
+    const retry = steam.postProfileComment.mock.calls[1]!
+    expect(first.slice(0, 3)).toEqual(retry.slice(0, 3))
+    expect(first[3]).toEqual(expect.any(Function))
+    expect(retry[3]).toEqual(expect.any(Function))
+    expect(first[3]).not.toBe(retry[3])
+    expect(first[3]()).toBe(false)
+    expect(retry[3]()).toBe(false)
     await vi.advanceTimersByTimeAsync(86_400_000)
     expect(steam.postProfileComment).toHaveBeenCalledTimes(3)
   })

@@ -5,6 +5,8 @@ export const MAX_BATCH_RETRIES = 5
 export const MAX_ACCESS_DENIED_RETRIES = 1
 export const ACCESS_DENIED_COOLDOWN_MS = 300_000
 export const MAX_BATCH_RETRY_DELAY_MS = 24 * 60 * 60 * 1000
+export const COMMENT_POST_UNCERTAIN_MESSAGE = 'Steam 拒绝响应，但发送结果待核对；为防重复不会自动重发。'
+export const LEGACY_COMMENT_POST_REVIEW_MESSAGE = '旧版 HTTP 403 可能已经送达，该对象已移入待核对；核对后可继续其余待发。为避免重复，未自动重发。'
 
 const standardDelays = [60_000, 120_000, 300_000, 600_000, 900_000]
 const sessionDelays = [30_000, 60_000, 120_000, 300_000, 600_000]
@@ -22,6 +24,7 @@ export function batchInterruption(error: unknown): BatchInterruption {
     switch (error.code) {
       case 'RATE_LIMITED': return { code: 'RATE_LIMITED', canRetry: true, rejectedBeforeAcceptance: true, retryAfterMs }
       case 'COMMUNITY_ACCESS_DENIED': return { code: 'ACCESS_DENIED', canRetry: true, rejectedBeforeAcceptance: true, retryAfterMs }
+      case 'COMMENT_POST_UNCERTAIN': return { code: 'UNCERTAIN_RESULT', canRetry: false, rejectedBeforeAcceptance: false }
       case 'SESSION_EXPIRED': return { code: 'SESSION_EXPIRED', canRetry: true, rejectedBeforeAcceptance: true }
       case 'SESSION_PREPARATION_FAILED': return { code: 'SESSION_PREPARATION', canRetry: true, rejectedBeforeAcceptance: true, retryAfterMs }
       case 'SESSION_CHANGED': return { code: 'SESSION_CHANGED', canRetry: true, rejectedBeforeAcceptance: false }

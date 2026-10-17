@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { AppSnapshot, BatchSummary, SteamFriendCommenterApi } from '../src/shared/types'
 import { DEFAULT_UPDATE_PREFERENCES, initialUpdateState } from '../src/shared/update-types'
+import { COMMENT_POST_UNCERTAIN_MESSAGE, LEGACY_COMMENT_POST_REVIEW_MESSAGE } from '../src/shared/batch-retry-policy'
 import { I18nProvider } from '../src/renderer/src/i18n'
 import {
   BatchRecoveryPanel, enableBatchRetryAndResume, retryCountdown
@@ -49,6 +50,38 @@ function snapshot(task: BatchSummary | null): AppSnapshot {
 }
 
 describe('persistent batch stop reasons and recovery UI', () => {
+  it.each(['zh-CN', 'en'] as const)
+  ('prioritizes unresolved POST safety over stale 403 counters and deadlines in %s', language => {
+    const html = render(batch({ autoRetryEnabled: true, stopCode: 'UNCERTAIN_RESULT', uncertain: 1,
+      stopMessage: COMMENT_POST_UNCERTAIN_MESSAGE,
+      accessDeniedCount: 6, accessDeniedUntil: '2030-10-16T02:05:00.000Z', nextRetryAt: '2030-10-16T02:05:00.000Z' }), language)
+    expect(html).toContain(language === 'en' ? 'The delivery result is uncertain' : '本条发送结果不确定')
+    expect(html).toContain(language === 'en' ? 'may already have received the comment' : '可能已经送达')
+    expect(html).toContain(language === 'en' ? 'the next recipient will be sent automatically' : '也不会自动发送下一位')
+    expect(html).not.toContain(language === 'en' ? 'The current and remaining recipients stay pending' : '当前对象和剩余对象仍待发')
+    expect(html).not.toContain(language === 'en' ? 'Automatic resume in' : '距离自动继续')
+    expect(html).not.toContain(language === 'en' ? 'only 1 automatic retry after cooldown' : '冷却后自动重试 1 次')
+  })
+
+  it.each(['zh-CN', 'en'] as const)('retains legacy recipient-review safety after restart in %s', language => {
+    const html = render(batch({ autoRetryEnabled: true, stopCode: 'APP_RESTARTED', uncertain: 1,
+      stopMessage: `应用已重启，任务保持暂停，请手动继续。上次停止：${LEGACY_COMMENT_POST_REVIEW_MESSAGE}`,
+      accessDeniedCount: 6, accessDeniedUntil: '2030-10-16T02:05:00.000Z' }), language)
+    expect(html).toContain(language === 'en' ? 'This recipient needs review' : '本对象已列入待核对')
+    expect(html).toContain(language === 'en' ? 'earliest resume time' : '最早可继续时间')
+    expect(html).not.toContain(language === 'en' ? 'The current and remaining recipients stay pending' : '当前对象和剩余对象仍待发')
+    expect(html).not.toContain(language === 'en' ? 'Automatic resume in' : '距离自动继续')
+    if (language === 'en') expect(html).not.toMatch(/\p{Script=Han}/u)
+  })
+
+  it('does not hide a real scheduled recovery for an unrelated malformed response', () => {
+    const html = render(batch({ autoRetryEnabled: true, stopCode: 'UNCERTAIN_RESULT', uncertain: 1,
+      stopMessage: 'Steam returned invalid JSON', nextRetryAt: '2030-10-16T02:05:00.000Z' }))
+    expect(html).toContain('已安排自动继续剩余待发')
+    expect(html).toContain('距离自动继续')
+    expect(html).not.toContain('也不会自动发送下一位')
+  })
+
   it('identifies legacy unknown causes honestly and requires explicit authorization to enable retries', () => {
     const html = render(batch())
     expect(html).toContain('旧版本任务未保存停止原因')

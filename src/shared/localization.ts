@@ -17,6 +17,9 @@ const messages = new Map<string, string>([
   ['任务暂停原因或重试计划无效', 'Invalid task pause reason or retry schedule.'],
   ['应用已重启，任务保持暂停，请手动继续', 'The app restarted. The task remains paused; resume it manually.'],
   ['未知原因', 'Unknown reason'],
+  ['旧版 HTTP 403 可能已经送达，该对象已移入待核对；核对后可继续其余待发。为避免重复，未自动重发。', 'A comment reported as HTTP 403 by the older app may already have been delivered. This recipient now needs review. Review it before resuming other pending recipients; it was not resent automatically to prevent duplicates.'],
+  ['留言前无法可靠读取目标评论基线，尚未提交留言；请稍后继续原任务', 'The target comment baseline could not be read reliably. No comment was submitted; resume the original task later.'],
+  ['无法核验目标资料页中的当前登录身份', 'The current signed-in identity on the target profile could not be verified.'],
   ['任务已暂停，需手动继续', 'The task is paused. Resume it manually.'],
   ['用户手动暂停任务', 'The user paused this task.'],
   ['用户取消任务', 'The user cancelled this task.'],
@@ -163,7 +166,9 @@ export function localizeMessage(message: string, language: 'zh-CN' | 'en'): stri
   const translated = messages.get(message)
   if (translated !== undefined) return translated
 
-  let match = /^(Steam 返回(?:JSON 拒绝|HTML 拒绝|验证页面拒绝|访问拒绝)（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试)。Steam 原因：([\s\S]*)$/.exec(message)
+  let match = /^Steam 拒绝响应，但发送结果待核对；为防重复不会自动重发。([\s\S]*)$/.exec(message)
+  if (match) return `Steam returned a refusal, but the delivery result needs review. It will not be resent automatically to prevent duplicates. ${localizeMessage(match[1]!, language)}`.trimEnd()
+  match = /^(Steam 返回(?:JSON 拒绝|HTML 拒绝|验证页面拒绝|访问拒绝)（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试)。Steam 原因：([\s\S]*)$/.exec(message)
   if (match) return `${localizeMessage(match[1]!, language)} Steam reason: ${match[2]}`
   match = /^留言请求持续被拒绝（HTTP 403），已停止自动重试。当前对象和剩余好友保留待发；尚不能确定是好友权限、账号限制或网络拦截，请处理原因后再手动继续。([\s\S]*)$/.exec(message)
   if (match) return `Comment access remains denied (HTTP 403). Automatic retries stopped. The current and remaining recipients stay pending. Friend permissions, account restrictions, and network filtering cannot yet be distinguished. Resolve the cause before resuming manually. ${localizeMessage(match[1]!, language)}`

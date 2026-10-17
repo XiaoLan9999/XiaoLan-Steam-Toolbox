@@ -51,7 +51,8 @@ describe('blacklist enforcement on delivery', () => {
     const batch = queue.start({ accountId: owner, friendSteamIds: [friend],
       messageTemplate: 'hello', delayMs: 10000 })
     await vi.waitFor(() => expect(store.getBatch(batch.id)?.status).toBe('completed'))
-    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello')
+    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function))
+    expect(post.mock.calls[0]![3]()).toBe(false)
   })
 
   it('skips a recipient added to the blacklist after the batch was created', () => {
@@ -116,7 +117,8 @@ describe('friendship removal enforcement on delivery', () => {
     store.replaceFriends(other, [])
     queue.resume(batch.id)
     await vi.waitFor(() => expect(store.getBatch(batch.id)?.status).toBe('completed'))
-    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello')
+    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function))
+    expect(post.mock.calls[0]![3]()).toBe(false)
   })
 
   it('allows a pending recipient who has been re-added before the queue resumes', async () => {
@@ -131,7 +133,8 @@ describe('friendship removal enforcement on delivery', () => {
     store.replaceFriends(owner, cached)
     queue.resume(batch.id)
     await vi.waitFor(() => expect(store.getBatch(batch.id)?.status).toBe('completed'))
-    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello')
+    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function))
+    expect(post.mock.calls[0]![3]()).toBe(false)
   })
 })
 
@@ -151,7 +154,10 @@ function fixture(count = 1) {
         onlineState: 'offline' as const, syncedAt: new Date().toISOString() }
     }))
   }
-  const post = vi.fn(async () => ({ commentId: 'test-comment' }))
+  const post = vi.fn(async (_account: string, _friend: string, _message: string, canSubmit: () => boolean) => {
+    expect(canSubmit()).toBe(true)
+    return { commentId: 'test-comment' }
+  })
   const steam = { isAuthenticated: () => true, postProfileComment: post } as unknown as SteamService
   return { store, post, queue: new BatchQueue(store, steam, vi.fn()) }
 }

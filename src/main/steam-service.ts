@@ -424,7 +424,8 @@ export class SteamService {
   async postProfileComment(
     accountId: string,
     friendSteamId: string,
-    message: string
+    message: string,
+    canSubmit: () => boolean = () => true
   ): Promise<{ commentId: string | null }> {
     let community = this.requireActiveCommunity(accountId)
     if (!this.store.hasActiveFriend(accountId, friendSteamId)) {
@@ -447,7 +448,19 @@ export class SteamService {
     if (this.store.isBlacklisted(accountId, friendSteamId)) {
       throw new DomainError('FRIEND_BLACKLISTED', '该好友在当前账号黑名单中，已阻止留言')
     }
-    return community.postProfileComment(friendSteamId, message)
+    const runtime = this.runtime
+    return community.postProfileComment(friendSteamId, message, () => {
+      if (this.disposed || !runtime || this.runtime !== runtime || runtime.community !== community ||
+        this.store.getActiveAccountId() !== accountId || !this.isAuthenticated(accountId) || !canSubmit()) {
+        throw new DomainError('SESSION_PREPARATION_FAILED', '账号、会话或任务状态已改变，尚未提交留言；请检查原任务后继续', true)
+      }
+      if (!this.store.hasActiveFriend(accountId, friendSteamId)) {
+        throw new DomainError('FRIEND_NOT_FOUND', '该用户已不在当前账号好友列表中，尚未提交留言')
+      }
+      if (this.store.isBlacklisted(accountId, friendSteamId)) {
+        throw new DomainError('FRIEND_BLACKLISTED', '该好友已加入当前账号黑名单，尚未提交留言')
+      }
+    })
   }
 
   async checkCommentEligibility(accountId: string, steamId: string): Promise<CommentCheckResult> {

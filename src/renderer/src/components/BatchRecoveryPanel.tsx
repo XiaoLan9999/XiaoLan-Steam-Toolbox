@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { MAX_ACCESS_DENIED_RETRIES, MAX_BATCH_RETRIES } from '../../../shared/batch-retry-policy'
+import { COMMENT_POST_UNCERTAIN_MESSAGE, LEGACY_COMMENT_POST_REVIEW_MESSAGE, MAX_ACCESS_DENIED_RETRIES, MAX_BATCH_RETRIES } from '../../../shared/batch-retry-policy'
 import { localizeMessage } from '../../../shared/localization'
 import type { BatchStopCode, BatchSummary, SteamFriendCommenterApi } from '../../../shared/types'
 import { useI18n, type Translate } from '../i18n'
@@ -85,16 +85,20 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
   const active = ['queued', 'running', 'paused'].includes(batch.status)
   const accessDeniedCount = Number.isSafeInteger(batch.accessDeniedCount) && batch.accessDeniedCount! > 0
     ? batch.accessDeniedCount! : 0
-  const persistentAccessDenied = batch.stopCode === 'ACCESS_DENIED_PERSISTENT' || accessDeniedCount > MAX_ACCESS_DENIED_RETRIES
+  const unresolvedPost = (batch.stopCode === 'UNCERTAIN_RESULT' && !batch.nextRetryAt) ||
+    (batch.uncertain > 0 && [COMMENT_POST_UNCERTAIN_MESSAGE, LEGACY_COMMENT_POST_REVIEW_MESSAGE]
+      .some(message => batch.stopMessage?.includes(message)))
+  const persistentAccessDenied = !unresolvedPost &&
+    (batch.stopCode === 'ACCESS_DENIED_PERSISTENT' || accessDeniedCount > MAX_ACCESS_DENIED_RETRIES)
   const accessDeniedUntil = batch.accessDeniedUntil && Number.isFinite(Date.parse(batch.accessDeniedUntil))
     ? batch.accessDeniedUntil : null
   const accessCooldown = active && accessDeniedUntil !== null && Date.parse(accessDeniedUntil) > now
-  const showAccessDenied = accessDeniedCount > 0 || accessDeniedUntil !== null ||
-    batch.stopCode === 'ACCESS_DENIED' || persistentAccessDenied
+  const showAccessDenied = !unresolvedPost && (accessDeniedCount > 0 || accessDeniedUntil !== null ||
+    batch.stopCode === 'ACCESS_DENIED' || persistentAccessDenied)
   const canResume = authenticated && !otherTaskActive && !disabled && !accessCooldown && batch.status === 'paused' && batch.pending > 0
   const resumeAllowed = useRef(canResume)
   resumeAllowed.current = canResume
-  const scheduled = batch.status === 'paused' && batch.autoRetryEnabled && Boolean(batch.nextRetryAt) && !persistentAccessDenied
+  const scheduled = batch.status === 'paused' && batch.autoRetryEnabled && Boolean(batch.nextRetryAt) && !persistentAccessDenied && !unresolvedPost
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => {
@@ -133,7 +137,10 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
         : t('自动重试未开启：本轮正常发送，出错暂停后需手动处理。', 'Automatic retries are off. Sending continues normally, but an error pause requires manual action.')
         : batch.status === 'paused' ? t('当前没有自动继续计划，请手动继续待发。', 'No automatic resume is scheduled. Resume pending deliveries manually.')
           : t('已开启：临时错误后退避重试剩余待发。', 'Enabled: pending deliveries retry with backoff after temporary errors.')
-  if (active && batch.status === 'paused' && !scheduled && batch.stopCode === 'LOGIN_REQUIRED') {
+  if (active && batch.status === 'paused' && unresolvedPost) {
+    recoveryStatus = t('本对象已列入待核对，可能已经送达；为避免重复，不会自动重发，也不会自动发送下一位。核对记录后，可手动继续其余待发对象。',
+      'This recipient needs review and may already have received the comment. To prevent duplicates, neither this comment nor the next recipient will be sent automatically. Review the record, then manually resume other pending recipients.')
+  } else if (active && batch.status === 'paused' && !scheduled && batch.stopCode === 'LOGIN_REQUIRED') {
     recoveryStatus = t('需要重新登录此账号，再手动继续原任务；不会自动扫码。', 'Sign in to this account again, then resume the original task manually. QR sign-in is never automatic.')
   } else if (active && batch.status === 'paused' && persistentAccessDenied) {
     recoveryStatus = t('连续收到 HTTP 403，已停止自动继续。当前对象和剩余对象仍待发，未判定为好友权限问题。',
@@ -147,6 +154,8 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
       <small>{batch.status === 'paused' ? t('本次暂停原因', 'Why this task paused') : t('最近停止原因', 'Last stop reason')}</small>
       <strong>{batchStopLabel(batch.stopCode, t)}</strong>
       {batch.stopMessage && <p>{localizeMessage(batch.stopMessage, language)}</p>}
+      {unresolvedPost && accessCooldown && <p>{t('其余待发仍需等待原有冷却结束，最早可继续时间',
+        'Other pending recipients remain subject to the existing cooldown; earliest resume time')}: {timestamp(accessDeniedUntil, language)}</p>}
       <span>{t('来源', 'Source')}: {stopSource(batch.stopCode, t)} · {timestamp(batch.pausedAt, language)}</span>
     </div>}
     {showAccessDenied && <div className="batch-access-denied" aria-label={t('HTTP 403 检查与冷却', 'HTTP 403 checks and cooldown')}>

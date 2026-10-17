@@ -5,10 +5,11 @@ import { join } from 'node:path'
 import { SteamCommunityClient, type CommentDenialReason, type CommunityDiagnosticEvent } from '../src/main/community-client'
 import { RuntimeDiagnostics } from '../src/main/runtime-diagnostics'
 import { localizeMessage } from '../src/shared/localization'
+import { stubCommentBaseline } from './helpers/comment-baseline'
 
 const account = '76561198000000001'
 const recipient = '76561198000000002'
-const baseMessage = 'Steam 返回JSON 拒绝（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试'
+const baseMessage = 'Steam 拒绝响应，但发送结果待核对；为防重复不会自动重发。Steam 返回JSON 拒绝（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试'
 const directories: string[] = []
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -19,7 +20,7 @@ async function rejected(body: unknown, headers: HeadersInit = {}) {
   const diagnostic: CommunityDiagnosticEvent[] = []
   const expired = vi.fn()
   const fetch = vi.fn(async () => new Response(JSON.stringify(body), { status: 403, headers }))
-  vi.stubGlobal('fetch', fetch)
+  const { baselineReads } = stubCommentBaseline(fetch, account, recipient)
   const client = new SteamCommunityClient(account, [
     `steamLoginSecure=${account}%7C%7Csynthetic-cookie; Path=/; Secure; Domain=steamcommunity.com`,
     'sessionid=synthetic-csrf; Path=/; Secure; Domain=steamcommunity.com'
@@ -27,6 +28,7 @@ async function rejected(body: unknown, headers: HeadersInit = {}) {
   let error: unknown
   try { await client.postProfileComment(recipient, 'synthetic-private-comment') } catch (caught) { error = caught }
   expect(fetch).toHaveBeenCalledOnce()
+  expect(baselineReads).toHaveBeenCalledOnce()
   return { diagnostic, expired, fetch, error: error as Error & { code: string } }
 }
 
@@ -57,7 +59,7 @@ describe('safe Steam JSON comment denial details', () => {
   ])('recognizes only the explicit error meaning: %s', async (serverError, reason) => {
     const { diagnostic, expired, error } = await rejected({ success: 2, error: serverError })
     expect(diagnostic[0]).toMatchObject({ responseCode: 2, commentDenialReason: reason, errorPresent: true })
-    expect(error.code).toBe('COMMUNITY_ACCESS_DENIED')
+    expect(error.code).toBe('COMMENT_POST_UNCERTAIN')
     expect(error.message).toBe(`${baseMessage}。Steam 原因：${serverError}`)
     expect(expired).not.toHaveBeenCalled()
     expect(JSON.stringify(diagnostic)).not.toContain(serverError)

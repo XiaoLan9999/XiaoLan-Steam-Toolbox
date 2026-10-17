@@ -34,4 +34,9 @@ describe('bounded batch recovery policy', () => {
     expect(batchInterruption(new DomainError('WRONG_ACCOUNT', 'Synthetic account transition')).canRetry).toBe(false)
     expect(batchInterruption(new DomainError('NOT_AUTHENTICATED', 'Synthetic expired token')).code).toBe('LOGIN_REQUIRED')
   })
+
+  it('never automatically continues after an unresolved POST denial, regardless of error retry hints', () => {
+    expect(batchInterruption(new DomainError('COMMENT_POST_UNCERTAIN', 'Synthetic POST uncertainty', true, 300_000)))
+      .toEqual({ code: 'UNCERTAIN_RESULT', canRetry: false, rejectedBeforeAcceptance: false })
+  })
 })

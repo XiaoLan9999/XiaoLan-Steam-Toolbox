@@ -59,6 +59,12 @@ describe('delivery error classification', () => {
     expect(classifyDeliveryError(new DomainError('SESSION_CHANGED', 'New cookies replaced an old request')))
       .toEqual({ status: 'uncertain', pauseBatch: true })
   })
+
+  it.each(['Synthetic HTTP 403', '频率限制', 'Comments are disabled for this profile'])
+  ('gives an explicit uncertain POST outcome priority over message heuristics: %s', message => {
+    expect(classifyDeliveryError(new DomainError('COMMENT_POST_UNCERTAIN', message)))
+      .toEqual({ status: 'uncertain', pauseBatch: true })
+  })
 })
 
 describe('persistent sending queue', () => {
