@@ -14,6 +14,36 @@ afterEach(() => {
 })
 
 describe('SteamCommunityClient', () => {
+  it('obtains a short-lived game-status credential using only the authenticated Community origin', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ logged_in: true, steamid: '76561198000000001', account_name: 'fixture-user', token: 'fixture-nonce' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await expect(client.getGameStatusLogin()).resolves.toEqual({ steamId: '76561198000000001', accountName: 'fixture-user', webLogonToken: 'fixture-nonce' })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit]
+    expect(url.href).toBe('https://steamcommunity.com/chat/clientjstoken')
+    expect(init).toMatchObject({ cache: 'no-store', redirect: 'manual' })
+    expect(new Headers(init.headers).get('Cookie')).toContain('steamLoginSecure=')
+  })
+
+  it.each([
+    { logged_in: true, steamid: '76561198000000002', account_name: 'fixture', token: 'SECRET-NONCE' },
+    { logged_in: true, steamid: '76561198000000001', account_name: '', token: 'SECRET-NONCE' },
+    { logged_in: true, steamid: '76561198000000001', account_name: 'fixture', token: 'bad\nSECRET-NONCE' }
+  ])('rejects invalid or mismatched game-status credentials without exposing the response', async body => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(body)))
+    const client = new SteamCommunityClient('76561198000000001', cookies, vi.fn())
+    await expect(client.getGameStatusLogin()).rejects.toMatchObject({ code: 'GAME_STATUS_AUTH_FAILED' })
+    await expect(client.getGameStatusLogin()).rejects.not.toThrow(/SECRET-NONCE/)
+  })
+
+  it('routes an explicit logged-out nonce response through existing web-session recovery', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ logged_in: false })))
+    const expired = vi.fn()
+    const client = new SteamCommunityClient('76561198000000001', cookies, expired)
+    await expect(client.getGameStatusLogin()).rejects.toMatchObject({ code: 'SESSION_EXPIRED' })
+    expect(expired).toHaveBeenCalledOnce()
+  })
+
   it('uses the authentication browser identity for both identity GET and comment POST', async () => {
     const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) => init?.method === 'POST'
       ? jsonResponse({ success: true, comments_html: '<div id="comment_7788"></div>' })

@@ -152,6 +152,24 @@ export class SteamCommunityClient {
     })
   }
 
+  /** Short-lived CM credential; keep this entirely inside the main process. */
+  async getGameStatusLogin(): Promise<{ steamId: string; accountName: string; webLogonToken: string }> {
+    let body: unknown
+    await this.requestText('/chat/clientjstoken', { cache: 'no-store' }, 0, () => undefined, (raw, version) => {
+      try { body = JSON.parse(raw) as unknown } catch { throw new Error('Steam returned invalid JSON') }
+      if (isRecord(body) && body.logged_in === false) {
+        this.rejectExpired(version, { phase: 'community-request', outcome: 'auth-rejected', reason: 'not-logged-on', method: 'GET' })
+      }
+    })
+    if (!isRecord(body) || body.logged_in !== true || body.steamid !== this.accountId ||
+      typeof body.account_name !== 'string' || !body.account_name.trim() || Buffer.byteLength(body.account_name) > 128 ||
+      /[\p{Cc}\u2028\u2029]/u.test(body.account_name) ||
+      typeof body.token !== 'string' || !body.token || Buffer.byteLength(body.token) > 4096 || /[\s\p{Cc}]/u.test(body.token)) {
+      throw new DomainError('GAME_STATUS_AUTH_FAILED', '无法复用当前工具箱登录，请在工具箱账号页确认登录后重试')
+    }
+    return { steamId: this.accountId, accountName: body.account_name, webLogonToken: body.token }
+  }
+
   async getFriendRelationships(): Promise<Record<string, number>> {
     const body = await this.requestJson<unknown>('/textfilter/ajaxgetfriendslist')
     if (isRecord(body) && (body.success === 21 || body.success === '21')) {

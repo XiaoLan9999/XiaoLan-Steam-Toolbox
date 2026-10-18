@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { UpdateState } from '../shared/update-types'
 import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from '../shared/steam-screenshots'
 import type { ArtworkBrowserState } from '../shared/artwork-browser'
+import type { GameStatusDraft, GameStatusSnapshot } from '../shared/game-status'
 import type { ProfileBackgroundCatalog, ProfileBackgroundImage } from '../shared/profile-backgrounds'
 import {
   AppEvent,
@@ -22,6 +23,18 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<IpcResult<T>> =
   ipcRenderer.invoke(channel, ...args) as Promise<IpcResult<T>>
 
 const api: SteamFriendCommenterApi = {
+  gameStatus: {
+    state: () => invoke<GameStatusSnapshot>('gameStatus:state'),
+    connectWithToolbox: input => invoke<GameStatusSnapshot>('gameStatus:connectWithToolbox', input),
+    play: input => invoke<GameStatusSnapshot>('gameStatus:play', input),
+    stop: input => invoke<GameStatusSnapshot>('gameStatus:stop', input),
+    logout: input => invoke<GameStatusSnapshot>('gameStatus:logout', input),
+    observeLive: input => invoke<GameStatusSnapshot>('gameStatus:observe', input),
+    patchLive: input => invoke<GameStatusSnapshot>('gameStatus:patch', input),
+    restoreLive: input => invoke<GameStatusSnapshot>('gameStatus:restore', input),
+    loadDraft: input => invoke<GameStatusDraft | null>('gameStatus:loadDraft', input),
+    saveDraft: input => invoke<GameStatusDraft>('gameStatus:saveDraft', input)
+  },
   getScreenshotCatalog: () => invoke<ScreenshotCatalog>('screenshots:catalog'),
   refreshScreenshotCatalog: () => invoke<ScreenshotCatalog>('screenshots:refresh'),
   chooseScreenshotSteamDirectory: () => invoke<ScreenshotCatalog | null>('screenshots:chooseSteam'),

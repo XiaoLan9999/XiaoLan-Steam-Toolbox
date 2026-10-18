@@ -7,6 +7,8 @@ import { BatchQueue } from './batch-queue'
 import { CommentScanQueue } from './comment-scan-queue'
 import { SecretCipher, SqliteStore } from './store'
 import { SteamService, publicErrorMessage } from './steam-service'
+import { GameStatusService } from './game-status-service'
+import type { GameStatusAction, GameStatusPatchInput, GameStatusPlayInput, GameStatusSaveDraftInput } from '../shared/game-status'
 import { DomainError } from '../shared/domain'
 import { isAllowedExternalUrl } from './external-links'
 import { localizeMessage } from '../shared/localization'
@@ -44,6 +46,7 @@ import {
 let mainWindow: BrowserWindow | null = null
 let store: SqliteStore
 let steam: SteamService
+let gameStatus: GameStatusService
 let queue: BatchQueue
 let commentScans: CommentScanQueue
 let diagnostics: RuntimeDiagnostics | undefined
@@ -89,6 +92,7 @@ app.whenReady().then(async () => {
   const emit = (event: AppEvent): void => {
     if (shuttingDown) return
     if (event.type === 'authFinished') {
+      gameStatus?.invalidate()
       artworkUploads?.invalidate()
       backgroundMedia?.invalidate()
       void artworkBrowser?.close()
@@ -118,6 +122,17 @@ app.whenReady().then(async () => {
     commentScans?.pauseForAccount(accountId)
   }, { onDiagnostic: (event) => diagnostics?.sessionEvent(event) })
   queue = new BatchQueue(store, steam, emit)
+  gameStatus = new GameStatusService({
+    getActiveAccount: () => {
+      if (accountTransition.active) return null
+      const id = store.getActiveAccountId()
+      const account = id ? store.getAccount(id) : null
+      return account ? { id: account.id, steamId: account.steamId } : null
+    },
+    onChange: state => emit({ type: 'gameStatusChanged', state }),
+    getToolboxLogin: accountId => steam.getGameStatusLogin(accountId),
+    draftPath: join(app.getPath('userData'), 'game-status-drafts.json')
+  })
   commentScans = new CommentScanQueue(store, steam, emit)
   diagnostics = new RuntimeDiagnostics({
     directory: join(app.getPath('userData'), 'diagnostics'), version: app.getVersion(),
@@ -177,6 +192,7 @@ app.on('will-quit', () => {
   queue?.shutdown()
   commentScans?.shutdown()
   steam?.dispose()
+  gameStatus?.dispose()
   screenshotController?.dispose()
   screenshotImageAdapter?.dispose()
   diagnostics?.shutdown()
@@ -409,6 +425,16 @@ function registerIpcHandlers(): void {
     await requireArtworkBrowser().open(source === 'steam-design' ? 'design' : source)
   })
   handle('snapshot:get', () => getSnapshot())
+  handle('gameStatus:state', () => gameStatus.snapshot())
+  handle('gameStatus:connectWithToolbox', (input: GameStatusAction) => gameStatus.connectWithToolbox(input))
+  handle('gameStatus:play', (input: GameStatusPlayInput) => gameStatus.play(input))
+  handle('gameStatus:stop', (input: GameStatusAction) => gameStatus.stop(input))
+  handle('gameStatus:logout', (input: GameStatusAction) => gameStatus.logout(input))
+  handle('gameStatus:observe', (input: GameStatusAction) => gameStatus.observeLive(input))
+  handle('gameStatus:patch', (input: GameStatusPatchInput) => gameStatus.patchLive(input))
+  handle('gameStatus:restore', (input: GameStatusAction) => gameStatus.restoreLive(input))
+  handle('gameStatus:loadDraft', (input: GameStatusAction) => gameStatus.loadDraft(input))
+  handle('gameStatus:saveDraft', (input: GameStatusSaveDraftInput) => gameStatus.saveDraft(input))
   handle('account:refreshStatus', (accountId: string) => steam.refreshAccountStatus(accountId))
   handle('account:activate', (accountId: string) => accountTransition.run(async () => {
     artworkUploads?.invalidate()
@@ -416,6 +442,7 @@ function registerIpcHandlers(): void {
     await artworkBrowser?.close()
     const previousId = store.getActiveAccountId()
     if (previousId && previousId !== accountId) {
+      gameStatus.invalidate()
       commentScans.pauseForAccount(previousId)
       const activeBatch = store.getActiveBatchSummary(previousId)
       if (activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'queued' || activeBatch.nextRetryAt)) {
@@ -430,6 +457,7 @@ function registerIpcHandlers(): void {
     if (batch) {
       throw new DomainError('ACCOUNT_HAS_ACTIVE_BATCH', '请先取消这个账号的未完成批次')
     }
+    if (store.getActiveAccountId() === accountId) gameStatus.invalidate()
     artworkUploads?.invalidate()
     backgroundMedia?.invalidate()
     if (artworkBrowser?.getState().accountId === accountId) await artworkBrowser.close()

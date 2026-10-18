@@ -526,6 +526,35 @@ export class SteamService {
     return [...cookies]
   }
 
+  async getGameStatusLogin(accountId: string): Promise<{ steamId: string; accountName: string; webLogonToken: string }> {
+    this.requireActiveCommunity(accountId)
+    const runtime = this.runtime!
+    await this.ensureSessionFresh(accountId)
+    const requireCurrent = (): void => {
+      if (this.runtime !== runtime || this.store.getActiveAccountId() !== accountId || !this.isAuthenticated(accountId)) {
+        throw new DomainError('GAME_STATUS_SESSION_CHANGED', '工具箱账号或登录已变化，请重新连接游戏状态')
+      }
+    }
+    requireCurrent()
+    let login: { steamId: string; accountName: string; webLogonToken: string }
+    try {
+      login = await runtime.community.getGameStatusLogin()
+    } catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'SESSION_EXPIRED') throw error
+      if (this.runtime !== runtime || this.store.getActiveAccountId() !== accountId) throw error
+      // Coalesce with automatic cookie recovery, then obtain a fresh nonce once.
+      await this.refreshWebSession(runtime)
+      requireCurrent()
+      login = await runtime.community.getGameStatusLogin()
+    }
+    requireCurrent()
+    const account = this.store.getAccount(accountId)
+    if (!account || login.steamId !== account.steamId) {
+      throw new DomainError('GAME_STATUS_IDENTITY_MISMATCH', '工具箱登录身份不匹配，请在账号页重新登录')
+    }
+    return login
+  }
+
   async getProfileBackgrounds(accountId: string, permitted: () => boolean = () => true): Promise<ProfileBackgroundCatalog> {
     const community = this.requireActiveCommunity(accountId)
     const runtime = this.runtime!

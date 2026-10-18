@@ -1,0 +1,73 @@
+.game-status-panel { height: 100%; padding: 26px 30px 40px; overflow-y: auto; }
+.game-status-heading { display: flex; align-items: center; justify-content: space-between; gap: 22px; margin-bottom: 22px; }
+.game-status-eyebrow { color: var(--blue); font-size: 11px; font-weight: 700; letter-spacing: .14em; }
+.game-status-heading h2 { margin: 8px 0 9px; font-size: 25px; }
+.game-status-heading p, .game-status-section-title p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.game-status-badge { flex-shrink: 0; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--panel-2); font-size: 11px; }
+.game-status-badge.connected { border-color: #c7dfd0; color: var(--green); background: #f0f8f2; }
+.game-status-card { margin-bottom: 20px; padding: 23px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); }
+.game-status-binding { display: flex; align-items: center; gap: 13px; margin-bottom: 17px; padding: 15px 18px; border: 1px solid #cce0e8; border-radius: 12px; background: var(--sky-soft); }
+.game-status-account-icon { display: grid; flex-shrink: 0; width: 38px; height: 38px; place-items: center; border-radius: 11px; color: var(--blue); background: #d9edf5; font-size: 18px; font-weight: 700; }
+.game-status-binding > div { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.game-status-binding strong { overflow-wrap: anywhere; font-size: 13px; }
+.game-status-binding span:not(.game-status-account-icon) { color: var(--muted); font-size: 10px; }
+.game-status-binding code { margin-left: 7px; color: var(--blue); font-size: 11px; }
+.game-status-binding > p { max-width: 330px; margin: 0 0 0 auto; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.game-status-section-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 19px; }
+.game-status-section-title h3 { margin: 0 0 7px; font-size: 16px; }
+.game-status-section-title > button { flex-shrink: 0; }
+.game-status-panel button { padding: 9px 13px; font-size: 12px; font-weight: 600; }
+.game-status-panel button.primary { border-color: transparent; color: #214b61; background: linear-gradient(135deg, #c6e9f6, #add9ec); }
+.game-status-panel button.ghost { background: var(--panel); }
+.game-status-panel button:hover:not(:disabled) { border-color: #8cbdd3; }
+.game-status-panel input, .game-status-panel select { min-width: 0; padding: 10px 11px; font-size: 12px; }
+.game-status-panel label { display: flex; min-width: 0; flex-direction: column; gap: 9px; font-size: 12px; }
+.game-status-connect-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 11px; }
+.game-status-connect-actions button { min-height: 38px; }
+.game-status-inline-error { margin: 14px 0 0; color: var(--red); font-size: 12px; line-height: 1.7; }
+.game-status-tabs { display: flex; gap: 6px; margin: 24px 0 17px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.game-status-tabs button { position: relative; min-width: 126px; border-color: transparent; color: var(--muted); background: transparent; }
+.game-status-tabs button.selected { border-color: #bfdbe8; color: var(--blue); background: var(--sky-soft); }
+.game-status-tabs i { display: inline-block; width: 6px; height: 6px; margin-left: 8px; border-radius: 50%; background: var(--tea); vertical-align: middle; }
+.game-status-notice { margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px; color: var(--muted); background: var(--panel-2); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.game-status-notice.success { color: var(--green); border-left-color: var(--green); background: #f0f8f2; }
+.game-status-notice.error { color: var(--red); border-left-color: var(--red); background: #fdf2f0; }
+.game-status-notice.info { border-left-color: var(--blue); }
+.game-status-preset { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 19px 0 23px; padding: 14px; border-radius: 9px; background: var(--tea-soft); }
+.game-status-preset > span { color: var(--tea); font-size: 11px; font-weight: 600; }
+.game-status-preset > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.game-status-preset button { padding: 7px 10px; border-color: var(--tea-line); background: var(--panel); font-size: 11px; }
+.game-status-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 19px 17px; }
+.game-status-wide { grid-column: 1 / -1; }
+.game-status-draft-preview { display: flex; flex-direction: column; gap: 10px; margin: 22px 0 18px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.game-status-draft-preview > span { color: var(--muted); font-size: 11px; }
+.game-status-draft-preview > strong { overflow-wrap: anywhere; font-size: 16px; }
+.game-status-draft-preview > small { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.game-status-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 19px; }
+.game-status-help { margin: 15px 0 0; color: var(--muted); font-size: 11px; line-height: 1.8; }
+.game-status-empty, .game-status-live-empty { padding: 35px 25px; color: var(--muted); text-align: center; }
+.game-status-empty > span { color: var(--blue); font-size: 34px; }
+.game-status-empty h3 { margin: 17px 0 9px; color: var(--text); font-size: 17px; }
+.game-status-empty p, .game-status-live-empty p { max-width: 620px; margin: 11px auto 0; font-size: 12px; line-height: 1.8; }
+.game-status-live-empty { margin: 18px 0; border: 1px dashed #bed5df; border-radius: 10px; background: var(--panel-2); }
+.game-status-live-meta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 19px 0 14px; color: var(--muted); font-size: 11px; }
+.game-status-live-meta strong { color: var(--blue); }
+.game-status-key-table-wrap { max-height: 470px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
+.game-status-key-table { width: 100%; table-layout: fixed; border-collapse: collapse; text-align: left; }
+.game-status-key-table thead { position: sticky; top: 0; z-index: 1; background: var(--panel-2); }
+.game-status-key-table th, .game-status-key-table td { padding: 11px 12px; border-bottom: 1px solid var(--line); font-size: 11px; vertical-align: top; }
+.game-status-key-table th:first-child { width: 30%; }
+.game-status-key-table th:last-child, .game-status-key-table td:last-child { width: 115px; }
+.game-status-key-table tbody th { font-weight: 400; }
+.game-status-key-table tr:last-child > * { border-bottom: 0; }
+.game-status-key-table input { width: 100%; padding: 8px 9px; font-family: Consolas, monospace; font-size: 11px; }
+.game-status-key-table code { font-family: Consolas, monospace; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.game-status-readonly-value { display: block; padding: 7px 0; white-space: pre-wrap; color: var(--muted); }
+.game-status-field-editable, .game-status-field-readonly { display: inline-block; padding: 4px 6px; border-radius: 5px; color: var(--blue); background: var(--sky-soft); font-size: 10px; }
+.game-status-field-readonly { color: var(--muted); background: var(--panel-2); }
+.game-status-draft-summary { margin: 19px 0; }
+.game-status-draft-summary > div { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.7; }
+.game-status-draft-summary dt { color: var(--muted); }
+.game-status-draft-summary dd { margin: 0; overflow-wrap: anywhere; }
+.game-status-draft-summary code { margin-left: 9px; font-size: 11px; }
+@media (max-width: 1180px) { .game-status-panel { padding: 22px; } .game-status-card { padding: 19px; } .game-status-binding { flex-wrap: wrap; } .game-status-binding > p { flex-basis: 100%; max-width: none; margin: 0; padding-left: 51px; } .game-status-section-title { flex-wrap: wrap; } .game-status-key-table th:first-child { width: 26%; } }

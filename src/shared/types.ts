@@ -3,6 +3,7 @@ import type { ArtworkBounds, ArtworkBrowserState, ArtworkTool } from './artwork-
 import type { ArtworkUploadDraft, ProfileBackgroundCatalog, ProfileBackgroundImage } from './profile-backgrounds'
 import type { UpdatePreferences, UpdateState } from './update-types'
 import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from './steam-screenshots'
+import type { GameStatusApi, GameStatusSnapshot } from './game-status'
 
 export type SessionState = 'offline' | 'restoring' | 'authenticated' | 'expired' | 'error'
 
@@ -289,6 +290,7 @@ export interface BatchStartInput {
 }
 
 export type AppEvent =
+  | { type: 'gameStatusChanged'; state: GameStatusSnapshot }
   | { type: 'screenshotsChanged'; scope?: 'catalog' | 'images' | 'all' }
   | { type: 'artworkChanged'; state: ArtworkBrowserState }
   | { type: 'updateChanged'; state: UpdateState }
@@ -299,7 +301,12 @@ export type AppEvent =
   | { type: 'authFailed'; loginId: string; message: string }
   | { type: 'batchProgress'; batchId: string; summary?: BatchSummary | null }
 
+export type GameStatusIpcApi = {
+  [K in Exclude<keyof GameStatusApi, 'onChange'>]: (...args: Parameters<GameStatusApi[K]>) => Promise<IpcResult<Awaited<ReturnType<GameStatusApi[K]>>>>
+}
+
 export interface SteamFriendCommenterApi {
+  gameStatus: GameStatusIpcApi
   getScreenshotCatalog(): Promise<IpcResult<ScreenshotCatalog>>
   refreshScreenshotCatalog(): Promise<IpcResult<ScreenshotCatalog>>
   chooseScreenshotSteamDirectory(): Promise<IpcResult<ScreenshotCatalog | null>>

@@ -10,12 +10,28 @@ import ArtworkToolsPanel from './components/ArtworkToolsPanel'
 import { AccountStatusPanel } from './components/AccountStatusPanel'
 import { UpdateNotice } from './components/UpdateNotice'
 import ScreenshotToolsPanel from './components/ScreenshotToolsPanel'
+import { GameStatusPanel } from './components/GameStatusPanel'
+import type { GameStatusApi } from '../../shared/game-status'
 import { I18nProvider, type Translate } from './i18n'
 import { avatarFallback, unwrap } from './ui'
 import { applyBatchProgress, applyProgressUpdates, createSnapshotRefresh, type BatchProgressUpdate } from './snapshot-refresh'
 import './task-list.css'
 
-type Tab = 'friends' | 'compose' | 'history' | 'tools' | 'screenshots'
+type Tab = 'friends' | 'compose' | 'history' | 'tools' | 'screenshots' | 'game-status'
+
+const gameStatusApi: GameStatusApi = {
+  state: async () => unwrap(await window.steamCommenter.gameStatus.state()),
+  connectWithToolbox: async input => unwrap(await window.steamCommenter.gameStatus.connectWithToolbox(input)),
+  play: async input => unwrap(await window.steamCommenter.gameStatus.play(input)),
+  stop: async input => unwrap(await window.steamCommenter.gameStatus.stop(input)),
+  logout: async input => unwrap(await window.steamCommenter.gameStatus.logout(input)),
+  observeLive: async input => unwrap(await window.steamCommenter.gameStatus.observeLive(input)),
+  patchLive: async input => unwrap(await window.steamCommenter.gameStatus.patchLive(input)),
+  restoreLive: async input => unwrap(await window.steamCommenter.gameStatus.restoreLive(input)),
+  loadDraft: async input => unwrap(await window.steamCommenter.gameStatus.loadDraft(input)),
+  saveDraft: async input => unwrap(await window.steamCommenter.gameStatus.saveDraft(input)),
+  onChange: callback => window.steamCommenter.onEvent(event => { if (event.type === 'gameStatusChanged') callback(event.state) })
+}
 
 interface Toast {
   id: number
@@ -159,7 +175,10 @@ export default function App(): React.JSX.Element {
         <button className={`sidebar-tools-button ${tab === 'screenshots' ? 'active' : ''}`} onClick={() => setTab('screenshots')}>
           {t('Steam 截图工具', 'Steam screenshots')}
         </button>
-        {(tab === 'tools' || tab === 'screenshots') && activeAccount && <button className="sidebar-tools-button" onClick={() => setTab('friends')}>
+        <button className={`sidebar-tools-button ${tab === 'game-status' ? 'active' : ''}`} onClick={() => setTab('game-status')}>
+          {t('游戏状态与自定义', 'Game status & presence')}
+        </button>
+        {(tab === 'tools' || tab === 'screenshots' || tab === 'game-status') && activeAccount && <button className="sidebar-tools-button" onClick={() => setTab('friends')}>
           {t('返回好友管理', 'Back to friends')}
         </button>}
 
@@ -233,7 +252,15 @@ export default function App(): React.JSX.Element {
       </aside>
 
       <main className="workspace">
-        {tab === 'screenshots' ? (
+        {tab === 'game-status' ? (
+          <>
+            <header className="topbar tools-topbar">
+              <div><h1>{t('游戏状态与自定义', 'Game status & presence')}</h1><p>{t('自定义游戏显示 · 实际游玩参数实验性修改', 'Custom game presence · Experimental live-game status editing')}</p></div>
+              <button className="ghost" onClick={() => setTab('friends')}>{t('返回', 'Back')}</button>
+            </header>
+            <section className="content"><GameStatusPanel activeAccount={activeAccount} api={gameStatusApi} /></section>
+          </>
+        ) : tab === 'screenshots' ? (
           <>
             <header className="topbar tools-topbar">
               <div><h1>{t('Steam 截图工具', 'Steam screenshots')}</h1><p>{t('选择用户与游戏 · 准备本地截图 · 从 Steam 上传', 'Choose a user and game · Prepare screenshots · Upload from Steam')}</p></div>

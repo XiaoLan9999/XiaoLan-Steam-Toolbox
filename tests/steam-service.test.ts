@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   profile: vi.fn(),
   webCookies: vi.fn(),
   backgrounds: vi.fn(),
+  gameStatusLogin: vi.fn(),
   verify: vi.fn(),
   replaceCookies: vi.fn(),
   post: vi.fn(),
@@ -64,6 +65,7 @@ vi.mock('../src/main/community-client', () => ({
     getProfileSummaries = mocks.summaries
     getProfileSummary = mocks.profile
     getProfileBackgrounds = mocks.backgrounds
+    getGameStatusLogin = mocks.gameStatusLogin
     verifySession = mocks.verify
     replaceCookies = mocks.replaceCookies
     postProfileComment = mocks.post
@@ -92,6 +94,7 @@ beforeEach(() => {
   mocks.relationships.mockResolvedValue({ [friendA]: 3 })
   mocks.summaries.mockResolvedValue(profileResult([profile(friendA, 'Updated friend')]))
   mocks.verify.mockResolvedValue(undefined)
+  mocks.gameStatusLogin.mockResolvedValue({ steamId: accountA, accountName: 'fixture-user', webLogonToken: 'fixture-nonce' })
   mocks.emoticons.mockResolvedValue([])
 })
 
@@ -105,6 +108,40 @@ afterEach(() => {
 })
 
 describe('SteamService web-session lifecycle', () => {
+  it('reuses the current verified web login for game status without creating another login session', async () => {
+    const { service } = await createService()
+    await expect(service.getGameStatusLogin(accountA)).resolves.toMatchObject({ steamId: accountA, webLogonToken: 'fixture-nonce' })
+    expect(mocks.gameStatusLogin).toHaveBeenCalledOnce()
+    expect(mocks.sessions).toHaveLength(1)
+    await expect(service.getGameStatusLogin(accountB)).rejects.toThrow()
+  })
+
+  it('discards a game-status credential returned after switching accounts', async () => {
+    const { service } = await createService()
+    const pending = deferred<{ steamId: string; accountName: string; webLogonToken: string }>()
+    mocks.gameStatusLogin.mockReturnValueOnce(pending.promise)
+    const login = service.getGameStatusLogin(accountA)
+    await vi.waitFor(() => expect(mocks.gameStatusLogin).toHaveBeenCalledOnce())
+    await service.activateAccount(accountB)
+    pending.resolve({ steamId: accountA, accountName: 'fixture-user', webLogonToken: 'fixture-nonce' })
+    await expect(login).rejects.toMatchObject({ code: 'GAME_STATUS_SESSION_CHANGED' })
+  })
+
+  it('rejects a reused web credential with a different Steam identity', async () => {
+    const { service } = await createService()
+    mocks.gameStatusLogin.mockResolvedValueOnce({ steamId: accountB, accountName: 'other', webLogonToken: 'fixture-nonce' })
+    await expect(service.getGameStatusLogin(accountA)).rejects.toMatchObject({ code: 'GAME_STATUS_IDENTITY_MISMATCH' })
+  })
+
+  it('refreshes expired web cookies once before obtaining a new game-status credential', async () => {
+    const { service } = await createService()
+    mocks.gameStatusLogin.mockRejectedValueOnce(new DomainError('SESSION_EXPIRED', 'fixture-expired'))
+    await expect(service.getGameStatusLogin(accountA)).resolves.toMatchObject({ steamId: accountA })
+    expect(mocks.gameStatusLogin).toHaveBeenCalledTimes(2)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+    expect(mocks.sessions).toHaveLength(1)
+  })
+
   it.each(['restore', 'qr', 'credentials'] as const)('uses the Community browser identity for %s authentication and cookie renewal', async mode => {
     const { service } = await createService(false)
     if (mode === 'qr') await service.startQrLogin()
