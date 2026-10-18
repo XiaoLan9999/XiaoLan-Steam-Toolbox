@@ -1,0 +1,34 @@
+.batch-verification {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--sky-soft);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.task-details > .batch-verification { margin: 0 20px 16px; }
+.active-batch-card > .batch-verification { margin: 14px 0; }
+.batch-verification-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; }
+.batch-verification-heading h4 { margin: 0; color: var(--blue); font-size: 13px; }
+.batch-verification-heading span, .batch-verification-time, .batch-verification-person span { color: var(--muted); font-size: 10px; }
+.batch-verification-state { color: var(--blue); }
+.batch-verification.state-confirmed .batch-verification-state { color: var(--green); }
+.batch-verification.state-unresolved { background: var(--tea-soft); }
+.batch-verification.state-unresolved .batch-verification-state { color: var(--tea); }
+.batch-verification-person { min-width: 0; display: flex; flex-wrap: wrap; gap: 3px 10px; align-items: baseline; }
+.batch-verification-person > strong { min-width: 0; color: var(--text); }
+.batch-verification-person bdi, .batch-verification-countdown strong { font-variant-numeric: tabular-nums; }
+.batch-verification p { margin: 0; }
+.batch-verification-countdown { color: var(--blue); }
+.batch-verification-safety { color: var(--muted); }
+.batch-verification-detail { min-width: 0; color: var(--muted); }
+.batch-verification-detail summary { cursor: pointer; color: var(--blue); }
+.batch-verification-detail[open] summary { margin-bottom: 5px; }
+.batch-verification.compact { padding: 10px; gap: 7px; }
+@media (max-width: 1100px) {
+  .task-details > .batch-verification { margin-inline: 12px; }
+}

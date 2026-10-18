@@ -97,6 +97,7 @@ const api: SteamFriendCommenterApi = {
   listBatchDeliveries: (accountId, batchId, options) => invoke<BatchDeliveryPage>('batch:deliveries', accountId, batchId, options),
   pauseBatch: (batchId) => invoke<void>('batch:pause', batchId),
   resumeBatch: (batchId) => invoke<void>('batch:resume', batchId),
+  verifyBatch: (batchId) => invoke<void>('batch:verify', batchId),
   setBatchAutoRetry: (batchId, enabled) => invoke<void>('batch:autoRetry', batchId, enabled),
   cancelBatch: (batchId) => invoke<void>('batch:cancel', batchId),
   onEvent: (callback) => {

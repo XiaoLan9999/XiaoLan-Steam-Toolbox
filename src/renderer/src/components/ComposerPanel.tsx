@@ -12,6 +12,7 @@ import { useI18n, type Translate } from '../i18n'
 import { RunAction } from './types'
 import { BatchRecoveryPanel, useBatchCooldownActive } from './BatchRecoveryPanel'
 import { BatchActivityPanel } from './BatchActivityPanel'
+import { BatchVerificationPanel, batchVerificationActive, batchVerificationActionLabel, batchVerificationConfirmation } from './BatchVerificationPanel'
 
 interface ComposerPanelProps {
   snapshot: AppSnapshot
@@ -440,6 +441,8 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
 }): React.JSX.Element {
   const { t } = useI18n()
   const coolingDown = useBatchCooldownActive(batch)
+  const verifying = batchVerificationActive(batch)
+  const canVerify = batch.uncertain > 0 && (batch.status === 'paused' || batch.status === 'completed')
   const [pendingAction, setPendingAction] = useState(false)
   const actionLock = useRef(false)
   const perform = async (label: string, action: () => Promise<void>): Promise<void> => {
@@ -475,25 +478,29 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
         <span className="failed">{t('待核对', 'Uncertain')} {batch.uncertain}</span>
       </div>
         <BatchActivityPanel batch={batch} compact />
-        {!batch.activity && batch.uncertain > 0 && <div className="inline-warning">{t('待核对对象不会自动重发，避免重复留言。', 'Uncertain recipients are not retried automatically to prevent duplicate comments.')}</div>}
-      <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated} disabled={pendingAction} runAction={runAction} />
+        <BatchVerificationPanel batch={batch} compact disabled={pendingAction}
+          onStop={() => void perform(t('正在停止核对', 'Stopping verification'), async () => unwrap(await window.steamCommenter.pauseBatch(batch.id)))} />
+        {!batch.activity && batch.uncertain > 0 && batch.status !== 'cancelled' && <div className="inline-warning">{t('待核对对象会只读核实；未证实则保留并跳过，不重复发送，也不阻塞其余待发。', 'Uncertain recipients receive read-only checks. Unproven results remain for review and are skipped, never resent, without blocking other pending recipients.')}</div>}
+      <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated} disabled={pendingAction || verifying} runAction={runAction} />
       {onOpenTasks && <button className="ghost" onClick={onOpenTasks}>{t('查看持久任务与明细', 'View saved tasks and details')}</button>}
-      {active && <div className="batch-controls">
+      {(active || canVerify) && <div className="batch-controls">
         {batch.status === 'running' ? (
           <button disabled={pendingAction} onClick={() => void perform(t('正在暂停', 'Pausing'), async () => unwrap(await window.steamCommenter.pauseBatch(batch.id)))}>
             {t('暂停', 'Pause')}
           </button>
         ) : (
-            <button className="primary" disabled={pendingAction || !authenticated || coolingDown || batch.pending === 0} onClick={() => {
-            if (window.confirm(t(`继续该任务的 ${batch.pending} 位未发送好友？已发送和待核对对象不会重发。`,
-              `Resume the ${batch.pending} pending recipients? Sent and uncertain recipients will not be retried.`))) {
-              void perform(t('正在恢复', 'Resuming'), async () => unwrap(await window.steamCommenter.resumeBatch(batch.id)))
+            <button className="primary" disabled={pendingAction || verifying || !authenticated || (!canVerify && (coolingDown || batch.pending === 0))} onClick={() => {
+            if (window.confirm(canVerify ? batchVerificationConfirmation(batch, t)
+              : t(`继续该任务的 ${batch.pending} 位未发送好友？已发送和待核对对象不会重发。`,
+                `Resume the ${batch.pending} pending recipients? Sent and uncertain recipients will not be retried.`))) {
+              void perform(canVerify ? t('正在核对留言', 'Verifying comments') : t('正在恢复', 'Resuming'), async () => unwrap(
+                canVerify ? await window.steamCommenter.verifyBatch(batch.id) : await window.steamCommenter.resumeBatch(batch.id)))
             }
           }}>
-              {coolingDown ? t('冷却中', 'Cooling down') : t('继续其余待发', 'Resume remaining pending')}
+              {canVerify ? batchVerificationActionLabel(batch, t) : coolingDown ? t('冷却中', 'Cooling down') : t('继续其余待发', 'Resume remaining pending')}
           </button>
         )}
-        <button
+        {active && <button
           className="danger-text"
           disabled={pendingAction}
           onClick={() => {
@@ -503,7 +510,7 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
           }}
         >
           {t('取消批次', 'Cancel batch')}
-        </button>
+        </button>}
       </div>}
     </section>
   )

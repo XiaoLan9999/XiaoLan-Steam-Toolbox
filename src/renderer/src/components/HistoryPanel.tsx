@@ -7,6 +7,7 @@ import { useI18n, type Translate } from '../i18n'
 import type { RunAction } from './types'
 import { BatchRecoveryPanel, batchStopLabel, useBatchCooldownActive } from './BatchRecoveryPanel'
 import { BatchActivityPanel } from './BatchActivityPanel'
+import { BatchVerificationPanel, batchVerificationActive, batchVerificationActionLabel, batchVerificationConfirmation } from './BatchVerificationPanel'
 
 const TASK_PAGE_SIZE = 25
 const DELIVERY_PAGE_SIZE = 50
@@ -219,6 +220,8 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
 }): React.JSX.Element {
   const { language, t } = useI18n()
   const coolingDown = useBatchCooldownActive(batch)
+  const verifying = batchVerificationActive(batch)
+  const canVerify = batch.uncertain > 0 && (batch.status === 'paused' || batch.status === 'completed')
   const initialReview = batch.stopCode === 'UNCERTAIN_RESULT' && batch.uncertain > 0
   const [offset, setOffset] = useState(() => initialReview ? 0
     : Math.floor(((batch.activity?.current?.ordinal ?? batch.activity?.lastProcessed?.ordinal ?? 1) - 1) / DELIVERY_PAGE_SIZE) * DELIVERY_PAGE_SIZE)
@@ -236,9 +239,11 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
   }, [batch.accountId, batch.id, offset, status])
   const rows = useTaskPage(`${batch.accountId}:${batch.id}:${offset}:${status}`, seed, load, batchRevision(batch))
   const active = ['queued', 'running', 'paused'].includes(batch.status)
-  const perform = async (kind: 'pause' | 'resume' | 'cancel'): Promise<void> => {
+  const perform = async (kind: 'pause' | 'resume' | 'verify' | 'cancel'): Promise<void> => {
     if (actionLock.current || !mounted.current) return
     if (kind === 'resume' && (!authenticated || batch.pending === 0 || otherTaskActive || coolingDown)) return
+    if (kind === 'verify' && (!canVerify || !authenticated || otherTaskActive || verifying)) return
+    if (kind === 'verify' && !window.confirm(batchVerificationConfirmation(batch, t))) return
     if (kind === 'resume' && !window.confirm(t(
       `确认使用账号“${accountName}”继续此任务？仅发送剩余 ${batch.pending} 位待发好友；${batch.uncertain} 条待核对记录不会自动重发。`,
       `Resume this task with account "${accountName}"? Only ${batch.pending} pending recipients will be sent. ${batch.uncertain} uncertain results will NOT be retried.`))) return
@@ -249,11 +254,13 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
     setActing(true)
     try {
       await runAction(kind === 'pause' ? t('正在暂停任务', 'Pausing task')
-        : kind === 'resume' ? t('正在继续任务', 'Resuming task') : t('正在取消任务', 'Cancelling task'), async () => {
+        : kind === 'verify' ? t('正在核对留言', 'Verifying comments')
+          : kind === 'resume' ? t('正在继续任务', 'Resuming task') : t('正在取消任务', 'Cancelling task'), async () => {
         if (!mounted.current) return
         const result = kind === 'pause' ? await window.steamCommenter.pauseBatch(batch.id)
-          : kind === 'resume' ? await window.steamCommenter.resumeBatch(batch.id)
-            : await window.steamCommenter.cancelBatch(batch.id)
+          : kind === 'verify' ? await window.steamCommenter.verifyBatch(batch.id)
+            : kind === 'resume' ? await window.steamCommenter.resumeBatch(batch.id)
+              : await window.steamCommenter.cancelBatch(batch.id)
         unwrap(result)
       })
       if (mounted.current) rows.retry()
@@ -286,22 +293,24 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
         </button>)}
       </div>
       <BatchActivityPanel batch={batch} />
-      {!batch.activity && batch.uncertain > 0 && <div className="inline-warning task-uncertain-note" role="status">
+      <BatchVerificationPanel batch={batch} disabled={acting} onStop={() => void perform('pause')} />
+      {!batch.activity && batch.uncertain > 0 && batch.status !== 'cancelled' && <div className="inline-warning task-uncertain-note" role="status">
         <strong>{t(`${batch.uncertain} 条结果待核对，不会自动重发。`, `${batch.uncertain} uncertain results will NOT be automatically retried.`)}</strong>
-        <span>{t('请求可能已到达 Steam。请先核对好友主页，避免重复留言；继续只处理待发记录。',
-          'A request may have reached Steam. Check the friend profile to avoid duplicates; Resume only processes pending records.')}</span>
+        <span>{t('会自动只读核对好友主页；找到可靠证据才标记成功。未确定保留待核对并跳过，不重复发送，也不阻塞其余待发；继续只处理待发记录。',
+          'Profile checks are read-only; only reliable evidence confirms success. Unproven records remain for review and are skipped, never resent, without blocking other pending recipients. Resume only processes pending records.')}</span>
       </div>}
       <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated}
-        otherTaskActive={otherTaskActive} disabled={acting} runAction={runAction} />
+        otherTaskActive={otherTaskActive} disabled={acting || verifying} runAction={runAction} />
       {!authenticated && <p className="task-offline-note">{t('账号未登录：可查看保存记录，登录此账号后才能继续发送。',
         'Account offline: saved records remain available. Sign in to this account to resume sending.')}</p>}
       {otherTaskActive && active && <p className="task-offline-note">{t('当前账号有其他未结束任务，请先处理或取消该任务。',
         'Another unfinished task exists for this account. Finish or cancel it first.')}</p>}
-      {active && <div className="batch-controls task-controls">
+      {(active || canVerify) && <div className="batch-controls task-controls">
         {(batch.status === 'running' || batch.status === 'queued') && <button disabled={acting} onClick={() => void perform('pause')}>{t('暂停任务', 'Pause task')}</button>}
-        {batch.status === 'paused' && <button className="primary" disabled={acting || !authenticated || batch.pending === 0 || otherTaskActive || coolingDown}
-          onClick={() => void perform('resume')}>{coolingDown ? t('冷却中', 'Cooling down') : t('继续其余待发', 'Resume remaining pending')}</button>}
-        <button className="danger-text" disabled={acting} onClick={() => void perform('cancel')}>{t('取消任务', 'Cancel task')}</button>
+        {(batch.status === 'paused' || canVerify) && <button className="primary" disabled={acting || verifying || !authenticated || otherTaskActive || (!canVerify && (batch.pending === 0 || coolingDown))}
+          onClick={() => void perform(canVerify ? 'verify' : 'resume')}>{canVerify ? batchVerificationActionLabel(batch, t)
+            : coolingDown ? t('冷却中', 'Cooling down') : t('继续其余待发', 'Resume remaining pending')}</button>}
+        {active && <button className="danger-text" disabled={acting} onClick={() => void perform('cancel')}>{t('取消任务', 'Cancel task')}</button>}
       </div>}
       <div className="history-message"><small>{t('任务正文快照', 'Saved message template')}</small><p>{batch.messageTemplate}</p></div>
       <div className="task-delivery-toolbar">
@@ -359,7 +368,9 @@ function batchRevision(batch: BatchSummary): string {
     batch.autoRetryEnabled, batch.stopCode, batch.stopMessage, batch.pausedAt, batch.nextRetryAt, batch.retryCount,
     batch.accessDeniedCount, batch.accessDeniedUntil,
     batch.activity?.current?.deliveryId, batch.activity?.lastProcessed?.deliveryId, batch.activity?.lastProcessed?.recordedAt,
-    batch.activity?.lastConfirmed?.deliveryId, batch.activity?.nextPending?.deliveryId].join(':')
+    batch.activity?.lastConfirmed?.deliveryId, batch.activity?.nextPending?.deliveryId,
+    batch.verification?.deliveryId, batch.verification?.state, batch.verification?.attempt, batch.verification?.maxAttempts,
+    batch.verification?.checkedAt, batch.verification?.nextCheckAt, batch.verification?.message].join(':')
 }
 
 function statusCount(batch: BatchSummary, status: DeliveryStatus): number {

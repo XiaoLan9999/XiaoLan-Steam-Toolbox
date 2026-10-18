@@ -9,6 +9,7 @@ import {
   BatchActivity,
   BatchRecipientActivity,
   BatchSummary,
+  BatchVerification,
   BatchTaskListOptions,
   BatchTaskPage,
   BatchDeliveryListOptions,
@@ -32,6 +33,7 @@ import { DomainError, MIN_DELAY_MS, validateDelay } from '../shared/domain'
 import { ACCESS_DENIED_COOLDOWN_MS, LEGACY_COMMENT_POST_REVIEW_MESSAGE } from '../shared/batch-retry-policy'
 import type { UpdatePreferences } from '../shared/update-types'
 import { defaultUpdatePreferences, normalizeUpdatePreferences } from '../shared/update-preferences'
+import type { CommentAttemptEvidence } from './comment-reconciliation'
 
 export interface SecretCipher {
   isAvailable(): boolean
@@ -158,6 +160,22 @@ interface BatchActivityRow {
   recorded_at: string | null
   ordinal: number
 }
+
+interface DeliveryVerificationRow {
+  delivery_id: string
+  baseline_ids: string | null
+  server_earliest: number | null
+  server_latest: number | null
+  submitted_at: string | null
+  state: BatchVerification['state'] | null
+  attempt: number
+  max_attempts: number
+  checked_at: string | null
+  next_check_at: string | null
+  message: string
+}
+
+type DeliveryVerificationProgress = Pick<BatchVerification, 'state' | 'attempt' | 'maxAttempts' | 'nextCheckAt' | 'message'>
 
 interface SettingsRow {
   account_id: string
@@ -958,7 +976,8 @@ export class SqliteStore {
 
   getBatchSummary(batchId: string): BatchSummary | null {
     const row = this.readBatchSummaryRow(batchId)
-    return row ? { ...mapBatchSummary(row), activity: this.getBatchActivity(row) } : null
+    return row ? { ...mapBatchSummary(row), activity: this.getBatchActivity(row),
+      verification: this.getBatchVerification(batchId) } : null
   }
 
   private readBatchSummaryRow(batchId: string): BatchSummaryRow | undefined {
@@ -998,8 +1017,21 @@ export class SqliteStore {
        LEFT JOIN deliveries d ON d.batch_id = b.id GROUP BY b.id
        ORDER BY b.created_at DESC, b.id DESC`
     ).all(...parameters, limit, offset) as unknown as BatchSummaryRow[]
-    return { items: rows.map(row => ({ ...mapBatchSummary(row), activity: this.getBatchActivity(row) })),
+    return { items: rows.map(row => ({ ...mapBatchSummary(row), activity: this.getBatchActivity(row),
+      verification: this.getBatchVerification(row.id) })),
       total: Number(count.total), offset, limit }
+  }
+
+  private getBatchVerification(batchId: string): BatchVerification | null {
+    const row = this.db.prepare(`SELECT v.delivery_id, d.friend_steam_id, d.friend_name,
+        v.state, v.attempt, v.max_attempts, v.checked_at, v.next_check_at, v.message
+      FROM delivery_comment_verification v JOIN deliveries d ON d.id = v.delivery_id
+      WHERE v.batch_id = ? AND v.state IS NOT NULL
+      ORDER BY v.verification_seq DESC LIMIT 1`).get(batchId) as unknown as
+      (DeliveryVerificationRow & { friend_steam_id: string; friend_name: string }) | undefined
+    return row ? { deliveryId: row.delivery_id, friendSteamId: row.friend_steam_id, friendName: row.friend_name,
+      state: row.state!, attempt: row.attempt, maxAttempts: row.max_attempts, checkedAt: row.checked_at,
+      nextCheckAt: row.next_check_at, message: row.message } : null
   }
 
   private getBatchActivity(batch: BatchSummaryRow): BatchActivity {
@@ -1062,6 +1094,129 @@ export class SqliteStore {
     const row = this.db.prepare('SELECT * FROM deliveries WHERE id = ?')
       .get(deliveryId) as unknown as DeliveryRow | undefined
     return row ? mapDelivery(row) : null
+  }
+
+  saveDeliveryCommentEvidence(deliveryId: string, evidence: CommentAttemptEvidence): void {
+    validateCommentAttemptEvidence(evidence)
+    this.transaction(() => {
+      const delivery = this.db.prepare('SELECT batch_id, status FROM deliveries WHERE id = ?')
+        .get(deliveryId) as unknown as { batch_id: string; status: DeliveryStatus } | undefined
+      if (!delivery) throw new DomainError('DELIVERY_NOT_FOUND', '发送任务不存在')
+      if (delivery.status !== 'sending') throw new DomainError('INVALID_DELIVERY_EVIDENCE_STATE', '只能记录当前提交中的留言证据')
+      const previous = this.getDeliveryCommentEvidence(deliveryId)
+      if (previous === null && this.db.prepare(`SELECT 1 FROM delivery_comment_verification
+        WHERE delivery_id = ? AND baseline_ids IS NOT NULL`).get(deliveryId)) {
+        throw new DomainError('DELIVERY_EVIDENCE_CONFLICT', '已保存的留言证据无效，不能替换')
+      }
+      if (previous && (JSON.stringify(previous.baselineIds) !== JSON.stringify(evidence.baselineIds) ||
+        previous.submittedAt !== evidence.submittedAt || (previous.serverWindow !== null &&
+        (evidence.serverWindow === null || evidence.serverWindow.earliest < previous.serverWindow.earliest ||
+          evidence.serverWindow.latest > previous.serverWindow.latest)))) {
+        throw new DomainError('DELIVERY_EVIDENCE_CONFLICT', '留言提交证据不能替换或扩大时间窗口')
+      }
+      this.db.prepare(`INSERT INTO delivery_comment_verification
+        (delivery_id, batch_id, baseline_ids, server_earliest, server_latest, submitted_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(delivery_id) DO UPDATE SET baseline_ids = excluded.baseline_ids,
+          server_earliest = excluded.server_earliest, server_latest = excluded.server_latest,
+          submitted_at = excluded.submitted_at`)
+        .run(deliveryId, delivery.batch_id, JSON.stringify(evidence.baselineIds),
+          evidence.serverWindow?.earliest ?? null, evidence.serverWindow?.latest ?? null, evidence.submittedAt)
+    })
+  }
+
+  getDeliveryCommentEvidence(deliveryId: string): CommentAttemptEvidence | null {
+    const row = this.db.prepare(`SELECT baseline_ids, server_earliest, server_latest, submitted_at
+      FROM delivery_comment_verification WHERE delivery_id = ?`).get(deliveryId) as unknown as
+      Pick<DeliveryVerificationRow, 'baseline_ids' | 'server_earliest' | 'server_latest' | 'submitted_at'> | undefined
+    if (row?.baseline_ids === null || !row?.submitted_at) return null
+    try {
+      const evidence: CommentAttemptEvidence = {
+        baselineIds: JSON.parse(row.baseline_ids), submittedAt: row.submitted_at,
+        serverWindow: row.server_earliest === null || row.server_latest === null ? null
+          : { earliest: row.server_earliest, latest: row.server_latest }
+      }
+      validateCommentAttemptEvidence(evidence)
+      return evidence
+    } catch { return null }
+  }
+
+  getNextUncertainDelivery(batchId: string, after?: { createdAt: string; id: string }): DeliveryRecord | null {
+    if (!this.db.prepare('SELECT 1 FROM batches WHERE id = ?').get(batchId)) {
+      throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
+    }
+    if (after !== undefined && (!after || !isCanonicalIso(after.createdAt) ||
+      typeof after.id !== 'string' || !after.id || after.id.length > 128)) {
+      throw new DomainError('INVALID_DELIVERY_CURSOR', '留言核对位置无效')
+    }
+    const cursor = after === undefined ? '' : ' AND (created_at > ? OR (created_at = ? AND id > ?))'
+    const parameters = after === undefined ? [batchId] : [batchId, after.createdAt, after.createdAt, after.id]
+    const row = this.db.prepare(`SELECT * FROM deliveries WHERE batch_id = ? AND status = 'uncertain'${cursor}
+      ORDER BY created_at, id LIMIT 1`).get(...parameters) as unknown as DeliveryRow | undefined
+    return row ? mapDelivery(row) : null
+  }
+
+  recordDeliveryVerification(deliveryId: string, progress: DeliveryVerificationProgress): void {
+    validateDeliveryVerificationProgress(progress)
+    this.transaction(() => {
+      const delivery = this.db.prepare(`SELECT d.batch_id, d.status, b.status AS batch_status
+        FROM deliveries d JOIN batches b ON b.id = d.batch_id WHERE d.id = ?`)
+        .get(deliveryId) as unknown as { batch_id: string; status: DeliveryStatus; batch_status: BatchStatus } | undefined
+      if (!delivery) throw new DomainError('DELIVERY_NOT_FOUND', '发送任务不存在')
+      if ((delivery.status !== 'uncertain' && !(progress.state === 'confirmed' && delivery.status === 'sent_verified')) ||
+        (delivery.batch_status === 'cancelled' && progress.state !== 'unresolved') ||
+        (progress.state === 'confirmed' && delivery.status !== 'sent_verified')) {
+        throw new DomainError('INVALID_DELIVERY_VERIFICATION_STATE', '这条留言当前不能更新核对进度')
+      }
+      const timestamp = now()
+      const sequence = this.nextVerificationSequence()
+      this.db.prepare(`INSERT INTO delivery_comment_verification
+        (delivery_id, batch_id, state, attempt, max_attempts, checked_at, next_check_at, message, verification_seq)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(delivery_id) DO UPDATE SET state = excluded.state, attempt = excluded.attempt,
+          max_attempts = excluded.max_attempts,
+          checked_at = CASE WHEN excluded.state = 'checking' THEN delivery_comment_verification.checked_at
+            ELSE excluded.checked_at END,
+          next_check_at = excluded.next_check_at, message = excluded.message, verification_seq = excluded.verification_seq`)
+        .run(deliveryId, delivery.batch_id, progress.state, progress.attempt, progress.maxAttempts,
+          progress.state === 'checking' ? null : timestamp, progress.nextCheckAt, progress.message, sequence)
+    })
+  }
+
+  confirmUncertainDelivery(deliveryId: string, accountId: string, commentId: string, postedAtSeconds: number): boolean {
+    if (!isCommentId(commentId) || !Number.isSafeInteger(postedAtSeconds) || postedAtSeconds <= 0 ||
+      postedAtSeconds > 8_640_000_000_000) {
+      throw new DomainError('INVALID_COMMENT_CONFIRMATION', '远端留言编号或时间无效')
+    }
+    return this.transaction(() => {
+      const delivery = this.db.prepare(`SELECT d.batch_id, d.friend_steam_id, d.status, b.account_id,
+        b.status AS batch_status FROM deliveries d JOIN batches b ON b.id = d.batch_id WHERE d.id = ?`)
+        .get(deliveryId) as unknown as { batch_id: string; friend_steam_id: string; status: DeliveryStatus;
+          account_id: string; batch_status: BatchStatus } | undefined
+      if (!delivery) throw new DomainError('DELIVERY_NOT_FOUND', '发送任务不存在')
+      if (delivery.account_id !== accountId) throw new DomainError('BATCH_ACCOUNT_MISMATCH', '这个批次不属于当前账号')
+      if (delivery.status !== 'uncertain' || delivery.batch_status === 'cancelled') return false
+      const reused = this.db.prepare(`SELECT 1 FROM deliveries d JOIN batches b ON b.id = d.batch_id
+        WHERE b.account_id = ? AND d.friend_steam_id = ? AND d.remote_comment_id = ? AND d.id <> ? LIMIT 1`)
+        .get(accountId, delivery.friend_steam_id, commentId, deliveryId)
+      if (reused) return false
+      const timestamp = now()
+      const result = this.db.prepare(`UPDATE deliveries SET status = 'sent_verified', remote_comment_id = ?,
+        error = NULL, sent_at = ?, processed_at = ? WHERE id = ? AND status = 'uncertain'`)
+        .run(commentId, new Date(postedAtSeconds * 1000).toISOString(), timestamp, deliveryId)
+      if (result.changes === 0) return false
+      this.db.prepare(`UPDATE delivery_comment_verification SET state = 'confirmed', checked_at = ?,
+        next_check_at = NULL, message = '已在好友主页确认送达，未重复发送', verification_seq = ?
+        WHERE delivery_id = ? AND state IS NOT NULL`).run(timestamp, this.nextVerificationSequence(), deliveryId)
+      this.recalculateBatchInTransaction(delivery.batch_id)
+      return true
+    })
+  }
+
+  private nextVerificationSequence(): number {
+    const row = this.db.prepare(`SELECT verification_seq FROM delivery_comment_verification
+      ORDER BY verification_seq DESC LIMIT 1`).get() as unknown as { verification_seq: number } | undefined
+    return (row?.verification_seq ?? 0) + 1
   }
 
   getBatch(batchId: string): BatchRecord | null {
@@ -1265,11 +1420,12 @@ export class SqliteStore {
         FROM deliveries d JOIN batches b ON b.id = d.batch_id WHERE d.id = ?`)
         .get(deliveryId) as unknown as { batch_id: string; batch_status: BatchStatus } | undefined
       if (!row) return
-      this.db.prepare(`UPDATE deliveries SET status = ?, error = ?, remote_comment_id = NULL, sent_at = NULL,
+      const result = this.db.prepare(`UPDATE deliveries SET status = ?, error = ?, remote_comment_id = NULL, sent_at = NULL,
         processed_at = NULL
         WHERE id = ? AND status = 'sending'`)
         .run(row.batch_status === 'cancelled' ? 'cancelled' : 'pending',
           row.batch_status === 'cancelled' ? '用户取消' : null, deliveryId)
+      if (result.changes > 0) this.db.prepare('DELETE FROM delivery_comment_verification WHERE delivery_id = ?').run(deliveryId)
       this.recalculateBatchInTransaction(row.batch_id)
     })
   }
@@ -1424,6 +1580,8 @@ export class SqliteStore {
           paused_at = ?, next_retry_at = NULL WHERE status IN ('queued', 'running', 'paused')`)
         .run(now())
       this.db.prepare('UPDATE batches SET next_retry_at = NULL WHERE next_retry_at IS NOT NULL').run()
+      this.db.prepare(`UPDATE delivery_comment_verification SET state = 'unresolved', checked_at = ?,
+        next_check_at = NULL, message = '核对中断，未重发' WHERE state IN ('checking', 'waiting')`).run(now())
       for (const row of rows) this.recalculateBatchInTransaction(row.id)
     })
   }
@@ -1733,7 +1891,68 @@ export class SqliteStore {
           WHERE processed_at IS NULL AND status = 'uncertain';
           PRAGMA user_version = 7;`)
       }
+      this.db.exec(`CREATE TABLE IF NOT EXISTS delivery_comment_verification (
+          delivery_id TEXT PRIMARY KEY,
+          batch_id TEXT NOT NULL,
+          baseline_ids TEXT,
+          server_earliest INTEGER,
+          server_latest INTEGER,
+          submitted_at TEXT,
+          state TEXT CHECK (state IN ('checking', 'waiting', 'confirmed', 'unresolved')),
+          attempt INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 0,
+          checked_at TEXT,
+          next_check_at TEXT,
+          message TEXT NOT NULL DEFAULT '',
+          verification_seq INTEGER NOT NULL DEFAULT 0,
+          FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE CASCADE,
+          FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE,
+          CHECK ((baseline_ids IS NULL AND submitted_at IS NULL AND server_earliest IS NULL AND server_latest IS NULL)
+            OR (baseline_ids IS NOT NULL AND submitted_at IS NOT NULL)),
+          CHECK ((server_earliest IS NULL AND server_latest IS NULL)
+            OR (server_earliest IS NOT NULL AND server_latest IS NOT NULL AND server_earliest > 0
+              AND server_latest >= server_earliest AND server_latest - server_earliest <= 300))
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_verification_batch_latest
+          ON delivery_comment_verification(batch_id, verification_seq DESC);
+        CREATE INDEX IF NOT EXISTS idx_delivery_verification_sequence
+          ON delivery_comment_verification(verification_seq DESC);`)
+      if (version.user_version < 8) this.db.exec('PRAGMA user_version = 8;')
     })
+  }
+}
+
+function isCanonicalIso(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 32) return false
+  const milliseconds = Date.parse(value)
+  return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value
+}
+
+function isCommentId(value: unknown): value is string {
+  return typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value)
+}
+
+function validateCommentAttemptEvidence(evidence: CommentAttemptEvidence): void {
+  const window = evidence?.serverWindow
+  if (!evidence || typeof evidence !== 'object' || !Array.isArray(evidence.baselineIds) ||
+    evidence.baselineIds.length > 1000 || evidence.baselineIds.some(id => !isCommentId(id)) ||
+    new Set(evidence.baselineIds).size !== evidence.baselineIds.length || !isCanonicalIso(evidence.submittedAt) ||
+    (window !== null && (!window || !Number.isSafeInteger(window.earliest) || !Number.isSafeInteger(window.latest) ||
+      window.earliest <= 0 || window.latest > 8_640_000_000_000 || window.latest < window.earliest ||
+      window.latest - window.earliest > 300))) {
+    throw new DomainError('INVALID_DELIVERY_EVIDENCE', '留言提交证据无效或超出上限')
+  }
+}
+
+function validateDeliveryVerificationProgress(progress: DeliveryVerificationProgress): void {
+  if (!progress || typeof progress !== 'object' ||
+    !['checking', 'waiting', 'confirmed', 'unresolved'].includes(progress.state) ||
+    !Number.isSafeInteger(progress.attempt) || !Number.isSafeInteger(progress.maxAttempts) ||
+    progress.maxAttempts < 1 || progress.maxAttempts > 10 || progress.attempt < 1 || progress.attempt > progress.maxAttempts ||
+    typeof progress.message !== 'string' || !progress.message.trim() || progress.message.length > 1000 ||
+    (progress.nextCheckAt !== null && !isCanonicalIso(progress.nextCheckAt)) ||
+    (progress.state === 'waiting' ? progress.nextCheckAt === null : progress.nextCheckAt !== null)) {
+    throw new DomainError('INVALID_DELIVERY_VERIFICATION', '留言核对进度无效')
   }
 }
 

@@ -21,6 +21,7 @@ import {
 import { SqliteStore } from './store'
 import { SteamCommunityClient } from './community-client'
 import type { CommunityDiagnosticEvent } from './community-client'
+import type { CommentAttemptEvidence, CommentVerificationResult } from './comment-reconciliation'
 import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
 
@@ -425,7 +426,8 @@ export class SteamService {
     accountId: string,
     friendSteamId: string,
     message: string,
-    canSubmit: () => boolean = () => true
+    canSubmit: () => boolean = () => true,
+    onEvidence?: (evidence: CommentAttemptEvidence) => void
   ): Promise<{ commentId: string | null }> {
     let community = this.requireActiveCommunity(accountId)
     if (!this.store.hasActiveFriend(accountId, friendSteamId)) {
@@ -460,7 +462,34 @@ export class SteamService {
       if (this.store.isBlacklisted(accountId, friendSteamId)) {
         throw new DomainError('FRIEND_BLACKLISTED', '该好友已加入当前账号黑名单，尚未提交留言')
       }
-    })
+    }, onEvidence)
+  }
+
+  async reconcileProfileComment(
+    accountId: string,
+    friendSteamId: string,
+    message: string,
+    evidence: CommentAttemptEvidence | null,
+    canCheck: () => boolean = () => true
+  ): Promise<CommentVerificationResult> {
+    this.requireActiveCommunity(accountId)
+    const runtime = this.runtime!
+    const assertCurrent = (): void => {
+      if (this.disposed || this.runtime !== runtime || this.store.getActiveAccountId() !== accountId ||
+        !this.isAuthenticated(accountId) || !canCheck()) {
+        throw new DomainError('CHECK_CANCELLED', '账号、会话或任务状态已变更，本次只读留言核对已取消')
+      }
+    }
+    assertCurrent()
+    await this.ensureSessionFresh(accountId)
+    assertCurrent()
+    const community = runtime.community
+    const result = await community.reconcileProfileComment(friendSteamId, message, evidence, assertCurrent)
+    assertCurrent()
+    if (runtime.community !== community) {
+      throw new DomainError('CHECK_CANCELLED', 'Steam 登录会话已变更，本次只读留言核对已取消')
+    }
+    return result
   }
 
   async checkCommentEligibility(accountId: string, steamId: string): Promise<CommentCheckResult> {

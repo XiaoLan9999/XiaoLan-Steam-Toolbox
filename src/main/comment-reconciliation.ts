@@ -25,6 +25,16 @@ export interface CommentServerWindow {
   latest: number
 }
 
+export interface CommentAttemptEvidence {
+  baselineIds: string[]
+  serverWindow: CommentServerWindow | null
+  submittedAt: string
+}
+
+export type CommentVerificationResult =
+  | { status: 'confirmed'; commentId: string; postedAtSeconds: number }
+  | { status: 'unresolved'; reason: string }
+
 export type CommentReconciliationResult =
   | { status: 'confirmed'; comment: ProfileCommentSnapshotEntry }
   | { status: 'ambiguous' | 'no-match'; reason: string }
@@ -142,6 +152,31 @@ export function reconcileCommentSnapshots(
 
 export function normalizeCommentText(text: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim()
+}
+
+export function verifyCommentAttempt(
+  snapshot: ProfileCommentSnapshot,
+  expectedAuthorSteamId: string,
+  message: string,
+  evidence: CommentAttemptEvidence | null
+): CommentVerificationResult {
+  if (!evidence) return { status: 'unresolved', reason: 'missing-attempt-evidence' }
+  if (!Array.isArray(evidence.baselineIds) || evidence.baselineIds.length > 1000 ||
+    evidence.baselineIds.some(id => typeof id !== 'string' || !/^[1-9]\d{0,19}$/.test(id)) ||
+    new Set(evidence.baselineIds).size !== evidence.baselineIds.length ||
+    typeof evidence.submittedAt !== 'string' || evidence.submittedAt.length > 64 ||
+    !Number.isFinite(Date.parse(evidence.submittedAt)) || !evidence.serverWindow ||
+    !isReliableWindow(evidence.serverWindow)) {
+    return { status: 'unresolved', reason: 'invalid-attempt-evidence' }
+  }
+  const before: ProfileCommentSnapshot = {
+    ownerSteamId: snapshot.ownerSteamId, threadExists: true, complete: true,
+    comments: evidence.baselineIds.map(id => ({ id, authorSteamId: null, text: null, postedAtSeconds: null }))
+  }
+  const result = reconcileCommentSnapshots(before, snapshot, expectedAuthorSteamId, message, evidence.serverWindow)
+  return result.status === 'confirmed' && result.comment.postedAtSeconds !== null
+    ? { status: 'confirmed', commentId: result.comment.id, postedAtSeconds: result.comment.postedAtSeconds }
+    : { status: 'unresolved', reason: result.status === 'confirmed' ? 'missing-comment-timestamp' : result.reason }
 }
 
 function isReliableWindow(window: CommentServerWindow): boolean {

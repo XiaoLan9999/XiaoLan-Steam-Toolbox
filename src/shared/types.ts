@@ -205,6 +205,19 @@ export interface BatchSummary extends Omit<BatchRecord, 'deliveries'> {
   uncertain: number
   cancelled: number
   activity?: BatchActivity
+  verification?: BatchVerification | null
+}
+
+export interface BatchVerification {
+  deliveryId: string
+  friendSteamId: string
+  friendName: string
+  state: 'checking' | 'waiting' | 'confirmed' | 'unresolved'
+  attempt: number
+  maxAttempts: number
+  checkedAt: string | null
+  nextCheckAt: string | null
+  message: string
 }
 
 export interface BatchRecipientActivity {
@@ -383,6 +396,7 @@ export interface SteamFriendCommenterApi {
   listBatchDeliveries(accountId: string, batchId: string, options?: BatchDeliveryListOptions): Promise<IpcResult<BatchDeliveryPage>>
   pauseBatch(batchId: string): Promise<IpcResult<void>>
   resumeBatch(batchId: string): Promise<IpcResult<void>>
+  verifyBatch(batchId: string): Promise<IpcResult<void>>
   setBatchAutoRetry(batchId: string, enabled: boolean): Promise<IpcResult<void>>
   cancelBatch(batchId: string): Promise<IpcResult<void>>
   onEvent(callback: (event: AppEvent) => void): () => void

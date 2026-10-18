@@ -444,10 +444,7 @@ function registerIpcHandlers(): void {
     if (previousId && previousId !== accountId) {
       gameStatus.invalidate()
       commentScans.pauseForAccount(previousId)
-      const activeBatch = store.getActiveBatchSummary(previousId)
-      if (activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'queued' || activeBatch.nextRetryAt)) {
-        queue.pause(activeBatch.id, 'ACCOUNT_CHANGED', '当前账号已切换，自动继续已停止，请切回后手动继续')
-      }
+      queue.pauseForAccountChange(previousId)
     }
     await steam.activateAccount(accountId)
     return getSnapshot()
@@ -558,6 +555,7 @@ function registerIpcHandlers(): void {
   })
   handle('batch:pause', (batchId: string) => { requireCurrentTask(batchId); queue.pause(batchId) })
   handle('batch:resume', (batchId: string) => { requireCurrentTask(batchId); queue.resume(batchId) })
+  handle('batch:verify', (batchId: string) => { requireCurrentTask(batchId); queue.verify(batchId) })
   handle('batch:autoRetry', (batchId: string, enabled: boolean) => { requireCurrentTask(batchId); queue.setAutoRetry(batchId, enabled) })
   handle('batch:cancel', (batchId: string) => { requireCurrentTask(batchId); queue.cancel(batchId) })
 }

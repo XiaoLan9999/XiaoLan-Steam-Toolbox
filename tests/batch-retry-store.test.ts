@@ -211,7 +211,7 @@ describe('durable batch stop reasons and bounded retry state', () => {
       total: 2, completed: 1, sentVerified: 1, pending: 1 })
     expect(migrated.listBatchDeliveries(accountId, task.id)).toEqual(before)
     const inspection = new DatabaseSync(data.databasePath)
-    try { expect(inspection.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 7 }) }
+    try { expect(inspection.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 8 }) }
     finally { inspection.close() }
   })
 

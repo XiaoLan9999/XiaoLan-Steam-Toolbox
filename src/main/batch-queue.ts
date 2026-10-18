@@ -10,6 +10,7 @@ import { batchInterruption } from '../shared/batch-retry-policy'
 import { DeliverySeed, SqliteStore } from './store'
 import { publicErrorMessage, SteamService } from './steam-service'
 import { BatchRecoveryController } from './batch-recovery'
+import { BatchVerificationController } from './batch-verification'
 
 type Emit = (event: AppEvent) => void
 
@@ -20,6 +21,9 @@ export class BatchQueue {
   private readonly waits = new Set<() => void>()
   private stopped = false
   private readonly recovery: BatchRecoveryController
+  private readonly verification: BatchVerificationController
+  private readonly verificationRuns = new Set<string>()
+  private readonly verificationAccounts = new Set<string>()
 
   constructor(
     private readonly store: SqliteStore,
@@ -31,6 +35,7 @@ export class BatchQueue {
       changed: batchId => { if (!this.stopped) this.emit({ type: 'batchProgress', batchId }) },
       isBusy: (batchId, accountId) => this.workers.has(batchId) || this.postingAccounts.has(accountId)
     })
+    this.verification = new BatchVerificationController(store, steam, emit, ms => this.wait(ms))
   }
 
   start(input: BatchStartInput): BatchSummary {
@@ -41,7 +46,7 @@ export class BatchQueue {
     if (this.store.getActiveBatchSummary(input.accountId)) {
       throw new DomainError('BATCH_ALREADY_ACTIVE', '当前账号已有未完成批次，请先完成或取消')
     }
-    if (this.postingAccounts.has(input.accountId)) {
+    if (this.postingAccounts.has(input.accountId) || this.verificationAccounts.has(input.accountId)) {
       throw new DomainError('BATCH_REQUEST_SETTLING', '当前账号仍有留言请求正在结束，请稍后再创建批次')
     }
     const template = validateMessageTemplate(input.messageTemplate)
@@ -80,7 +85,12 @@ export class BatchQueue {
   pause(batchId: string, code: BatchStopCode = 'MANUAL_PAUSE', message?: string): void {
     this.assertOpen()
     this.recovery.invalidate(batchId)
+    this.verification.stop(batchId)
     const batch = this.store.getBatchSummary(batchId)
+    if (batch?.status === 'completed' || batch?.status === 'cancelled') {
+      this.wake()
+      return
+    }
     if (code === 'MANUAL_PAUSE') this.store.pauseBatch(batchId)
     else if (batch?.status !== 'paused' || batch.stopCode !== 'MANUAL_PAUSE') {
       this.store.pauseBatch(batchId, { code, message: message ?? '任务已暂停，需手动继续' })
@@ -96,11 +106,16 @@ export class BatchQueue {
     if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
       throw new DomainError('NOT_AUTHENTICATED', '恢复批次前必须登录对应 Steam 账号')
     }
+    if (batch.uncertain > 0 && typeof this.steam.reconcileProfileComment === 'function') {
+      this.verify(batchId)
+      return
+    }
     if (this.store.quarantineLegacyDeniedPost(batchId)) {
       this.recovery.invalidate(batchId)
       this.wake()
       this.emit({ type: 'batchProgress', batchId })
       this.emit({ type: 'notice', level: 'warning', message: this.store.getBatchSummary(batchId)!.stopMessage! })
+      if (typeof this.steam.reconcileProfileComment === 'function') this.verify(batchId)
       return
     }
     if (batch.accessDeniedUntil && Date.parse(batch.accessDeniedUntil) > Date.now()) {
@@ -118,6 +133,7 @@ export class BatchQueue {
   cancel(batchId: string): void {
     this.assertOpen()
     this.recovery.invalidate(batchId)
+    this.verification.stop(batchId)
     this.store.cancelBatch(batchId)
     this.nextDeliveryAt.delete(batchId)
     this.wake()
@@ -155,6 +171,19 @@ export class BatchQueue {
     }
   }
 
+  pauseForAccountChange(accountId: string): void {
+    if (this.stopped) return
+    const ids = new Set(this.verificationRuns)
+    const active = this.store.getActiveBatchSummary(accountId)
+    if (active && (['running', 'queued'].includes(active.status) || active.nextRetryAt ||
+      ['checking', 'waiting'].includes(active.verification?.state ?? ''))) ids.add(active.id)
+    for (const id of ids) {
+      if (this.store.getBatchSummary(id)?.accountId === accountId) {
+        this.pause(id, 'ACCOUNT_CHANGED', '当前账号已切换，自动核对和继续已停止，请切回后手动继续')
+      }
+    }
+  }
+
   shutdown(): void {
     if (this.stopped) return
     this.stopped = true
@@ -174,7 +203,84 @@ export class BatchQueue {
   }
 
   hasPendingRequests(): boolean {
-    return this.postingAccounts.size > 0
+    return this.postingAccounts.size > 0 || this.verificationRuns.size > 0 || this.verificationAccounts.size > 0
+  }
+
+  verify(batchId: string): void {
+    this.assertOpen()
+    let batch = this.store.getBatchSummary(batchId)
+    if (!batch) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
+    if (this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
+      throw new DomainError('NOT_AUTHENTICATED', '核对前必须登录对应 Steam 账号')
+    }
+    if (this.verificationRuns.has(batchId)) return
+    const active = this.store.getActiveBatchSummary(batch.accountId)
+    if (this.workers.has(batchId) || this.postingAccounts.has(batch.accountId) || this.verificationAccounts.has(batch.accountId) ||
+      (active?.id !== batchId && active && ['running', 'queued'].includes(active.status))) {
+      throw new DomainError('BATCH_REQUEST_SETTLING', '当前账号仍有任务请求正在结束，请稍后核对')
+    }
+    if (!['paused', 'queued', 'completed'].includes(batch.status)) {
+      throw new DomainError('INVALID_BATCH_STATE', '当前任务状态不能启动核对')
+    }
+    if (typeof this.steam.reconcileProfileComment !== 'function') {
+      throw new DomainError('VERIFICATION_UNAVAILABLE', '当前运行环境不支持只读核对')
+    }
+    this.store.quarantineLegacyDeniedPost(batchId)
+    batch = this.store.getBatchSummary(batchId)!
+    this.recovery.invalidate(batchId)
+    const intent = this.recovery.capture(batchId)
+    this.verificationRuns.add(batchId)
+    this.verificationAccounts.add(batch.accountId)
+    void this.verifyAndContinue(batch, intent).catch(error => {
+      if (this.stopped) return
+      try {
+        if (this.recovery.isCurrent(batch!.id, intent) && batch!.status !== 'completed') {
+          this.store.pauseBatch(batch!.id, { code: 'QUEUE_ERROR', message: '核对记录存储失败，自动继续已停止；未重复发送' })
+        }
+      } catch { /* Startup recovery preserves uncertain records if storage is unavailable. */ }
+      this.emit({ type: 'notice', level: 'error', message: `留言核对已停止：${publicErrorMessage(error)}` })
+      this.emit({ type: 'batchProgress', batchId: batch!.id })
+    })
+  }
+
+  private async verifyAndContinue(batch: BatchSummary, intent: symbol): Promise<void> {
+    const isCurrent = (): boolean => !this.stopped && this.recovery.isCurrent(batch.id, intent) &&
+      this.store.getActiveAccountId() === batch.accountId && this.steam.isAuthenticated(batch.accountId) &&
+      this.store.getBatchSummary(batch.id)?.status === batch.status
+    let resume = false
+    try {
+      if (!await this.verification.verifyAll(batch.id, isCurrent) || !isCurrent()) return
+      if (batch.status !== 'completed') {
+        if (this.store.finishBatchIfDone(batch.id)) {
+          this.emit({ type: 'batchProgress', batchId: batch.id })
+          return
+        }
+        this.store.clearBatchRetryCount(batch.id)
+        this.store.setBatchRunning(batch.id)
+        this.emit({ type: 'batchProgress', batchId: batch.id })
+        resume = true
+      }
+    } catch (error) {
+      if (!isCurrent()) return
+      const detail = batchInterruption(error)
+      if (batch.status !== 'completed') {
+        if (detail.code === 'ACCESS_DENIED' || detail.code === 'RATE_LIMITED') {
+          this.store.extendBatchAccessDeniedCooldown(batch.id, detail.retryAfterMs)
+        }
+        this.store.pauseBatch(batch.id, { code: detail.code, message: `只读核对暂时停止，未重复发送。${publicErrorMessage(error)}` })
+      }
+      this.emit({ type: 'notice', level: 'warning', message: `只读核对未完成：${publicErrorMessage(error)}` })
+      this.emit({ type: 'batchProgress', batchId: batch.id })
+    } finally {
+      this.verificationRuns.delete(batch.id)
+      this.verificationAccounts.delete(batch.accountId)
+      if (!this.stopped) {
+        this.verification.stop(batch.id)
+        if (resume && this.recovery.isCurrent(batch.id, intent) && this.store.getBatchSummary(batch.id)?.status === 'running') {
+          void this.run(batch.id)
+        }
+      }
+    }
   }
 
   private assertOpen(): void {
@@ -313,7 +419,8 @@ export class BatchQueue {
             delivery.renderedMessage,
             () => !this.stopped && this.recovery.isCurrent(batchId, intent) &&
               this.store.getBatchSummary(batchId)?.status === 'running' &&
-              this.store.getDeliveryRecordById(delivery.id)?.status === 'sending'
+              this.store.getDeliveryRecordById(delivery.id)?.status === 'sending',
+            evidence => this.store.saveDeliveryCommentEvidence(delivery.id, evidence)
           )
           if (this.stopped) return
           this.store.completeDelivery(
@@ -361,6 +468,36 @@ export class BatchQueue {
         this.nextDeliveryAt.set(batchId, Date.now() + batch.delayMs + Math.floor(Math.random() * 3_001))
 
         this.emit({ type: 'batchProgress', batchId })
+        if (this.store.getDeliveryRecordById(delivery.id)?.status === 'uncertain' &&
+          typeof this.steam.reconcileProfileComment === 'function') {
+          const isCurrent = (): boolean => !this.stopped && this.recovery.isCurrent(batchId, intent) &&
+            this.store.getActiveAccountId() === batch.accountId && this.steam.isAuthenticated(batch.accountId) &&
+            this.store.getBatchSummary(batchId)?.status === 'running'
+          if (!isCurrent()) return
+          this.verificationAccounts.add(batch.accountId)
+          try {
+            if (!await this.verification.verifyDelivery(delivery, isCurrent)) return
+            shouldPause = false
+            interruption = null
+            const checked = this.store.getBatchSummary(batchId)!
+            if (this.store.getDeliveryRecordById(delivery.id)?.status === 'sent_verified' &&
+              (!checked.accessDeniedUntil || Date.parse(checked.accessDeniedUntil) <= Date.now())) {
+              this.store.resetBatchAccessDenials(batchId)
+            }
+          } catch (error) {
+            if (!isCurrent()) return
+            const detail = batchInterruption(error)
+            if (detail.code === 'ACCESS_DENIED' || detail.code === 'RATE_LIMITED') {
+              this.store.extendBatchAccessDeniedCooldown(batchId, detail.retryAfterMs)
+            }
+            this.recovery.interrupt(batchId, { code: detail.code,
+              message: `只读核对暂时停止；本条不会重复发送。${publicErrorMessage(error)}`,
+              allowAuto: detail.canRetry, retryAfterMs: detail.retryAfterMs }, intent)
+            return
+          } finally {
+            this.verificationAccounts.delete(batch.accountId)
+          }
+        }
         if (interruption?.code === 'UNCERTAIN_RESULT' && !interruption.canRetry) {
           // An unresolved POST still stops the current worker after an in-flight pause/resume.
           this.recovery.interrupt(batchId, {

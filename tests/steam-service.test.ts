@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   verify: vi.fn(),
   replaceCookies: vi.fn(),
   post: vi.fn(),
+  reconcile: vi.fn(),
   emoticons: vi.fn(),
   sessionOptions: [] as Array<{ platform: number; options: { userAgent?: string; agent?: Agent } }>,
   sessions: [] as Array<{refreshToken: string; emit: (event: string) => void}>,
@@ -69,6 +70,7 @@ vi.mock('../src/main/community-client', () => ({
     verifySession = mocks.verify
     replaceCookies = mocks.replaceCookies
     postProfileComment = mocks.post
+    reconcileProfileComment = mocks.reconcile
     getEmoticons = mocks.emoticons
   }
 }))
@@ -96,6 +98,7 @@ beforeEach(() => {
   mocks.verify.mockResolvedValue(undefined)
   mocks.gameStatusLogin.mockResolvedValue({ steamId: accountA, accountName: 'fixture-user', webLogonToken: 'fixture-nonce' })
   mocks.emoticons.mockResolvedValue([])
+  mocks.reconcile.mockResolvedValue({ status: 'unresolved', reason: 'no-new-matching-comment' })
 })
 
 afterEach(() => {
@@ -108,6 +111,62 @@ afterEach(() => {
 })
 
 describe('SteamService web-session lifecycle', () => {
+  it('passes the optional durable evidence callback through without changing the original POST API', async () => {
+    const { service, store } = await createService()
+    store.replaceFriends(accountA, [friend(accountA, friendA, 'Synthetic friend')])
+    const evidence = { baselineIds: ['1001'], serverWindow: null, submittedAt: new Date().toISOString() }
+    const saved = vi.fn()
+    mocks.post.mockImplementationOnce(async (_friend, _message, guard, onEvidence) => {
+      guard()
+      onEvidence(evidence)
+      return { commentId: '1002' }
+    })
+    await expect(service.postProfileComment(accountA, friendA, 'Synthetic text', () => true, saved)).resolves.toEqual({ commentId: '1002' })
+    expect(saved).toHaveBeenCalledExactlyOnceWith(evidence)
+  })
+
+  it('only invokes the read-only client reconciliation for the current account', async () => {
+    const { service } = await createService()
+    const evidence = { baselineIds: ['1001'], serverWindow: null, submittedAt: new Date().toISOString() }
+    await expect(service.reconcileProfileComment(accountA, friendA, 'Synthetic text', evidence)).resolves.toEqual({ status: 'unresolved', reason: 'no-new-matching-comment' })
+    expect(mocks.reconcile).toHaveBeenCalledExactlyOnceWith(friendA, 'Synthetic text', evidence, expect.any(Function))
+    expect(mocks.post).not.toHaveBeenCalled()
+    await expect(service.reconcileProfileComment(accountB, friendA, 'Synthetic text', evidence)).rejects.toThrow()
+    expect(mocks.reconcile).toHaveBeenCalledOnce()
+  })
+
+  it.each(['removed', 'blacklisted'] as const)('allows read-only reconciliation after the recipient was %s', async policy => {
+    const { service, store } = await createService()
+    store.replaceFriends(accountA, [friend(accountA, friendA, 'Synthetic friend')])
+    if (policy === 'removed') store.replaceFriends(accountA, [])
+    else store.setBlacklist(accountA, [friendA], true)
+    await expect(service.reconcileProfileComment(accountA, friendA, 'Synthetic text', null)).resolves.toMatchObject({ status: 'unresolved' })
+    expect(mocks.reconcile).toHaveBeenCalledOnce()
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('does not even start a read-only check when the caller has cancelled its task', async () => {
+    const { service } = await createService()
+    await expect(service.reconcileProfileComment(accountA, friendA, 'Synthetic text', null, () => false)).rejects.toMatchObject({ code: 'CHECK_CANCELLED' })
+    expect(mocks.reconcile).not.toHaveBeenCalled()
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it.each(['account', 'task', 'shutdown'] as const)('discards a confirmed read-only result after %s changes', async change => {
+    const { service } = await createService()
+    let current = true
+    const pending = deferred<{ status: 'confirmed'; commentId: string; postedAtSeconds: number }>()
+    mocks.reconcile.mockReturnValueOnce(pending.promise)
+    const verification = service.reconcileProfileComment(accountA, friendA, 'Synthetic text', null, () => current)
+    await vi.waitFor(() => expect(mocks.reconcile).toHaveBeenCalledOnce())
+    if (change === 'account') await service.activateAccount(accountB)
+    else if (change === 'shutdown') service.dispose()
+    else current = false
+    pending.resolve({ status: 'confirmed', commentId: '1002', postedAtSeconds: 1_792_281_600 })
+    await expect(verification).rejects.toMatchObject({ code: 'CHECK_CANCELLED' })
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
   it('reuses the current verified web login for game status without creating another login session', async () => {
     const { service } = await createService()
     await expect(service.getGameStatusLogin(accountA)).resolves.toMatchObject({ steamId: accountA, webLogonToken: 'fixture-nonce' })

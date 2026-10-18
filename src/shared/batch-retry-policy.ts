@@ -30,6 +30,7 @@ export function batchInterruption(error: unknown): BatchInterruption {
       case 'SESSION_CHANGED': return { code: 'SESSION_CHANGED', canRetry: true, rejectedBeforeAcceptance: false }
       case 'SESSION_CHECK_FAILED': return { code: 'SESSION_PREPARATION', canRetry: true, rejectedBeforeAcceptance: false }
       case 'WRONG_ACCOUNT': return { code: 'ACCOUNT_CHANGED', canRetry: false, rejectedBeforeAcceptance: false }
+      case 'CHECK_CANCELLED': return { code: 'SESSION_CHANGED', canRetry: false, rejectedBeforeAcceptance: false }
       case 'NOT_AUTHENTICATED': return { code: 'LOGIN_REQUIRED', canRetry: false, rejectedBeforeAcceptance: false }
     }
   }

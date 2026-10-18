@@ -87,28 +87,67 @@ afterEach(async () => {
 })
 
 describe('real login, community client and persistent queue integration', () => {
-  it.each([403, 429])('pauses an HTTP %s delivery without expiring the QR login or resending its POST', async status => {
+  it.each([403, 429])('handles HTTP %s without expiring the QR login or replaying the affected POST', async status => {
     const fixture = await createFixture()
     fixture.postReplies.push(success('100'), new Response('Request denied', { status }), success('300'), success('400'))
     const batch = start(fixture)
     await vi.advanceTimersByTimeAsync(100)
 
-    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'paused', succeeded: 1,
+    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: status === 403 ? 'running' : 'paused', succeeded: 1,
       failed: 1, pending: 1, uncertain: status === 403 ? 1 : 0, failedCount: status === 403 ? 0 : 1,
-      stopCode: status === 403 ? 'UNCERTAIN_RESULT' : 'RATE_LIMITED', nextRetryAt: null })
+      stopCode: status === 403 ? null : 'RATE_LIMITED', nextRetryAt: null })
     expect(fixture.service.isAuthenticated(accountA)).toBe(true)
     expect(mocks.webCookies).toHaveBeenCalledTimes(1)
     expect(posts(fixture)).toHaveLength(2)
-    await vi.advanceTimersByTimeAsync(5000)
-    expect(posts(fixture)).toHaveLength(2)
-
-    if (status === 403) expect(fixture.store.getBatchSummary(batch.id)?.accessDeniedCount).toBe(0)
-    fixture.queue.resume(batch.id)
+    if (status === 403) {
+      expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ accessDeniedCount: 0,
+        verification: { state: 'unresolved', attempt: 1 } })
+    } else {
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(posts(fixture)).toHaveLength(2)
+      fixture.queue.resume(batch.id)
+    }
     await vi.advanceTimersByTimeAsync(100)
     expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed',
       succeeded: 2, failed: 1, uncertain: status === 403 ? 1 : 0 })
     expect(posts(fixture)).toHaveLength(3)
     expect(new Set(posts(fixture).map(([url]) => String(url))).size).toBe(3)
+  })
+
+  it('persists evidence and confirms a delayed profile read through the real client before continuing', async () => {
+    const fixture = await createFixture()
+    fixture.postReplies.push(success('100'), new Response('Synthetic response refusal', { status: 403 }), success('300'))
+    const original = fixture.fetch.getMockImplementation()!
+    let deniedTarget: string | null = null
+    let readbacks = 0
+    fixture.fetch.mockImplementation(async (input, init) => {
+      const url = new URL(String(input))
+      if ((init?.method ?? 'GET') === 'GET' && url.pathname === `/profiles/${deniedTarget}/` && ++readbacks >= 2) {
+        return new Response(`<script>g_steamID="${accountA}";</script>` +
+          `<div id="commentthread_Profile_${deniedTarget}_area" class="commentthread_area">` +
+          `<div id="commentthread_Profile_${deniedTarget}_posts" class="commentthread_comments">` +
+          `<div id="comment_7001" class="commentthread_comment">` +
+          `<a class="commentthread_author_link" href="https://steamcommunity.com/profiles/${accountA}">Sender</a>` +
+          `<span class="commentthread_comment_timestamp" data-timestamp="${Math.floor(Date.now() / 1000)}"></span>` +
+          '<div class="commentthread_comment_text">Synthetic comment</div></div></div></div>',
+        { headers: { Date: new Date().toUTCString() } })
+      }
+      const response = await original(input, init)
+      response.headers.set('Date', new Date().toUTCString())
+      if (init?.method === 'POST' && response.status === 403) deniedTarget = url.pathname.split('/')[4]!
+      return response
+    })
+    const batch = start(fixture)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed', sentVerified: 3,
+      uncertain: 0, pending: 0, verification: { state: 'confirmed', attempt: 1 } })
+    expect(readbacks).toBe(2)
+    expect(posts(fixture)).toHaveLength(3)
+    expect(new Set(posts(fixture).map(([url]) => String(url))).size).toBe(3)
+    const reconciled = fixture.store.getBatch(batch.id)!.deliveries.find(item => item.remoteCommentId === '7001')!
+    expect(fixture.store.getDeliveryCommentEvidence(reconciled.id)).toMatchObject({ baselineIds: [],
+      serverWindow: { earliest: expect.any(Number), latest: expect.any(Number) } })
+    expect(fixture.service.isAuthenticated(accountA)).toBe(true)
   })
 
   it.each([

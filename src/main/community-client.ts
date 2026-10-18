@@ -6,12 +6,41 @@ import { parseCommentEligibility } from './comment-eligibility-parser'
 import { extractCommunityPageIdentity, extractProfileWebApiToken, getProfileBackgroundCatalog } from './profile-backgrounds'
 import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
-import { parseCommentSnapshot, reconcileCommentSnapshots, type CommentSnapshot } from './comment-reconciliation'
+import { parseCommentSnapshot, reconcileCommentSnapshots, verifyCommentAttempt,
+  type CommentAttemptEvidence, type CommentServerWindow, type CommentSnapshot,
+  type CommentVerificationResult } from './comment-reconciliation'
 
 interface CommunityResponseMetadata {
   requestStartedAt: number
   receivedAt: number
   serverDate: number | null
+  elapsedMs: number
+  receivedMonotonic: number
+}
+
+function completedSubmissionWindow(metadata: CommunityResponseMetadata): CommentServerWindow | null {
+  if (metadata.serverDate === null || !Number.isFinite(metadata.serverDate) || metadata.serverDate <= 0 ||
+    !Number.isFinite(metadata.elapsedMs) || metadata.elapsedMs < 0 || metadata.elapsedMs > 50_000) return null
+  return {
+    earliest: Math.floor((metadata.serverDate - metadata.elapsedMs) / 1000) - 2,
+    latest: Math.floor(metadata.serverDate / 1000) + 2
+  }
+}
+
+function estimatedSubmissionWindow(metadata: CommunityResponseMetadata | null): CommentServerWindow | null {
+  if (!metadata || !completedSubmissionWindow(metadata)) return null
+  const sinceResponse = performance.now() - metadata.receivedMonotonic
+  if (!Number.isFinite(sinceResponse) || sinceResponse < 0 || sinceResponse > 300_000) return null
+  // The server clock anchors the window; monotonic elapsed time survives local clock changes.
+  return {
+    earliest: Math.floor((metadata.serverDate! - metadata.elapsedMs + sinceResponse) / 1000) - 2,
+    latest: Math.floor((metadata.serverDate! + sinceResponse + 50_000) / 1000) + 2
+  }
+}
+
+function copyAttemptEvidence(evidence: CommentAttemptEvidence): CommentAttemptEvidence {
+  return { baselineIds: [...evidence.baselineIds], serverWindow: evidence.serverWindow ? { ...evidence.serverWindow } : null,
+    submittedAt: evidence.submittedAt }
 }
 
 export interface CommunityProfileSummary {
@@ -294,15 +323,18 @@ export class SteamCommunityClient {
   async postProfileComment(
     friendSteamId: string,
     message: string,
-    assertCanSubmit: () => void = () => undefined
+    assertCanSubmit: () => void = () => undefined,
+    onEvidence: (evidence: CommentAttemptEvidence) => void = () => undefined
   ): Promise<{ commentId: string | null }> {
     assertCanSubmit()
     this.requireCommentSessionId()
     let baseline: CommentSnapshot
+    let baselineMetadata: CommunityResponseMetadata | null = null
     try {
-      baseline = await this.getCommentSnapshot(friendSteamId)
-      if (!baseline.complete || !baseline.threadExists) throw new Error('Comment baseline is incomplete')
+      baseline = await this.getCommentSnapshot(friendSteamId, assertCanSubmit, metadata => { baselineMetadata = metadata })
+      if (!baseline.complete || !baseline.threadExists || baseline.comments.length > 1000) throw new Error('Comment baseline is incomplete')
     } catch (error) {
+      if (error instanceof DomainError && ['FRIEND_NOT_FOUND', 'FRIEND_BLACKLISTED'].includes(error.code)) throw error
       throw new DomainError('SESSION_PREPARATION_FAILED', '留言前无法可靠读取目标评论基线，尚未提交留言；请稍后继续原任务', true,
         error instanceof DomainError ? error.retryAfterMs : undefined)
     }
@@ -315,6 +347,18 @@ export class SteamCommunityClient {
       feature2: '-1'
     })
     const version = this.cookieVersion
+    const submittedAt = Date.now()
+    const evidence: CommentAttemptEvidence = {
+      baselineIds: baseline.comments.map(comment => comment.id),
+      serverWindow: estimatedSubmissionWindow(baselineMetadata),
+      submittedAt: new Date(submittedAt).toISOString()
+    }
+    try {
+      onEvidence(copyAttemptEvidence(evidence))
+    } catch {
+      throw new DomainError('SESSION_PREPARATION_FAILED', '无法保存留言核对证据，尚未提交留言；请检查本地存储后继续原任务', true)
+    }
+    assertCanSubmit()
     let postMetadata: CommunityResponseMetadata | null = null
     let body: unknown
     try {
@@ -329,18 +373,32 @@ export class SteamCommunityClient {
           },
           body: form.toString()
         },
-        metadata => { postMetadata = metadata }
+        metadata => {
+          postMetadata = metadata
+          let serverWindow = completedSubmissionWindow(metadata)
+          if (!serverWindow) return
+          if (evidence.serverWindow) {
+            serverWindow = { earliest: Math.max(evidence.serverWindow.earliest, serverWindow.earliest),
+              latest: Math.min(evidence.serverWindow.latest, serverWindow.latest) }
+            if (serverWindow.latest < serverWindow.earliest) return
+          }
+          evidence.serverWindow = serverWindow
+          try { onEvidence(copyAttemptEvidence(evidence)) }
+          catch {
+            throw new DomainError('COMMENT_POST_UNCERTAIN', '留言请求已提交，但无法保存响应核对证据；不会自动重发', false)
+          }
+        }
       )
     } catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'COMMUNITY_ACCESS_DENIED') throw error
       // A real Steam POST returned 403/success:2 after creating the comment. Never replay it solely on that response.
       try {
         const metadata = postMetadata as CommunityResponseMetadata | null
-        if (metadata?.serverDate !== null && metadata?.serverDate !== undefined && version === this.cookieVersion) {
-          const elapsed = Math.max(0, metadata.receivedAt - metadata.requestStartedAt)
-          const earliest = Math.floor((metadata.serverDate - elapsed) / 1000) - 2
-          const latest = Math.floor(metadata.serverDate / 1000) + 2
-          if (latest - earliest <= 300) {
+        const responseWindow = metadata ? completedSubmissionWindow(metadata) : null
+        if (responseWindow && version === this.cookieVersion) {
+          const earliest = Math.max(responseWindow.earliest, evidence.serverWindow?.earliest ?? responseWindow.earliest)
+          const latest = Math.min(responseWindow.latest, evidence.serverWindow?.latest ?? responseWindow.latest)
+          if (latest >= earliest && latest - earliest <= 300) {
             const after = await this.getCommentSnapshot(friendSteamId)
             if (version === this.cookieVersion) {
               const result = reconcileCommentSnapshots(baseline, after, this.accountId, message, { earliest, latest })
@@ -364,6 +422,22 @@ export class SteamCommunityClient {
     return { commentId }
   }
 
+  async reconcileProfileComment(
+    friendSteamId: string,
+    message: string,
+    evidence: CommentAttemptEvidence | null,
+    assertCurrent: () => void = () => undefined
+  ): Promise<CommentVerificationResult> {
+    assertCurrent()
+    const version = this.cookieVersion
+    const snapshot = await this.getCommentSnapshot(friendSteamId, assertCurrent)
+    assertCurrent()
+    if (version !== this.cookieVersion) {
+      throw new DomainError('SESSION_CHANGED', '核对期间 Steam 登录会话已更新，本次只读结果已取消，请稍后重试', true)
+    }
+    return verifyCommentAttempt(snapshot, this.accountId, message, evidence)
+  }
+
   private requireCommentSessionId(): string {
     const currentCookies = matchingCookies(this.cookies, '/comment/')
     const rawSessionId = currentCookies.find(cookie => cookie.name === 'sessionid')?.value
@@ -375,15 +449,20 @@ export class SteamCommunityClient {
     return rawSessionId
   }
 
-  private async getCommentSnapshot(steamId: string): Promise<CommentSnapshot> {
+  private async getCommentSnapshot(
+    steamId: string,
+    assertCurrent: () => void = () => undefined,
+    onResponse: (metadata: CommunityResponseMetadata) => void = () => undefined
+  ): Promise<CommentSnapshot> {
     if (!/^7656119\d{10}$/.test(steamId)) throw new DomainError('INVALID_STEAM_ID', '目标 SteamID 无效')
-    const html = await this.requestText(`/profiles/${steamId}/?l=english`, {}, 3, () => undefined, (text, version) => {
+    const html = await this.requestText(`/profiles/${steamId}/?l=english`, {}, 3, assertCurrent, (text, version) => {
       const identity = extractCommunityPageIdentity(text)
       if (identity !== this.accountId) {
         if (identity) this.rejectExpired(version, { phase: 'community-request', outcome: 'auth-rejected', reason: 'identity-mismatch', method: 'GET' })
         throw new DomainError('SESSION_CHECK_FAILED', '无法核验目标资料页中的当前登录身份', true)
       }
-    })
+    }, onResponse)
+    assertCurrent()
     return parseCommentSnapshot(html, steamId)
   }
 
@@ -481,6 +560,7 @@ export class SteamCommunityClient {
     try {
       return await withRequestTimeout(50_000, async signal => {
         const requestStartedAt = Date.now()
+        const requestStartedMonotonic = performance.now()
         const response = await fetch(url, {
           ...init,
           redirect: 'manual',
@@ -496,7 +576,9 @@ export class SteamCommunityClient {
         try {
           const rawDate = response.headers.get('date')
           const parsedDate = rawDate && /GMT$/i.test(rawDate) ? Date.parse(rawDate) : NaN
-          onResponse({ requestStartedAt, receivedAt: Date.now(), serverDate: Number.isFinite(parsedDate) ? parsedDate : null })
+          const receivedMonotonic = performance.now()
+          onResponse({ requestStartedAt, receivedAt: Date.now(), serverDate: Number.isFinite(parsedDate) ? parsedDate : null,
+            elapsedMs: receivedMonotonic - requestStartedMonotonic, receivedMonotonic })
           assertCurrent()
           const location = response.headers.get('location') ?? ''
           const redirectedToLogin =

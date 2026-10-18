@@ -161,7 +161,7 @@ describe('friend name change history', () => {
     data.close()
     data.sql('DROP TABLE friend_name_changes; DROP TABLE friend_name_baselines; PRAGMA user_version = 3;')
     const migrated = data.reopen()
-    expect(data.read('PRAGMA user_version')).toMatchObject({ user_version: 7 })
+    expect(data.read('PRAGMA user_version')).toMatchObject({ user_version: 8 })
     expect(migrated.getFriendNameChanges(owner)).toEqual([])
     expect(data.read('SELECT COUNT(*) AS count FROM friend_name_baselines')).toMatchObject({ count: 1 })
     migrated.replaceFriends(owner, [friend(owner, friendId, 'Updated real name'), friend(owner, anotherId, 'First real name')])

@@ -51,7 +51,7 @@ describe('blacklist enforcement on delivery', () => {
     const batch = queue.start({ accountId: owner, friendSteamIds: [friend],
       messageTemplate: 'hello', delayMs: 10000 })
     await vi.waitFor(() => expect(store.getBatch(batch.id)?.status).toBe('completed'))
-    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function))
+    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function), expect.any(Function))
     expect(post.mock.calls[0]![3]()).toBe(false)
   })
 
@@ -117,7 +117,7 @@ describe('friendship removal enforcement on delivery', () => {
     store.replaceFriends(other, [])
     queue.resume(batch.id)
     await vi.waitFor(() => expect(store.getBatch(batch.id)?.status).toBe('completed'))
-    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function))
+    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function), expect.any(Function))
     expect(post.mock.calls[0]![3]()).toBe(false)
   })
 
@@ -133,7 +133,7 @@ describe('friendship removal enforcement on delivery', () => {
     store.replaceFriends(owner, cached)
     queue.resume(batch.id)
     await vi.waitFor(() => expect(store.getBatch(batch.id)?.status).toBe('completed'))
-    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function))
+    expect(post).toHaveBeenCalledExactlyOnceWith(owner, friend, 'hello', expect.any(Function), expect.any(Function))
     expect(post.mock.calls[0]![3]()).toBe(false)
   })
 })
