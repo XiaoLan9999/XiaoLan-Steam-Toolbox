@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import { prepareWindowsUpdate, type ReadyUpdate } from '../src/main/update-installer'
@@ -11,8 +11,15 @@ import { UPDATE_REPOSITORY } from '../src/shared/update-types'
 const run = promisify(execFile)
 const directories: string[] = []
 afterEach(async () => {
-  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true })
-})
+  for (const directory of directories.splice(0)) {
+    const target = resolve(directory)
+    if (dirname(target) !== resolve(tmpdir()) || !basename(target).startsWith('xiaolan-installer-test-')) {
+      throw new Error('Refusing to remove a path outside the installer fixture directory')
+    }
+    // started.txt is written before Windows releases the fixture EXE.
+    await rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+}, 10_000)
 
 describe.skipIf(process.platform !== 'win32')('Windows update installation', () => {
   it('atomically replaces a verified portable program after its real parent exits, retaining the old backup and restarting', async () => {
