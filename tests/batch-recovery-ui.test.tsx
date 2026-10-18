@@ -6,7 +6,7 @@ import { DEFAULT_UPDATE_PREFERENCES, initialUpdateState } from '../src/shared/up
 import { COMMENT_POST_UNCERTAIN_MESSAGE, LEGACY_COMMENT_POST_REVIEW_MESSAGE } from '../src/shared/batch-retry-policy'
 import { I18nProvider } from '../src/renderer/src/i18n'
 import {
-  BatchRecoveryPanel, enableBatchRetryAndResume, retryCountdown
+  BatchRecoveryPanel, batchCooldownActive, enableBatchRetryAndResume, retryCountdown
 } from '../src/renderer/src/components/BatchRecoveryPanel'
 import { ComposerPanel } from '../src/renderer/src/components/ComposerPanel'
 import { TaskDetails } from '../src/renderer/src/components/HistoryPanel'
@@ -35,6 +35,10 @@ function render(value: BatchSummary, language: 'zh-CN' | 'en' = 'zh-CN', authent
   }))
 }
 
+function visibleRecovery(html: string): string {
+  return html.replace(/<details class="batch-recovery-history">[\s\S]*?<\/details>/g, '')
+}
+
 function snapshot(task: BatchSummary | null): AppSnapshot {
   return {
     accounts: [{
@@ -55,7 +59,8 @@ describe('persistent batch stop reasons and recovery UI', () => {
     const html = render(batch({ autoRetryEnabled: true, stopCode: 'UNCERTAIN_RESULT', uncertain: 1,
       stopMessage: COMMENT_POST_UNCERTAIN_MESSAGE,
       accessDeniedCount: 6, accessDeniedUntil: '2030-10-16T02:05:00.000Z', nextRetryAt: '2030-10-16T02:05:00.000Z' }), language)
-    expect(html).toContain(language === 'en' ? 'The delivery result is uncertain' : '本条发送结果不确定')
+    expect(html).toContain(language === 'en' ? 'Delivery result needs review' : '需核对送达结果')
+    expect(html).toContain(language === 'en' ? 'Other pending recipients must still wait for the cooldown below' : '其余待发仍需等待下方冷却结束')
     expect(html).toContain(language === 'en' ? 'may already have received the comment' : '可能已经送达')
     expect(html).toContain(language === 'en' ? 'the next recipient will be sent automatically' : '也不会自动发送下一位')
     expect(html).not.toContain(language === 'en' ? 'The current and remaining recipients stay pending' : '当前对象和剩余对象仍待发')
@@ -68,7 +73,7 @@ describe('persistent batch stop reasons and recovery UI', () => {
       stopMessage: `应用已重启，任务保持暂停，请手动继续。上次停止：${LEGACY_COMMENT_POST_REVIEW_MESSAGE}`,
       accessDeniedCount: 6, accessDeniedUntil: '2030-10-16T02:05:00.000Z' }), language)
     expect(html).toContain(language === 'en' ? 'This recipient needs review' : '本对象已列入待核对')
-    expect(html).toContain(language === 'en' ? 'earliest resume time' : '最早可继续时间')
+    expect(html).toContain(language === 'en' ? 'Earliest resume time' : '最早可继续时间')
     expect(html).not.toContain(language === 'en' ? 'The current and remaining recipients stay pending' : '当前对象和剩余对象仍待发')
     expect(html).not.toContain(language === 'en' ? 'Automatic resume in' : '距离自动继续')
     if (language === 'en') expect(html).not.toMatch(/\p{Script=Han}/u)
@@ -153,9 +158,12 @@ describe('persistent batch stop reasons and recovery UI', () => {
   it.each(['zh-CN', 'en'] as const)('shows the independent 403 response count and one-retry policy in %s', language => {
     const html = render(batch({ autoRetryEnabled: true, stopCode: 'ACCESS_DENIED', retryCount: 4,
       accessDeniedCount: 1, accessDeniedUntil: '2030-10-16T02:05:00.000Z', nextRetryAt: '2030-10-16T02:05:00.000Z' }), language)
-    expect(html).toContain(language === 'en' ? 'Consecutive HTTP 403 responses in this incident: 1' : '本轮连续 HTTP 403 响应：1 次')
+    expect(html).toContain(language === 'en' ? 'Recorded HTTP 403 responses: 1 (historical count)' : '已记录 HTTP 403 响应：1 次（历史计数）')
     expect(html).toContain(language === 'en' ? 'only 1 automatic retry after cooldown' : '冷却后自动重试 1 次')
-    expect(html).toContain(language === 'en' ? 'Earliest retry time' : '最早可再试时间')
+    expect(html).toContain(language === 'en' ? 'Earliest resume time' : '最早可继续时间')
+    expect(html).toContain(language === 'en' ? 'Cooldown remaining' : '距离冷却结束')
+    expect(html).toContain('<details class="batch-recovery-history">')
+    expect(visibleRecovery(html)).not.toContain(language === 'en' ? 'historical count' : '历史计数')
     expect(html).toContain(language === 'en' ? 'Automatic resume in' : '距离自动继续')
     expect(html).not.toContain(language === 'en' ? 'Automatic retry 4 / 5' : '第 4 / 5 次自动重试')
     expect(html).not.toContain(language === 'en' ? 'temporarily denied access' : '暂时拒绝访问')
@@ -167,8 +175,9 @@ describe('persistent batch stop reasons and recovery UI', () => {
     expect(html).toContain(language === 'en' ? 'Steam repeatedly denied access (HTTP 403)' : 'Steam 持续拒绝访问（HTTP 403）')
     expect(html).toContain(language === 'en' ? 'a friend permission problem has not been established' : '未判定为好友权限问题')
     expect(html).toContain(language === 'en' ? 'The current and remaining recipients stay pending' : '当前对象和剩余对象仍待发')
-    expect(html).toContain(language === 'en' ? 'does not prove sign-in expired' : '不能单独证明登录失效')
-    expect(html).toContain(language === 'en' ? 'you can resume manually' : '冷却结束后可手动继续')
+    expect(html).toContain(language === 'en' ? 'proves neither expired sign-in nor failed delivery' : '不能单独证明登录失效')
+    expect(html).toContain(language === 'en' ? 'No automatic resume is scheduled' : '当前没有自动继续计划')
+    expect(html).toContain(language === 'en' ? 'Cooldown remaining' : '距离冷却结束')
     expect(html).not.toContain(language === 'en' ? 'Automatic resume in' : '距离自动继续')
     expect(html).not.toContain(language === 'en' ? 'Pending deliveries will resume automatically' : '已安排自动继续剩余待发')
     expect(html).not.toContain(language === 'en' ? 'Automatic retry 1 / 5' : '第 1 / 5 次自动重试')
@@ -177,19 +186,21 @@ describe('persistent batch stop reasons and recovery UI', () => {
   it.each(['ACCESS_DENIED', 'APP_RESTARTED'] as const)('retains the earliest retry time with automatic retries off after %s', stopCode => {
     const html = render(batch({ autoRetryEnabled: false, stopCode, accessDeniedCount: 1,
       accessDeniedUntil: '2030-10-16T02:05:00.000Z' }))
-    expect(html).toContain('最早可再试时间:')
+    expect(html).toContain('最早可继续时间:')
     expect(html).toContain('关闭自动重试或重启不会清除冷却')
     expect(html).not.toContain('距离自动继续')
     expect(html).toMatch(/<button class="ghost batch-enable-retry" disabled="">/)
   })
 
-  it('retains the persistent denial warning across a restart without promising a fresh retry budget', () => {
+  it('preserves the restart as the current reason and moves old denial counts to collapsed history', () => {
     const html = render(batch({ autoRetryEnabled: false, stopCode: 'APP_RESTARTED', accessDeniedCount: 2,
       accessDeniedUntil: '2030-10-16T02:05:00.000Z' }))
     expect(html).toContain('软件重启后保护性暂停')
-    expect(html).toContain('连续收到 HTTP 403，已停止自动继续')
-    expect(html).toContain('请勿反复扫码或连续点击继续')
-    expect(html).not.toContain('开启自动重试并继续待发')
+    expect(html).toContain('已记录 HTTP 403 响应：2 次（历史计数）')
+    expect(visibleRecovery(html)).not.toContain('连续收到 HTTP 403，已停止自动继续')
+    expect(visibleRecovery(html)).not.toContain('HTTP 403')
+    expect(html).toContain('当前没有自动继续计划')
+    expect(html).toMatch(/<button class="ghost batch-enable-retry" disabled="">/)
   })
 
   it('still explains a separately confirmed login expiry when a prior 403 record remains', () => {
@@ -201,7 +212,7 @@ describe('persistent batch stop reasons and recovery UI', () => {
   it('keeps ordinary retry counts visible for a diagnostic network failure without erasing the separate 403 count', () => {
     const html = render(batch({ autoRetryEnabled: true, stopCode: 'NETWORK_ERROR', retryCount: 3,
       accessDeniedCount: 1, nextRetryAt: '2030-10-16T02:05:00.000Z' }))
-    expect(html).toContain('本轮连续 HTTP 403 响应：1 次')
+    expect(html).toContain('已记录 HTTP 403 响应：1 次（历史计数）')
     expect(html).toContain('第 3 / 5 次自动重试（待执行）')
   })
 
@@ -213,6 +224,82 @@ describe('persistent batch stop reasons and recovery UI', () => {
       expect(html).not.toContain('Invalid Date')
       if (accessDeniedUntil === 'invalid') expect(html).not.toContain('最早可再试时间')
     }
+  })
+
+  it.each(['zh-CN', 'en'] as const)('shows the live unresolved state instead of an expired cooldown in %s', language => {
+    const html = render(batch({ stopCode: 'UNCERTAIN_RESULT', stopMessage: COMMENT_POST_UNCERTAIN_MESSAGE,
+      uncertain: 1, autoRetryEnabled: true, nextRetryAt: null,
+      accessDeniedCount: 7, accessDeniedUntil: '2000-01-01T00:00:00.000Z' }), language)
+    const current = visibleRecovery(html)
+    expect(current).toContain(language === 'en' ? 'Delivery result needs review' : '需核对送达结果')
+    expect(current).toContain(language === 'en' ? 'This is not a wait for cooldown' : '这不是仍在等待冷却')
+    expect(current).toContain(language === 'en' ? 'No automatic resume is scheduled' : '当前没有自动继续计划')
+    expect(current).toContain(language === 'en' ? 'a retry preference, not a scheduled resume' : '仅设置重试策略，不代表已安排继续')
+    expect(current).not.toContain('HTTP 403')
+    expect(current).not.toContain(language === 'en' ? 'Cooldown remaining' : '距离冷却结束')
+    expect(current).not.toContain(language === 'en' ? 'Automatic resume in' : '距离自动继续')
+    expect(html).toContain(language === 'en' ? 'Previous cooldown has ended' : '上次冷却已结束')
+    expect(html).toContain(language === 'en' ? 'Recorded HTTP 403 responses: 7' : '已记录 HTTP 403 响应：7 次')
+    expect(html).toContain('<details class="batch-recovery-history">')
+    expect(html).not.toContain('<details class="batch-recovery-history" open')
+    if (language === 'en') expect(html).not.toMatch(/\p{Script=Han}/u)
+  })
+
+  it.each(['MANUAL_PAUSE', 'APP_RESTARTED', 'NETWORK_ERROR'] as const)
+  ('does not let historical repeated denials replace the current %s reason or block manual recovery', stopCode => {
+    const html = render(batch({ stopCode, autoRetryEnabled: false, accessDeniedCount: 7,
+      accessDeniedUntil: '2000-01-01T00:00:00.000Z', stopMessage: '上次停止：HTTP 403' }))
+    const current = visibleRecovery(html)
+    expect(current).not.toContain('HTTP 403')
+    expect(current).not.toContain('连续收到')
+    expect(current).not.toContain('距离冷却结束')
+    expect(current).toContain('当前没有自动继续计划')
+    expect(current).toContain('开启自动重试并继续待发')
+    expect(current).not.toMatch(/<button class="ghost batch-enable-retry" disabled="">/)
+    expect(html).toContain('保存的停止信息: 上次停止：HTTP 403')
+  })
+
+  it('keeps a current GET denial visible without claiming that it has been delivered', () => {
+    const html = render(batch({ stopCode: 'ACCESS_DENIED_PERSISTENT', accessDeniedCount: 7,
+      accessDeniedUntil: '2000-01-01T00:00:00.000Z', stopMessage: 'HTTP 403', autoRetryEnabled: false }))
+    const current = visibleRecovery(html)
+    expect(current).toContain('Steam 持续拒绝访问（HTTP 403）')
+    expect(current).toContain('当前对象和剩余对象仍待发')
+    expect(current).toContain('当前没有自动继续计划')
+    expect(current).not.toContain('需核对送达结果')
+    expect(current).not.toContain('距离冷却结束')
+    expect(current).toContain('开启自动重试并继续待发')
+    expect(current).not.toMatch(/<button class="ghost batch-enable-retry" disabled="">/)
+  })
+
+  it('keeps past HTTP errors collapsed while normal sending has resumed', () => {
+    const html = render(batch({ status: 'running', stopCode: 'ACCESS_DENIED_PERSISTENT', accessDeniedCount: 7,
+      accessDeniedUntil: '2000-01-01T00:00:00.000Z', stopMessage: 'HTTP 403', autoRetryEnabled: true }))
+    expect(visibleRecovery(html)).not.toContain('HTTP 403')
+    expect(visibleRecovery(html)).toContain('临时错误后退避重试剩余待发')
+    expect(html).toContain('最近停止原因: Steam 持续拒绝访问（HTTP 403）')
+  })
+
+  it('uses the actual future cooldown deadline for a precise countdown without an automatic plan', () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-16T02:00:29.100Z'))
+    try {
+      const html = render(batch({ stopCode: 'UNCERTAIN_RESULT', uncertain: 1,
+        stopMessage: COMMENT_POST_UNCERTAIN_MESSAGE, autoRetryEnabled: true, accessDeniedCount: 7,
+        accessDeniedUntil: '2026-10-16T02:02:00.000Z', nextRetryAt: null }))
+      expect(html).toContain('距离冷却结束: 01:31')
+      expect(html).toContain('其余待发仍有冷却限制')
+      expect(html).toContain('当前没有自动继续计划')
+      expect(html).not.toContain('距离自动继续')
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('ignores malformed automatic deadlines rather than promising a retry', () => {
+    const html = render(batch({ autoRetryEnabled: true, stopCode: 'NETWORK_ERROR', nextRetryAt: 'invalid' }))
+    expect(html).toContain('当前没有自动继续计划')
+    expect(html).not.toContain('距离自动继续')
+    expect(html).not.toContain('Invalid Date')
   })
 
   it('removes retry controls for finished tasks, but retains the saved stop reason', () => {
@@ -261,6 +348,19 @@ describe('retry countdown is local-only and bounded at zero', () => {
     expect(retryCountdown('2026-10-16T02:02:00.000Z', Date.parse('2026-10-16T02:00:29.100Z'))).toBe('01:31')
     expect(retryCountdown(timestamp, Date.parse(timestamp) + 1000)).toBe('00:00')
     expect(retryCountdown('invalid', 0)).toBe('-')
+  })
+
+  it.each(['queued', 'running', 'paused'] as const)('retains only a valid future cooldown for %s', status => {
+    const now = Date.parse(timestamp)
+    expect(batchCooldownActive(batch({ status, accessDeniedUntil: '2026-10-16T02:00:01.000Z' }), now)).toBe(true)
+    expect(batchCooldownActive(batch({ status, accessDeniedUntil: timestamp }), now)).toBe(false)
+    expect(batchCooldownActive(batch({ status, accessDeniedUntil: '2000-01-01T00:00:00.000Z' }), now)).toBe(false)
+    expect(batchCooldownActive(batch({ status, accessDeniedUntil: 'invalid' }), now)).toBe(false)
+    expect(batchCooldownActive(batch({ status, accessDeniedUntil: null }), now)).toBe(false)
+  })
+
+  it.each(['completed', 'cancelled'] as const)('does not show a sending cooldown on a %s task', status => {
+    expect(batchCooldownActive(batch({ status, accessDeniedUntil: '2030-10-16T02:05:00.000Z' }), Date.parse(timestamp))).toBe(false)
   })
 })
 

@@ -277,6 +277,7 @@ export class BatchQueue {
         }
         activeDeliveryId = delivery.id
         submitted = false
+        this.emit({ type: 'batchProgress', batchId })
 
         if (!this.steam.isAuthenticated(batch.accountId)) {
           this.store.resetDeliveryToPending(delivery.id)

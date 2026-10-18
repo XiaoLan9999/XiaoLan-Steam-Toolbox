@@ -68,6 +68,28 @@ describe('delivery error classification', () => {
 })
 
 describe('persistent sending queue', () => {
+  it('emits claimed-recipient progress before the asynchronous send settles without calling it confirmed', async () => {
+    const { queue, store, post, events, input } = fixture(2)
+    let finish!: (value: { commentId: string }) => void
+    post.mockImplementationOnce(() => {
+      expect(events.filter(event => event.type === 'batchProgress')).toHaveLength(2)
+      return new Promise(resolve => { finish = resolve })
+    })
+    const batch = queue.start(input)
+    const inFlight = store.getBatchSummary(batch.id)!
+    expect(inFlight.activity).toMatchObject({ current: { ordinal: 1, status: 'sending', recordedAt: null },
+      lastProcessed: null, lastConfirmed: null, nextPending: { ordinal: 2, status: 'pending' }, recent: [] })
+    expect(events[1]).toMatchObject({ type: 'batchProgress', batchId: batch.id })
+    queue.pause(batch.id)
+    expect(store.getBatchSummary(batch.id)?.activity?.current?.status).toBe('sending')
+    finish({ commentId: 'synthetic-progress-comment' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.getBatchSummary(batch.id)?.activity).toMatchObject({ current: null,
+      lastConfirmed: { ordinal: 1, status: 'sent_verified', remoteCommentId: 'synthetic-progress-comment' },
+      nextPending: { ordinal: 2 } })
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
   it('pauses before claiming a recipient when session preparation fails, retaining every pending target', async () => {
     const { queue, steam, store, post, input } = fixture(2)
     const prepare = vi.fn().mockRejectedValueOnce(new Error('Synthetic preparation failure')).mockResolvedValue(undefined)

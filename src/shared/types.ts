@@ -204,6 +204,26 @@ export interface BatchSummary extends Omit<BatchRecord, 'deliveries'> {
   failedCount: number
   uncertain: number
   cancelled: number
+  activity?: BatchActivity
+}
+
+export interface BatchRecipientActivity {
+  deliveryId: string
+  friendSteamId: string
+  friendName: string
+  ordinal: number
+  status: DeliveryStatus
+  // Local result/recovery recording time, not proof of a Steam delivery time.
+  recordedAt: string | null
+  remoteCommentId: string | null
+}
+
+export interface BatchActivity {
+  current: BatchRecipientActivity | null
+  lastProcessed: BatchRecipientActivity | null
+  lastConfirmed: BatchRecipientActivity | null
+  nextPending: BatchRecipientActivity | null
+  recent: BatchRecipientActivity[]
 }
 
 export type DeliveryListRecord = Omit<DeliveryRecord, 'renderedMessage'>

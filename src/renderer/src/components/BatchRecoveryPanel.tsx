@@ -24,6 +24,22 @@ export function retryCountdown(nextRetryAt: string, now: number): string {
   return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`
 }
 
+export function batchCooldownActive(batch: BatchSummary, now = Date.now()): boolean {
+  return ['queued', 'running', 'paused'].includes(batch.status) && Boolean(batch.accessDeniedUntil)
+    && Date.parse(batch.accessDeniedUntil!) > now
+}
+
+export function useBatchCooldownActive(batch: BatchSummary): boolean {
+  const [, tick] = useState(0)
+  const active = batchCooldownActive(batch)
+  useEffect(() => {
+    if (!active) return
+    const timer = window.setInterval(() => tick(value => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [batch.id, batch.accessDeniedUntil, active])
+  return active
+}
+
 export function batchStopLabel(code: BatchStopCode | null, t: Translate): string {
   if (!code) return t('没有保存停止原因', 'No stop reason was saved')
   const labels: Record<BatchStopCode, string> = {
@@ -76,7 +92,8 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
   runAction: RunAction
 }): React.JSX.Element {
   const { language, t } = useI18n()
-  const [now, setNow] = useState(Date.now)
+  const [, tick] = useState(0)
+  const now = Date.now()
   const [acting, setActing] = useState(false)
   const lock = useRef(false)
   const mounted = useRef(true)
@@ -88,31 +105,36 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
   const unresolvedPost = (batch.stopCode === 'UNCERTAIN_RESULT' && !batch.nextRetryAt) ||
     (batch.uncertain > 0 && [COMMENT_POST_UNCERTAIN_MESSAGE, LEGACY_COMMENT_POST_REVIEW_MESSAGE]
       .some(message => batch.stopMessage?.includes(message)))
-  const persistentAccessDenied = !unresolvedPost &&
+  const currentAccessDenied = batch.status === 'paused' && !unresolvedPost &&
+    (batch.stopCode === 'ACCESS_DENIED' || batch.stopCode === 'ACCESS_DENIED_PERSISTENT')
+  const persistentAccessDenied = currentAccessDenied &&
     (batch.stopCode === 'ACCESS_DENIED_PERSISTENT' || accessDeniedCount > MAX_ACCESS_DENIED_RETRIES)
   const accessDeniedUntil = batch.accessDeniedUntil && Number.isFinite(Date.parse(batch.accessDeniedUntil))
     ? batch.accessDeniedUntil : null
-  const accessCooldown = active && accessDeniedUntil !== null && Date.parse(accessDeniedUntil) > now
-  const showAccessDenied = !unresolvedPost && (accessDeniedCount > 0 || accessDeniedUntil !== null ||
-    batch.stopCode === 'ACCESS_DENIED' || persistentAccessDenied)
+  const accessCooldown = useBatchCooldownActive(batch)
+  const hasAccessHistory = accessDeniedCount > 0 || accessDeniedUntil !== null
+  const historicalAccessStop = batch.status !== 'paused' &&
+    (batch.stopCode === 'ACCESS_DENIED' || batch.stopCode === 'ACCESS_DENIED_PERSISTENT')
+  const showStopHistory = Boolean(batch.stopMessage) && (unresolvedPost || historicalAccessStop ||
+    (!currentAccessDenied && hasAccessHistory && /\b403\b/.test(batch.stopMessage!)))
   const canResume = authenticated && !otherTaskActive && !disabled && !accessCooldown && batch.status === 'paused' && batch.pending > 0
   const resumeAllowed = useRef(canResume)
   resumeAllowed.current = canResume
-  const scheduled = batch.status === 'paused' && batch.autoRetryEnabled && Boolean(batch.nextRetryAt) && !persistentAccessDenied && !unresolvedPost
+  const scheduled = batch.status === 'paused' && batch.autoRetryEnabled && Boolean(batch.nextRetryAt)
+    && Number.isFinite(Date.parse(batch.nextRetryAt!)) && !persistentAccessDenied && !unresolvedPost
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => {
-    if (!scheduled && !accessCooldown) return
-    setNow(Date.now())
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    if (!scheduled || accessCooldown) return
+    const timer = window.setInterval(() => tick(value => value + 1), 1000)
     return () => window.clearInterval(timer)
   }, [batch.id, batch.nextRetryAt, accessDeniedUntil, scheduled, accessCooldown])
 
   const perform = async (enabled: boolean, resume = false): Promise<void> => {
     if (lock.current || !mounted.current || disabled || !active || (resume && !canResume)) return
     if (resume && !window.confirm(t(
-      `开启自动重试并继续此任务？仅发送剩余 ${batch.pending} 位待发好友，已发送和结果不确定的对象不会重发；一般临时错误最多自动重试 ${MAX_BATCH_RETRIES} 次，HTTP 403 仅在冷却后自动重试 ${MAX_ACCESS_DENIED_RETRIES} 次，持续拒绝将停止自动继续。`,
-      `Enable automatic retries and resume this task? Only ${batch.pending} pending recipients will be sent. Sent and uncertain results will not be retried. Other temporary errors allow up to ${MAX_BATCH_RETRIES} automatic retries. HTTP 403 allows only ${MAX_ACCESS_DENIED_RETRIES} automatic retry after cooldown; repeated denials stop automatic continuation.`))) return
+      `开启自动重试并继续此任务？仅发送剩余 ${batch.pending} 位待发好友；已确认、已接受和待核对对象不会重发。一般临时错误最多自动重试 ${MAX_BATCH_RETRIES} 次，实际冷却限制仍然有效。`,
+      `Enable automatic retries and resume this task? Only ${batch.pending} pending recipients will be sent. Confirmed, accepted, and uncertain deliveries will not be retried. Temporary errors allow up to ${MAX_BATCH_RETRIES} automatic retries; any active cooldown still applies.`))) return
     const id = batch.id
     const isCurrent = (): boolean => mounted.current && currentBatchId.current === id && resumeAllowed.current
     lock.current = true
@@ -149,31 +171,51 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
     recoveryStatus = t('已达到自动重试上限，请检查停止原因后手动继续。', 'The automatic retry limit was reached. Check the stop reason before resuming manually.')
   }
 
+  const planStatus = scheduled ? t('有自动继续计划；倒计时结束后仅处理剩余待发。',
+    'Automatic resume is scheduled; only pending recipients will resume when the countdown ends.')
+    : t('当前没有自动继续计划。勾选“启用”仅设置重试策略，不代表已安排继续。',
+      'No automatic resume is scheduled. “Enabled” is a retry preference, not a scheduled resume.')
+
   return <section className={`batch-recovery${scheduled ? ' scheduled' : ''}`} aria-label={t('停止原因与自动重试', 'Stop reason and automatic retries')}>
-    {(batch.status === 'paused' || batch.status === 'cancelled' || batch.stopCode) && <div className="batch-stop-reason" role="status">
+    {!historicalAccessStop && (batch.status === 'paused' || batch.status === 'cancelled' || batch.stopCode) && <div className="batch-stop-reason" role="status">
       <small>{batch.status === 'paused' ? t('本次暂停原因', 'Why this task paused') : t('最近停止原因', 'Last stop reason')}</small>
-      <strong>{batchStopLabel(batch.stopCode, t)}</strong>
-      {batch.stopMessage && <p>{localizeMessage(batch.stopMessage, language)}</p>}
-      {unresolvedPost && accessCooldown && <p>{t('其余待发仍需等待原有冷却结束，最早可继续时间',
-        'Other pending recipients remain subject to the existing cooldown; earliest resume time')}: {timestamp(accessDeniedUntil, language)}</p>}
+      <strong>{batch.status === 'paused' && unresolvedPost
+        ? t('需核对送达结果', 'Delivery result needs review') : batchStopLabel(batch.stopCode, t)}</strong>
+      {batch.status === 'paused' && unresolvedPost && <p>{accessCooldown
+        ? t('本条需要核对是否送达，不会自动重发；其余待发仍需等待下方冷却结束。',
+          'This delivery needs review and will not be resent automatically. Other pending recipients must still wait for the cooldown below.')
+        : t('这不是仍在等待冷却：该条可能已经送达，尚未确认。不会自动重发；请先查看“待核对”记录。',
+          'This is not a wait for cooldown: the comment may already have arrived, but delivery is not confirmed. It will not be resent automatically. Check the “Needs review” record first.')}</p>}
+      {batch.stopMessage && !showStopHistory && <p>{localizeMessage(batch.stopMessage, language)}</p>}
       <span>{t('来源', 'Source')}: {stopSource(batch.stopCode, t)} · {timestamp(batch.pausedAt, language)}</span>
     </div>}
-    {showAccessDenied && <div className="batch-access-denied" aria-label={t('HTTP 403 检查与冷却', 'HTTP 403 checks and cooldown')}>
-      {accessDeniedCount > 0 && <strong>{t(`本轮连续 HTTP 403 响应：${accessDeniedCount} 次`,
-        `Consecutive HTTP 403 responses in this incident: ${accessDeniedCount}`)}</strong>}
-      <p>{t(`HTTP 403 仅在冷却后自动重试 ${MAX_ACCESS_DENIED_RETRIES} 次；再次拒绝将停止自动继续。该计数独立于一般临时故障的重试次数。`,
-        `HTTP 403 allows only ${MAX_ACCESS_DENIED_RETRIES} automatic retry after cooldown. Another denial stops automatic continuation. Its response count is separate from retries for other temporary errors.`)}</p>
-      {accessDeniedUntil && <p className="batch-access-cooldown"><strong>{t('最早可再试时间', 'Earliest retry time')}: {timestamp(accessDeniedUntil, language)}</strong>
-        <span>{t('此时间仅为冷却下限，不代表已安排自动继续；关闭自动重试或重启不会清除冷却。',
-          'This is a cooldown limit, not a scheduled automatic resume. Disabling retries or restarting does not clear it.')}</span></p>}
-      {persistentAccessDenied && <p>{t('HTTP 403 不能单独证明登录失效。请勿反复扫码或连续点击继续；先检查 Steam 留言功能和网络状态。处理原因并等冷却结束后可手动继续，403 记录仅在发送成功后重置。',
-        'HTTP 403 alone does not prove sign-in expired. Do not repeatedly scan a QR code or keep clicking Resume. Check Steam commenting and the network first. After addressing the cause and waiting out cooldown, you can resume manually. The 403 record resets only after a successful delivery.')}</p>}
+    {accessCooldown && <div className="batch-access-denied" aria-label={t('尚未结束的发送冷却', 'Active sending cooldown')}>
+      <strong>{t(unresolvedPost ? '其余待发仍有冷却限制' : '发送冷却尚未结束',
+        unresolvedPost ? 'Other pending recipients remain under cooldown' : 'Sending cooldown is still active')}</strong>
+      <p className="batch-access-cooldown"><strong>{t('距离冷却结束', 'Cooldown remaining')}: {retryCountdown(accessDeniedUntil!, now)}</strong>
+        <span>{t('最早可继续时间', 'Earliest resume time')}: {timestamp(accessDeniedUntil, language)}</span>
+        <span>{t('冷却仅限制最早继续时间，不代表已安排自动继续；关闭自动重试或重启不会清除冷却。',
+          'Cooldown only limits the earliest resume time; it is not an automatic resume plan. Disabling retries or restarting does not clear it.')}</span></p>
     </div>}
+    {(hasAccessHistory || showStopHistory || historicalAccessStop) && <details className="batch-recovery-history">
+      <summary>{t('历史技术详情（不是当前送达状态）', 'Technical history (not the current delivery status)')}</summary>
+      {historicalAccessStop && <p>{t('最近停止原因', 'Last stop reason')}: {batchStopLabel(batch.stopCode, t)} · {timestamp(batch.pausedAt, language)}</p>}
+      {accessDeniedCount > 0 && <p>{t(`已记录 HTTP 403 响应：${accessDeniedCount} 次（历史计数）`,
+        `Recorded HTTP 403 responses: ${accessDeniedCount} (historical count)`)}</p>}
+      {accessDeniedUntil && <p>{Date.parse(accessDeniedUntil) > now ? t('记录的冷却截止', 'Recorded cooldown deadline')
+        : t('上次冷却已结束', 'Previous cooldown has ended')}: {timestamp(accessDeniedUntil, language)}</p>}
+      {showStopHistory && <p>{t('保存的停止信息', 'Saved stop detail')}: {localizeMessage(batch.stopMessage!, language)}</p>}
+      {currentAccessDenied && <p>{t(`HTTP 403 仅在冷却后自动重试 ${MAX_ACCESS_DENIED_RETRIES} 次；再次拒绝将停止自动继续。该计数独立于一般临时故障的重试次数。`,
+        `HTTP 403 allows only ${MAX_ACCESS_DENIED_RETRIES} automatic retry after cooldown. Another denial stops automatic continuation. Its response count is separate from retries for other temporary errors.`)}</p>}
+      {hasAccessHistory && <p>{t('HTTP 403 不能单独证明登录失效，也不能单独证明留言未送达。历史计数不会覆盖当前暂停原因；不会因此重发已确认或待核对的留言。',
+        'HTTP 403 alone proves neither expired sign-in nor failed delivery. Historical counts do not override the current pause reason or cause confirmed or uncertain comments to be resent.')}</p>}
+    </details>}
     <div className="batch-retry-heading"><strong>{t('自动重试', 'Automatic retries')}</strong>
       {active && <label><input type="checkbox" checked={Boolean(batch.autoRetryEnabled)} disabled={disabled || acting}
         onChange={(event) => void perform(event.target.checked)} />{t('启用', 'Enabled')}</label>}
     </div>
     <p className="batch-retry-state" role="status">{recoveryStatus}</p>
+    {batch.status === 'paused' && <p className="batch-retry-plan">{planStatus}</p>}
     {batch.retryCount > 0 && batch.stopCode !== 'ACCESS_DENIED' && !persistentAccessDenied && <p className="batch-retry-attempt">{t(
       `第 ${batch.retryCount} / ${MAX_BATCH_RETRIES} 次自动重试${scheduled ? '（待执行）' : '（最近记录）'}`,
       `Automatic retry ${batch.retryCount} / ${MAX_BATCH_RETRIES}${scheduled ? ' (scheduled)' : ' (last recorded)'}`)}</p>}
@@ -183,7 +225,7 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
       <small>{t('下次重试', 'Next retry')}: {timestamp(batch.nextRetryAt, language)}</small>
       <button className="ghost" disabled={disabled || acting} onClick={() => void perform(false)}>{t('停止自动重试', 'Stop automatic retries')}</button>
     </div>}
-    {active && batch.status === 'paused' && !batch.autoRetryEnabled && !persistentAccessDenied && <button className="ghost batch-enable-retry"
+    {active && batch.status === 'paused' && !batch.autoRetryEnabled && <button className="ghost batch-enable-retry"
       disabled={acting || !canResume} onClick={() => void perform(true, true)}>{t('开启自动重试并继续待发', 'Enable retries and resume pending')}</button>}
     <small className="batch-retry-safety">{t('仅处理剩余待发对象；已发送、已接受和结果不确定的对象不会自动重发。手动暂停、退出或切换账号会取消自动继续计划。',
       'Only pending recipients resume. Sent, accepted, and uncertain results are never retried. Pausing manually, closing the app, or switching accounts cancels automatic resume.')}</small>

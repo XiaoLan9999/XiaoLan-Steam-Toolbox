@@ -5,7 +5,8 @@ import type {
 import { unwrap } from '../ui'
 import { useI18n, type Translate } from '../i18n'
 import type { RunAction } from './types'
-import { BatchRecoveryPanel, batchStopLabel } from './BatchRecoveryPanel'
+import { BatchRecoveryPanel, batchStopLabel, useBatchCooldownActive } from './BatchRecoveryPanel'
+import { BatchActivityPanel } from './BatchActivityPanel'
 
 const TASK_PAGE_SIZE = 25
 const DELIVERY_PAGE_SIZE = 50
@@ -184,7 +185,7 @@ function AccountTasks({ snapshot, runAction }: { snapshot: AppSnapshot; runActio
               <span className={`batch-status ${batch.status}`} />
               <span>
                 <strong>{dates(batch.createdAt)}</strong>
-                <small>{batchStatusLabel(batch.status, t)} · {t('完成', 'Done')} {batch.completed}/{batch.total}</small>
+                <small>{batchStatusLabel(batch.status, t)} · {t('已处理', 'Processed')} {batch.completed}/{batch.total}</small>
                 {batch.status === 'paused' && <small className="task-uncertain-text">{batchStopLabel(batch.stopCode, t)}</small>}
                 {batch.uncertain > 0 && <small className="task-uncertain-text">{t('待核对', 'Uncertain')} {batch.uncertain}</small>}
               </span>
@@ -217,8 +218,11 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
   runAction: RunAction
 }): React.JSX.Element {
   const { language, t } = useI18n()
-  const [offset, setOffset] = useState(0)
-  const [status, setStatus] = useState<DeliveryStatus | 'all'>('all')
+  const coolingDown = useBatchCooldownActive(batch)
+  const initialReview = batch.stopCode === 'UNCERTAIN_RESULT' && batch.uncertain > 0
+  const [offset, setOffset] = useState(() => initialReview ? 0
+    : Math.floor(((batch.activity?.current?.ordinal ?? batch.activity?.lastProcessed?.ordinal ?? 1) - 1) / DELIVERY_PAGE_SIZE) * DELIVERY_PAGE_SIZE)
+  const [status, setStatus] = useState<DeliveryStatus | 'all'>(() => initialReview ? 'uncertain' : 'all')
   const [acting, setActing] = useState(false)
   const actionLock = useRef(false)
   const mounted = useRef(true)
@@ -234,7 +238,7 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
   const active = ['queued', 'running', 'paused'].includes(batch.status)
   const perform = async (kind: 'pause' | 'resume' | 'cancel'): Promise<void> => {
     if (actionLock.current || !mounted.current) return
-    if (kind === 'resume' && (!authenticated || batch.pending === 0 || otherTaskActive)) return
+    if (kind === 'resume' && (!authenticated || batch.pending === 0 || otherTaskActive || coolingDown)) return
     if (kind === 'resume' && !window.confirm(t(
       `确认使用账号“${accountName}”继续此任务？仅发送剩余 ${batch.pending} 位待发好友；${batch.uncertain} 条待核对记录不会自动重发。`,
       `Resume this task with account "${accountName}"? Only ${batch.pending} pending recipients will be sent. ${batch.uncertain} uncertain results will NOT be retried.`))) return
@@ -267,7 +271,7 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
           <h2>{batchStatusLabel(batch.status, t)}</h2>
           <span>{accountName} · {t('间隔', 'Interval')} {batch.delayMs / 1000} {t('秒', 'sec')}</span>
         </div>
-        <div className="batch-score"><strong>{batch.completed}</strong><span>/ {batch.total} {t('已完成', 'done')}</span></div>
+        <div className="batch-score"><strong>{batch.completed}</strong><span>/ {batch.total} {t('已处理', 'processed')}</span></div>
       </div>
       <dl className="task-timestamps">
         <div><dt>{t('创建', 'Created')}</dt><dd>{taskDate(batch.createdAt, language)}</dd></div>
@@ -281,7 +285,8 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
           {deliveryStatusLabel(value, t)} <strong>{statusCount(batch, value)}</strong>
         </button>)}
       </div>
-      {batch.uncertain > 0 && <div className="inline-warning task-uncertain-note" role="status">
+      <BatchActivityPanel batch={batch} />
+      {!batch.activity && batch.uncertain > 0 && <div className="inline-warning task-uncertain-note" role="status">
         <strong>{t(`${batch.uncertain} 条结果待核对，不会自动重发。`, `${batch.uncertain} uncertain results will NOT be automatically retried.`)}</strong>
         <span>{t('请求可能已到达 Steam。请先核对好友主页，避免重复留言；继续只处理待发记录。',
           'A request may have reached Steam. Check the friend profile to avoid duplicates; Resume only processes pending records.')}</span>
@@ -294,8 +299,8 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
         'Another unfinished task exists for this account. Finish or cancel it first.')}</p>}
       {active && <div className="batch-controls task-controls">
         {(batch.status === 'running' || batch.status === 'queued') && <button disabled={acting} onClick={() => void perform('pause')}>{t('暂停任务', 'Pause task')}</button>}
-        {batch.status === 'paused' && <button className="primary" disabled={acting || !authenticated || batch.pending === 0 || otherTaskActive}
-          onClick={() => void perform('resume')}>{t('继续待发', 'Resume pending')}</button>}
+        {batch.status === 'paused' && <button className="primary" disabled={acting || !authenticated || batch.pending === 0 || otherTaskActive || coolingDown}
+          onClick={() => void perform('resume')}>{coolingDown ? t('冷却中', 'Cooling down') : t('继续其余待发', 'Resume remaining pending')}</button>}
         <button className="danger-text" disabled={acting} onClick={() => void perform('cancel')}>{t('取消任务', 'Cancel task')}</button>
       </div>}
       <div className="history-message"><small>{t('任务正文快照', 'Saved message template')}</small><p>{batch.messageTemplate}</p></div>
@@ -352,7 +357,9 @@ function batchRevision(batch: BatchSummary): string {
   return [batch.id, batch.status, batch.completed, batch.pending, batch.sending, batch.sentVerified,
     batch.acceptedUnverified, batch.failedCount, batch.uncertain, batch.cancelled, batch.startedAt, batch.finishedAt,
     batch.autoRetryEnabled, batch.stopCode, batch.stopMessage, batch.pausedAt, batch.nextRetryAt, batch.retryCount,
-    batch.accessDeniedCount, batch.accessDeniedUntil].join(':')
+    batch.accessDeniedCount, batch.accessDeniedUntil,
+    batch.activity?.current?.deliveryId, batch.activity?.lastProcessed?.deliveryId, batch.activity?.lastProcessed?.recordedAt,
+    batch.activity?.lastConfirmed?.deliveryId, batch.activity?.nextPending?.deliveryId].join(':')
 }
 
 function statusCount(batch: BatchSummary, status: DeliveryStatus): number {

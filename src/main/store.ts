@@ -6,6 +6,8 @@ import {
   AccountRecord,
   AccountSettings,
   BatchRecord,
+  BatchActivity,
+  BatchRecipientActivity,
   BatchSummary,
   BatchTaskListOptions,
   BatchTaskPage,
@@ -146,6 +148,16 @@ interface DeliveryRow {
 }
 
 type DeliveryListRow = Omit<DeliveryRow, 'rendered_message'>
+
+interface BatchActivityRow {
+  id: string
+  friend_steam_id: string
+  friend_name: string
+  status: DeliveryStatus
+  remote_comment_id: string | null
+  recorded_at: string | null
+  ordinal: number
+}
 
 interface SettingsRow {
   account_id: string
@@ -945,11 +957,16 @@ export class SqliteStore {
   }
 
   getBatchSummary(batchId: string): BatchSummary | null {
+    const row = this.readBatchSummaryRow(batchId)
+    return row ? { ...mapBatchSummary(row), activity: this.getBatchActivity(row) } : null
+  }
+
+  private readBatchSummaryRow(batchId: string): BatchSummaryRow | undefined {
     const row = this.db.prepare(
       `SELECT ${batchSummaryColumns} FROM batches b
        LEFT JOIN deliveries d ON d.batch_id = b.id WHERE b.id = ? GROUP BY b.id`
     ).get(batchId) as unknown as BatchSummaryRow | undefined
-    return row ? mapBatchSummary(row) : null
+    return row
   }
 
   getActiveBatchSummary(accountId: string): BatchSummary | null {
@@ -981,7 +998,38 @@ export class SqliteStore {
        LEFT JOIN deliveries d ON d.batch_id = b.id GROUP BY b.id
        ORDER BY b.created_at DESC, b.id DESC`
     ).all(...parameters, limit, offset) as unknown as BatchSummaryRow[]
-    return { items: rows.map(mapBatchSummary), total: Number(count.total), offset, limit }
+    return { items: rows.map(row => ({ ...mapBatchSummary(row), activity: this.getBatchActivity(row) })),
+      total: Number(count.total), offset, limit }
+  }
+
+  private getBatchActivity(batch: BatchSummaryRow): BatchActivity {
+    // Select a fixed number of metadata rows; never load rendered messages or full delivery history.
+    const columns = `d.id, d.friend_steam_id, d.friend_name, d.status, d.remote_comment_id, d.created_at,
+      CASE WHEN d.status IN ('pending', 'sending') THEN NULL
+        ELSE COALESCE(d.processed_at, d.sent_at, CASE WHEN d.status = 'uncertain' THEN ? END) END AS recorded_at`
+    const select = (filter: string, order: string, limit: number): BatchRecipientActivity[] => {
+      const rows = this.db.prepare(`WITH selected AS MATERIALIZED (
+          SELECT ${columns} FROM deliveries d
+          WHERE d.batch_id = ? AND ${filter} ORDER BY ${order} LIMIT ?
+        ) SELECT s.*, (SELECT COUNT(*) FROM deliveries p WHERE p.batch_id = ?
+          AND (p.created_at < s.created_at OR (p.created_at = s.created_at AND p.id <= s.id))) AS ordinal
+        FROM selected s ORDER BY ${order.replaceAll('d.', 's.')}`)
+        .all(batch.paused_at, batch.id, limit, batch.id) as unknown as BatchActivityRow[]
+      return rows.map(mapBatchActivity)
+    }
+    const firstOrder = 'd.created_at, d.id'
+    const recentOrder = 'recorded_at DESC, d.created_at DESC, d.id DESC'
+    const recent = Number(batch.sent_verified) + Number(batch.accepted_unverified) +
+      Number(batch.failed_count) + Number(batch.uncertain) > 0
+      ? select("d.status IN ('sent_verified', 'accepted_unverified', 'failed', 'uncertain')", recentOrder, 5) : []
+    return {
+      current: Number(batch.sending) > 0 ? select("d.status = 'sending'", firstOrder, 1)[0] ?? null : null,
+      lastProcessed: recent[0] ?? null,
+      lastConfirmed: recent.find(item => item.status === 'sent_verified') ?? (Number(batch.sent_verified) > 0
+        ? select("d.status = 'sent_verified'", recentOrder, 1)[0] ?? null : null),
+      nextPending: Number(batch.pending) > 0 ? select("d.status = 'pending'", firstOrder, 1)[0] ?? null : null,
+      recent
+    }
   }
 
   listBatchDeliveries(
@@ -1074,8 +1122,9 @@ export class SqliteStore {
         WHERE batch_id = ? AND status = 'pending' ORDER BY created_at, id LIMIT 1`)
         .get(batchId) as { id: string } | undefined
       if (!delivery) return false
-      this.db.prepare(`UPDATE deliveries SET status = 'uncertain', error = ?, remote_comment_id = NULL, sent_at = NULL
-        WHERE id = ? AND status = 'pending'`).run(LEGACY_COMMENT_POST_REVIEW_MESSAGE, delivery.id)
+      this.db.prepare(`UPDATE deliveries SET status = 'uncertain', error = ?, remote_comment_id = NULL,
+        sent_at = NULL, processed_at = ? WHERE id = ? AND status = 'pending'`)
+        .run(LEGACY_COMMENT_POST_REVIEW_MESSAGE, now(), delivery.id)
       this.db.prepare(`UPDATE batches SET stop_code = 'UNCERTAIN_RESULT', stop_message = ?, paused_at = ?,
         next_retry_at = NULL WHERE id = ? AND status = 'paused'`).run(LEGACY_COMMENT_POST_REVIEW_MESSAGE, now(), batchId)
       this.recalculateBatchInTransaction(batchId)
@@ -1195,7 +1244,7 @@ export class SqliteStore {
       this.db
         .prepare(
           `UPDATE deliveries
-           SET status = ?, error = ?, remote_comment_id = ?, sent_at = ?
+           SET status = ?, error = ?, remote_comment_id = ?, sent_at = ?, processed_at = ?
            WHERE id = ?`
         )
         .run(
@@ -1203,6 +1252,7 @@ export class SqliteStore {
           values.error ?? null,
           values.remoteCommentId ?? null,
           status === 'sent_verified' || status === 'accepted_unverified' ? now() : null,
+          now(),
           deliveryId
         )
       this.recalculateBatchInTransaction(row.batch_id)
@@ -1215,7 +1265,8 @@ export class SqliteStore {
         FROM deliveries d JOIN batches b ON b.id = d.batch_id WHERE d.id = ?`)
         .get(deliveryId) as unknown as { batch_id: string; batch_status: BatchStatus } | undefined
       if (!row) return
-      this.db.prepare(`UPDATE deliveries SET status = ?, error = ?, remote_comment_id = NULL, sent_at = NULL
+      this.db.prepare(`UPDATE deliveries SET status = ?, error = ?, remote_comment_id = NULL, sent_at = NULL,
+        processed_at = NULL
         WHERE id = ? AND status = 'sending'`)
         .run(row.batch_status === 'cancelled' ? 'cancelled' : 'pending',
           row.batch_status === 'cancelled' ? '用户取消' : null, deliveryId)
@@ -1307,9 +1358,9 @@ export class SqliteStore {
   }
 
   private requireBatch(batchId: string): BatchSummary {
-    const batch = this.getBatchSummary(batchId)
-    if (!batch) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
-    return batch
+    const row = this.readBatchSummaryRow(batchId)
+    if (!row) throw new DomainError('BATCH_NOT_FOUND', '批次不存在')
+    return mapBatchSummary(row)
   }
 
   private recalculateBatchInTransaction(batchId: string): void {
@@ -1359,10 +1410,11 @@ export class SqliteStore {
       this.db
         .prepare(
           `UPDATE deliveries
-           SET status = 'uncertain', error = '应用在请求过程中退出；为避免重复留言，未自动重发'
+           SET status = 'uncertain', error = '应用在请求过程中退出；为避免重复留言，未自动重发',
+             processed_at = ?
            WHERE status = 'sending'`
         )
-        .run()
+        .run(now())
       this.db
         .prepare(`UPDATE batches SET status = 'paused', stop_code = 'APP_RESTARTED',
           stop_message = CASE WHEN stop_message IS NOT NULL
@@ -1671,6 +1723,16 @@ export class SqliteStore {
         }
         this.db.exec('PRAGMA user_version = 6;')
       }
+      if (version.user_version < 7) {
+        const columns = new Set((this.db.prepare('PRAGMA table_info(deliveries)').all() as unknown as
+          Array<{ name: string }>).map(column => column.name))
+        if (!columns.has('processed_at')) this.db.exec('ALTER TABLE deliveries ADD COLUMN processed_at TEXT')
+        this.db.exec(`UPDATE deliveries SET processed_at = sent_at
+          WHERE processed_at IS NULL AND status IN ('sent_verified', 'accepted_unverified') AND sent_at IS NOT NULL;
+          UPDATE deliveries SET processed_at = (SELECT paused_at FROM batches WHERE id = deliveries.batch_id)
+          WHERE processed_at IS NULL AND status = 'uncertain';
+          PRAGMA user_version = 7;`)
+      }
     })
   }
 }
@@ -1832,6 +1894,18 @@ function mapBatchSummary(row: BatchSummaryRow): BatchSummary {
     failedCount: Number(row.failed_count),
     uncertain: Number(row.uncertain),
     cancelled: Number(row.cancelled)
+  }
+}
+
+function mapBatchActivity(row: BatchActivityRow): BatchRecipientActivity {
+  return {
+    deliveryId: row.id,
+    friendSteamId: row.friend_steam_id,
+    friendName: row.friend_name,
+    ordinal: Number(row.ordinal),
+    status: row.status,
+    recordedAt: row.recorded_at,
+    remoteCommentId: row.remote_comment_id
   }
 }
 

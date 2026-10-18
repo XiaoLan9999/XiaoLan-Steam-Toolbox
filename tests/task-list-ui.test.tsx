@@ -48,7 +48,7 @@ describe('durable task center UI', () => {
     expect(html).toContain('持久任务列表')
     expect(html).toContain('每页 25 条')
     expect(html).toContain('405/1005')
-    expect(html).toContain('<strong>405</strong><span>/ 1005 已完成')
+    expect(html).toContain('<strong>405</strong><span>/ 1005 已处理')
     expect(html).toContain('<dt>创建</dt>')
     expect(html).toContain('<dt>开始</dt>')
     expect(html).toContain('<dt>结束</dt><dd>尚未</dd>')
@@ -69,7 +69,7 @@ describe('durable task center UI', () => {
     expect(html).toContain('Interval 0.1 sec')
     expect(html).toContain('<dt>Finished</dt><dd>Not yet</dd>')
     expect(html).toContain('2 uncertain results will NOT be automatically retried.')
-    expect(html).toContain('Resume pending')
+    expect(html).toContain('Resume remaining pending')
     expect(html).toContain('50 per page')
     expect(html).not.toContain('尚未')
   })
@@ -79,7 +79,7 @@ describe('durable task center UI', () => {
     state.accounts[0]!.sessionState = 'offline'
     const html = render(React.createElement(HistoryPanel, { snapshot: state, runAction }))
     expect(html).toContain('账号未登录：可查看保存记录')
-    expect(html).toMatch(/<button class="primary" disabled="">继续待发/)
+    expect(html).toMatch(/<button class="primary" disabled="">继续其余待发/)
     expect(html).toContain('Saved hello {friend}')
     expect(html).toContain('<button class="danger-text">取消任务</button>')
   })
@@ -89,11 +89,11 @@ describe('durable task center UI', () => {
       batch: batch({ status: 'running' }), accountName: 'Sender', authenticated: true, runAction
     }))
     expect(running).toContain('<button>暂停任务</button>')
-    expect(running).not.toContain('继续待发')
+    expect(running).not.toContain('继续其余待发')
     const noPending = render(React.createElement(TaskDetails, {
       batch: batch({ pending: 0 }), accountName: 'Sender', authenticated: true, runAction
     }))
-    expect(noPending).toMatch(/<button class="primary" disabled="">继续待发/)
+    expect(noPending).toMatch(/<button class="primary" disabled="">继续其余待发/)
   })
 
   it('does not borrow another account\'s task summary', () => {
@@ -101,6 +101,25 @@ describe('durable task center UI', () => {
     const html = render(React.createElement(HistoryPanel, { snapshot: state, runAction }))
     expect(html).not.toContain('OTHER_ACCOUNT_MESSAGE')
     expect(html).toContain('还没有发送任务')
+  })
+
+  it('puts the affected friend and delivery result ahead of historical HTTP errors and initially filters uncertain rows', () => {
+    const recipient = { deliveryId: 'review-recipient', friendSteamId: '76561198000000002', friendName: 'Review Friend',
+      ordinal: 465, status: 'uncertain' as const, recordedAt: timestamp, remoteCommentId: null }
+    const value = batch({ sending: 0, uncertain: 1, stopCode: 'UNCERTAIN_RESULT', accessDeniedCount: 7,
+      accessDeniedUntil: new Date(Date.now() - 1000).toISOString(), nextRetryAt: null,
+      activity: { current: null, lastProcessed: recipient, lastConfirmed: null,
+        nextPending: { ...recipient, deliveryId: 'next-recipient', friendName: 'Next Friend', ordinal: 466, status: 'pending', recordedAt: null },
+        recent: [recipient] } })
+    const html = render(React.createElement(TaskDetails, { batch: value, accountName: 'Sender', authenticated: true, runAction }))
+    expect(html).toContain('Review Friend')
+    expect(html).toContain('Next Friend')
+    expect(html).toContain('无法确认是否发出，不会自动重发')
+    expect(html).toContain('本任务无在途发送')
+    expect(html).toContain('<option value="uncertain" selected="">')
+    expect(html.indexOf('逐好友发送进度')).toBeLessThan(html.indexOf('停止原因与自动重试'))
+    expect(html).toMatch(/<button class="primary">继续其余待发/)
+    expect(html).not.toContain('<button class="primary" disabled="">冷却中')
   })
 
   it('initially bounds seeded history rendering to 25 rows, never hydrating all deliveries', () => {

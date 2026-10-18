@@ -135,7 +135,7 @@ describe('friend removal history', () => {
       UPDATE friends SET is_active = 0 WHERE steam_id = '${friendId}';
       PRAGMA user_version = 2;`)
     const migrated = data.reopen()
-    expect(data.read('PRAGMA user_version')).toMatchObject({ user_version: 6 })
+    expect(data.read('PRAGMA user_version')).toMatchObject({ user_version: 7 })
     expect(migrated.getFriendRemovals(owner)).toEqual([{
       id: expect.any(String), accountId: owner, steamId: friendId,
       displayName: `Friend ${friendId}`, avatarUrl: `https://example.invalid/${friendId}.jpg`,

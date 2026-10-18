@@ -1,7 +1,7 @@
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import type { AppSnapshot } from '../src/shared/types'
+import type { AppSnapshot, BatchSummary } from '../src/shared/types'
 import { DEFAULT_UPDATE_PREFERENCES, initialUpdateState } from '../src/shared/update-types'
 import { ComposerPanel } from '../src/renderer/src/components/ComposerPanel'
 import { I18nProvider } from '../src/renderer/src/i18n'
@@ -83,5 +83,29 @@ describe('uncapped recipient composer', () => {
     const html = render(state)
     expect(html).toContain('Long final friend name')
     expect(html).toMatch(/<button class="primary send-button" disabled="" aria-describedby="send-readiness">预览并确认发送/)
+  })
+
+  it('shows the affected and next friend directly in the compact current-batch panel without claiming a paused task is sending', () => {
+    const state = snapshot(1)
+    const recipient = { deliveryId: 'review-recipient', friendSteamId: '76561198000000002', friendName: 'Review Friend',
+      ordinal: 465, status: 'uncertain' as const, recordedAt: timestamp, remoteCommentId: null }
+    const task: BatchSummary = { id: 'fixture-batch', accountId, messageTemplate: 'Hello', delayMs: 100,
+      status: 'paused', total: 994, completed: 465, succeeded: 423, failed: 42,
+      pending: 529, sending: 0, sentVerified: 423, acceptedUnverified: 0, failedCount: 41, uncertain: 1, cancelled: 0,
+      createdAt: timestamp, startedAt: timestamp, finishedAt: null, autoRetryEnabled: true,
+      stopCode: 'UNCERTAIN_RESULT', stopMessage: null, pausedAt: timestamp, nextRetryAt: null, retryCount: 0,
+      activity: { current: null, lastProcessed: recipient, lastConfirmed: null,
+        nextPending: { ...recipient, deliveryId: 'next-recipient', friendName: 'Next Friend', ordinal: 466, status: 'pending', recordedAt: null }, recent: [recipient] } }
+    state.batches = [task]
+    state.activeBatch = task
+    const html = render(state, 'en')
+    expect(html).toContain('batch-activity compact')
+    expect(html).toContain('Review Friend')
+    expect(html).toContain('Next Friend')
+    expect(html).toContain('Delivery unknown; never retried automatically')
+    expect(html).toContain('No delivery is in flight for this task')
+    expect(html).toContain('Processed')
+    expect(html).toContain('465 / 994')
+    expect(html).not.toContain('465 comments sent')
   })
 })

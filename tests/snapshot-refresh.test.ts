@@ -91,4 +91,18 @@ describe('lightweight task progress reconciliation', () => {
     expect(next.activeBatch).toBeNull()
     expect(next.batches[0]).toMatchObject({ status: 'completed', completed: 1200 })
   })
+
+  it('preserves recipient activity from a newer event even when aggregate counts have not changed', () => {
+    const recipient = { deliveryId: 'current-recipient', friendSteamId: '76561198000000002', friendName: 'New recipient',
+      ordinal: 466, status: 'sending' as const, recordedAt: null, remoteCommentId: null }
+    const before = task('A', 465)
+    const updated = { ...before, activity: { current: recipient, lastProcessed: null, lastConfirmed: null,
+      nextPending: null, recent: [] } }
+    const state = { ...snapshot('A'), batches: [before], activeBatch: before }
+    const result = applyProgressUpdates(state, [{ revision: 2, batchId: before.id, summary: updated }], 1)
+    expect(result.activeBatch?.activity?.current).toEqual(recipient)
+    expect(result.batches[0]?.activity?.current?.friendName).toBe('New recipient')
+    expect(result.activeBatch?.completed).toBe(465)
+    expect(JSON.stringify(result)).not.toContain('renderedMessage')
+  })
 })

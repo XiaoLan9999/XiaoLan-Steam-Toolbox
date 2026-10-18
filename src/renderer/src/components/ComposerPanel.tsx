@@ -10,7 +10,8 @@ import { AppSnapshot, BatchSummary, SteamEmoticon } from '../../../shared/types'
 import { avatarFallback, formatDuration, unwrap } from '../ui'
 import { useI18n, type Translate } from '../i18n'
 import { RunAction } from './types'
-import { BatchRecoveryPanel } from './BatchRecoveryPanel'
+import { BatchRecoveryPanel, useBatchCooldownActive } from './BatchRecoveryPanel'
+import { BatchActivityPanel } from './BatchActivityPanel'
 
 interface ComposerPanelProps {
   snapshot: AppSnapshot
@@ -438,6 +439,7 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
   batch: BatchSummary; authenticated: boolean; onOpenTasks?(): void; runAction: RunAction
 }): React.JSX.Element {
   const { t } = useI18n()
+  const coolingDown = useBatchCooldownActive(batch)
   const [pendingAction, setPendingAction] = useState(false)
   const actionLock = useRef(false)
   const perform = async (label: string, action: () => Promise<void>): Promise<void> => {
@@ -465,14 +467,15 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
         <i style={{ width: `${progress}%` }} />
       </div>
       <div className="progress-facts">
-        <span>{batch.completed} / {batch.total}</span>
+          <span>{t('已处理', 'Processed')} {batch.completed} / {batch.total}</span>
         <span className="success">{t('已确认', 'Confirmed')} {batch.sentVerified}</span>
         <span>{t('已接受', 'Accepted')} {batch.acceptedUnverified}</span>
         <span>{t('尚未发送', 'Pending')} {batch.pending}</span>
         <span className="failed">{t('失败', 'Failed')} {batch.failedCount}</span>
         <span className="failed">{t('待核对', 'Uncertain')} {batch.uncertain}</span>
       </div>
-      {batch.uncertain > 0 && <div className="inline-warning">{t('待核对对象不会自动重发，避免重复留言。', 'Uncertain recipients are not retried automatically to prevent duplicate comments.')}</div>}
+        <BatchActivityPanel batch={batch} compact />
+        {!batch.activity && batch.uncertain > 0 && <div className="inline-warning">{t('待核对对象不会自动重发，避免重复留言。', 'Uncertain recipients are not retried automatically to prevent duplicate comments.')}</div>}
       <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated} disabled={pendingAction} runAction={runAction} />
       {onOpenTasks && <button className="ghost" onClick={onOpenTasks}>{t('查看持久任务与明细', 'View saved tasks and details')}</button>}
       {active && <div className="batch-controls">
@@ -481,13 +484,13 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
             {t('暂停', 'Pause')}
           </button>
         ) : (
-          <button className="primary" disabled={pendingAction || !authenticated} onClick={() => {
+            <button className="primary" disabled={pendingAction || !authenticated || coolingDown || batch.pending === 0} onClick={() => {
             if (window.confirm(t(`继续该任务的 ${batch.pending} 位未发送好友？已发送和待核对对象不会重发。`,
               `Resume the ${batch.pending} pending recipients? Sent and uncertain recipients will not be retried.`))) {
               void perform(t('正在恢复', 'Resuming'), async () => unwrap(await window.steamCommenter.resumeBatch(batch.id)))
             }
           }}>
-            {t('继续', 'Resume')}
+              {coolingDown ? t('冷却中', 'Cooling down') : t('继续其余待发', 'Resume remaining pending')}
           </button>
         )}
         <button
