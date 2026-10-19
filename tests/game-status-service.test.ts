@@ -6,7 +6,7 @@ import net from 'node:net'
 import http from 'node:http'
 import https from 'node:https'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { GameStatusService, createGameStatusSteamClient, GAME_STATUS_CLIENT_OPTIONS, LIVE_OBSERVATION_TTL_MS, LIVE_RESTORE_TTL_MS, type GameStatusSteamClient, type GameStatusServiceOptions } from '../src/main/game-status-service'
+import { GameStatusService, createGameStatusSteamClient, GAME_STATUS_CLIENT_OPTIONS, GAME_STATUS_APP_INFO_TTL_MS, LIVE_LOCK_INTERVAL_MS, LIVE_LOCK_MAX_FAILURES, LIVE_OBSERVATION_TTL_MS, LIVE_RESTORE_TTL_MS, type GameStatusSteamClient, type GameStatusServiceOptions } from '../src/main/game-status-service'
 import type { GameStatusAction, GameStatusDraft, GameStatusSnapshot } from '../src/shared/game-status'
 
 const A = { id: 'selected-A', steamId: '76561198000000001' }
@@ -21,16 +21,19 @@ class FakeClient extends EventEmitter implements GameStatusSteamClient {
   calls: Call[] = []
   rp: Record<string, string> = { status: 'Playing map', steam_display: '#GameMap', 'game:map': 'map_old', 'game:score': '1:2', connect: SECRET, steam_player_group: SECRET, 'game:lobby': SECRET, unknown_token: SECRET }
   acceptWrites = true
+  localizedString: string | null = 'Localized fixture state'
   onRead: (() => Promise<Record<string, string>>) | null = null
   logOn(value?: Record<string, unknown>): void { this.calls.push({ method: 'logOn', value: value ? structuredClone(value) : undefined }) }
   logOff(): void { this.calls.push({ method: 'logOff' }); this.steamID = null }
   setPersona(value: number): void { this.calls.push({ method: 'setPersona', value }) }
   gamesPlayed(value: string | number[], force?: boolean): void { this.calls.push({ method: 'gamesPlayed', value, force }) }
   uploadRichPresence(app: number, value: Record<string, string>): void { this.calls.push({ method: 'upload', app, value: structuredClone(value) }); if (this.acceptWrites) this.rp = structuredClone(value) }
-  async requestRichPresence(app: number, steamIds: string[]): Promise<{ users: Record<string, { richPresence: Record<string, string> }> }> {
+  async getProductInfo(apps: number[]): Promise<unknown> { return { apps: Object.fromEntries(apps.map(app => [app, { appinfo: { common: { name: `Fixture game ${app}`, icon: 'a'.repeat(40) } } }])) } }
+  async getAppRichPresenceLocalization(): Promise<unknown> { return { tokens: { '#Fixture': '%status%', '#FixtureActivity': '%activity%' } } }
+  async requestRichPresence(app: number, steamIds: string[]): Promise<{ users: Record<string, { richPresence: Record<string, string>; localizedString: string | null }> }> {
     this.calls.push({ method: 'read', app, value: [...steamIds] })
     const raw = this.onRead ? await this.onRead() : structuredClone(this.rp)
-    return { users: { [steamIds[0]!]: { richPresence: raw } } }
+    return { users: { [steamIds[0]!]: { richPresence: raw, localizedString: this.localizedString } } }
   }
   login(steamId = A.steamId): void { this.steamID = { getSteamID64: () => steamId }; this.emit('loggedOn', {}) }
   external(blocked = true, app = 730): void { this.playingState = { blocked, appid: app }; this.emit('playingState', blocked, app) }
@@ -213,10 +216,16 @@ describe('simulation remains explicit and never takes over an occupied account',
     const f = fixture(); const client = f.login(); const result = f.service.play({ ...f.action(), displayKind: 'custom', gameName: '雀魂', details: '正在打牌' })
     expect(client.calls.at(-1)).toEqual({ method: 'gamesPlayed', value: '雀魂 · 正在打牌', force: false }); expect(result.limitations.join('')).toContain('合并')
   })
-  it('official simulation only sends status and clears own RP/game on stop', () => {
-    const f = fixture(); const client = f.login(); f.service.play({ ...f.action(), displayKind: 'app', gameName: 'Example', details: 'Fake map', appId: 730 })
-    expect(client.calls.at(-1)).toEqual({ method: 'upload', app: 730, value: { status: 'Fake map' } }); f.service.stop(f.action())
+  it('official simulation sends a published display template and clears own RP/game on stop', async () => {
+    const f = fixture(); const client = f.login(); await f.service.inspectApp({ ...f.action(), appId: 730 })
+    const state = f.service.play({ ...f.action(), displayKind: 'app', gameName: 'Example', details: 'Fake map', appId: 730, presence: { displayToken: '#Fixture', values: { status: 'Fake map' } } })
+    expect(client.calls.at(-1)).toEqual({ method: 'upload', app: 730, value: { steam_display: '#Fixture', status: 'Fake map' } }); expect(state.playing!.displayName).toBe('Fixture game 730'); expect(state.playing!.preview).toBe('Fake map'); f.service.stop(f.action())
     expect(client.calls.slice(-2)).toEqual([{ method: 'upload', app: 730, value: {} }, { method: 'gamesPlayed', value: [], force: false }])
+  })
+  it('rejects the legacy status-only text before any simulation write', () => {
+    const f = fixture(); const client = f.login()
+    expect(() => f.service.play({ ...f.action(), displayKind: 'app', gameName: 'Example', details: 'Invisible text', appId: 730 })).toThrow('显示模板')
+    expect(mutations(client)).toEqual([])
   })
   it('rejects over-limit Unicode/control text and invalid app IDs before writes', () => {
     const f = fixture(); const client = f.login()
@@ -365,6 +374,184 @@ describe('real game state observes once and never exposes or edits joining token
   it('logout/dispose after a real patch does not clear RP, games, persona or force a restore', async () => {
     const f = fixture(); const client = f.login(true); const observed = await f.service.observeLive(f.action()); await f.service.patchLive({ ...f.action(), snapshotId: observed.live!.snapshotId, changes: { status: 'new' } })
     const count = mutations(client).length; f.service.dispose(); expect(mutations(client)).toHaveLength(count); expect(client.calls.at(-1)!.method).toBe('logOff')
+  })
+})
+
+describe('published game metadata and localized display', () => {
+  it('refreshes explicit inspection while retaining at most twenty expiring application catalogs', async () => {
+    vi.useFakeTimers(); const f = fixture(); const client = f.login(); const product = vi.spyOn(client, 'getProductInfo')
+    const first = await f.service.inspectApp({ ...f.action(), appId: 730 })
+    expect(first.name).toBe('Fixture game 730'); expect(first.iconUrl).toContain('730/'); expect(first.templates.map(template => template.token)).toContain('#Fixture')
+    await f.service.inspectApp({ ...f.action(), appId: 730 }); expect(product).toHaveBeenCalledTimes(2)
+    for (let appId = 100; appId < 120; appId++) await f.service.inspectApp({ ...f.action(), appId })
+    const play = () => f.service.play({ ...f.action(), displayKind: 'app', appId: 730, gameName: '', details: '', presence: { displayToken: '#Fixture', values: { status: 'Fixture' } } })
+    expect(play).toThrow('读取'); await f.service.inspectApp({ ...f.action(), appId: 730 }); expect(product).toHaveBeenCalledTimes(23)
+    vi.advanceTimersByTime(GAME_STATUS_APP_INFO_TTL_MS)
+    expect(play).toThrow('读取'); await f.service.inspectApp({ ...f.action(), appId: 730 }); expect(product).toHaveBeenCalledTimes(24)
+    expect(mutations(client)).toEqual([])
+  })
+  it('deduplicates concurrent catalog reads and discards a late old-account response', async () => {
+    const f = fixture(); const client = f.login(); const pending = deferred<unknown>(); const product = vi.spyOn(client, 'getProductInfo').mockImplementation(() => pending.promise)
+    const first = f.service.inspectApp({ ...f.action(), appId: 730 }); const second = f.service.inspectApp({ ...f.action(), appId: 730 })
+    const firstRejected = expect(first).rejects.toThrow('变化'); const secondRejected = expect(second).rejects.toThrow('变化')
+    await Promise.resolve()
+    f.select(B); f.service.invalidate(); pending.resolve({ apps: {} }); await firstRejected; await secondRejected
+    expect(product).toHaveBeenCalledTimes(1); expect(f.service.state().appInfo).toBeNull(); expect(mutations(client)).toEqual([])
+  })
+  it('catalog-only names/icons are not mistaken for a confirmed remote display', async () => {
+    const f = fixture(); const client = f.login(); await f.service.inspectApp({ ...f.action(), appId: 730 })
+    const result = f.service.play({ ...f.action(), displayKind: 'app', appId: 730, gameName: 'Wrong local label', details: '' })
+    expect(result.playing!.game!.name).toBe('Fixture game 730'); expect(result.playing!.game!.iconUrl).toMatch(/^https:/)
+    expect(result.playing!.delivery).toBe('submitted'); expect(result.playing!.preview).toBeNull(); expect(client.calls.filter(call => call.method === 'upload')).toEqual([])
+  })
+  it('a missing/expired catalog or unpublished display token cannot send an arbitrary steam_display', async () => {
+    const f = fixture(); const client = f.login(); const input = { ...f.action(), displayKind: 'app' as const, appId: 730, gameName: '', details: '', presence: { displayToken: '#NotPublished', values: {} } }
+    expect(() => f.service.play(input)).toThrow('读取')
+    await f.service.inspectApp({ ...f.action(), appId: 730 }); expect(() => f.service.play(input)).toThrow()
+    expect(mutations(client)).toEqual([])
+  })
+  it('preserves real game fields but withholds unverified localized text when the published catalog fails', async () => {
+    const f = fixture(); const client = f.login(true); client.localizedString = 'Game server rendered state'
+    vi.spyOn(client, 'getAppRichPresenceLocalization').mockRejectedValue(new Error(SECRET))
+    const result = await f.service.observeLive(f.action())
+    expect(result.live!.localizedString).toBeNull(); expect(result.live!.fields.status).toBe('Playing map'); expect(JSON.stringify(result)).not.toContain(SECRET)
+    client.localizedString = null; expect((await f.service.observeLive(f.action())).live!.localizedString).toBeNull()
+    client.localizedString = 'bad\ncontrol'; expect((await f.service.observeLive(f.action())).live!.localizedString).toBeNull()
+    client.localizedString = `Status contains ${SECRET}`; expect((await f.service.observeLive(f.action())).live!.localizedString).toBeNull()
+  })
+  it('rejects an oversized full-map merge without dropping unknown or joining fields', async () => {
+    const f = fixture(); const client = f.login(true)
+    for (let index = 0; index < 13; index++) client.rp[`extra_${index}`] = `Keep ${index}`
+    const original = { ...client.rp }; const observed = await f.service.observeLive(f.action())
+    await expect(f.service.patchLive({ ...f.action(), snapshotId: observed.live!.snapshotId, changes: { status: 'New status' } })).rejects.toThrow('协议限制')
+    expect(mutations(client)).toEqual([]); expect(client.rp).toEqual(original)
+  })
+  it('only accepts a published display template for real games and restores newly added fields by omission', async () => {
+    const f = fixture(); const client = f.login(true); const observed = await f.service.observeLive(f.action())
+    const input = { ...f.action(), snapshotId: observed.live!.snapshotId, lock: false }
+    await expect(f.service.setLiveDisplay({ ...input, presence: { displayToken: '#Arbitrary', values: {} } })).rejects.toThrow()
+    expect(mutations(client)).toEqual([])
+    const state = await f.service.setLiveDisplay({ ...input, presence: { displayToken: '#FixtureActivity', values: { activity: 'Custom real status' } } })
+    expect(state.lastOperation!.outcome).toBe('matched'); expect(client.rp.steam_display).toBe('#FixtureActivity'); expect(client.rp.activity).toBe('Custom real status'); expect(client.rp.connect).toBe(SECRET)
+    await f.service.restoreLive(f.action()); expect(client.rp.steam_display).toBe('#GameMap'); expect(Object.hasOwn(client.rp, 'activity')).toBe(false)
+    expect(client.calls.filter(call => ['gamesPlayed', 'setPersona'].includes(call.method))).toEqual([])
+  })
+})
+
+describe('real game public-field locking is bounded, single-flight and session scoped', () => {
+  async function locked() {
+    const f = fixture(); const client = f.login(true); const observed = await f.service.observeLive(f.action())
+    const state = await f.service.lockLive({ ...f.action(), snapshotId: observed.live!.snapshotId, changes: { status: 'Locked fixture' } })
+    return { ...f, client, state }
+  }
+  it('rechecks matching fields without uploading and keeps raw matches distinct from localized display', async () => {
+    vi.useFakeTimers(); const f = await locked(); f.client.localizedString = null
+    expect(f.state.liveLock!.status).toBe('locked'); expect(f.state.lastOperation!.message).toContain('不代表好友')
+    const writes = mutations(f.client).length; const reads = f.client.calls.filter(call => call.method === 'read').length
+    await vi.advanceTimersByTimeAsync(LIVE_LOCK_INTERVAL_MS)
+    expect(mutations(f.client)).toHaveLength(writes); expect(f.client.calls.filter(call => call.method === 'read')).toHaveLength(reads + 1)
+    expect(f.service.state().liveLock).toMatchObject({ status: 'locked', matched: true, localizedString: null, consecutiveFailures: 0 })
+    expect(f.service.state().liveLock!.nextCheckAt).not.toBeNull()
+  })
+  it('reasserts only selected fields, preserves fresh game tokens, and restores the newest game bottom value', async () => {
+    vi.useFakeTimers(); const f = await locked()
+    f.client.rp.status = 'Game advanced'; f.client.rp.connect = 'FAKE-rotated-join'; f.client.rp['game:score'] = '8:9'; f.client.rp.new_field = 'untouched'
+    await vi.advanceTimersByTimeAsync(LIVE_LOCK_INTERVAL_MS)
+    expect(f.client.rp).toMatchObject({ status: 'Locked fixture', connect: 'FAKE-rotated-join', 'game:score': '8:9', new_field: 'untouched' })
+    const restored = await f.service.unlockLive({ ...f.action(), restore: true })
+    expect(restored.lastOperation!.outcome).toBe('matched'); expect(f.client.rp.status).toBe('Game advanced'); expect(f.client.rp.connect).toBe('FAKE-rotated-join')
+    expect(f.client.calls.filter(call => ['gamesPlayed', 'setPersona'].includes(call.method))).toEqual([])
+    const writes = mutations(f.client).length; await vi.advanceTimersByTimeAsync(60000); expect(mutations(f.client)).toHaveLength(writes)
+  })
+  it('can lock an already matching observed value without a redundant initial upload', async () => {
+    vi.useFakeTimers(); const f = fixture(); const client = f.login(true); const observed = await f.service.observeLive(f.action())
+    const state = await f.service.lockLive({ ...f.action(), snapshotId: observed.live!.snapshotId, changes: { status: client.rp.status! } })
+    expect(state.liveLock!.status).toBe('locked'); expect(mutations(client)).toEqual([])
+  })
+  it('conflicts before the first write when the target key changes after observation', async () => {
+    const f = fixture(); const client = f.login(true); const observed = await f.service.observeLive(f.action()); client.rp.status = 'New game state'
+    const state = await f.service.lockLive({ ...f.action(), snapshotId: observed.live!.snapshotId, changes: { status: 'Locked' } })
+    expect(state.lastOperation!.outcome).toBe('conflict'); expect(state.liveLock).toBeNull(); expect(mutations(client)).toEqual([])
+  })
+  it('locks a validated display template but refuses ordinary patch access to steam_display', async () => {
+    vi.useFakeTimers(); const f = fixture(); const client = f.login(true); const observed = await f.service.observeLive(f.action())
+    await expect(f.service.lockLive({ ...f.action(), snapshotId: observed.live!.snapshotId, changes: { steam_display: '#Fixture' } })).rejects.toThrow()
+    const state = await f.service.setLiveDisplay({ ...f.action(), snapshotId: observed.live!.snapshotId, lock: true, presence: { displayToken: '#Fixture', values: { status: 'Rendered desired text' } } })
+    expect(state.liveLock!.desired).toEqual({ steam_display: '#Fixture', status: 'Rendered desired text' })
+    client.rp.steam_display = '#GameMap'; client.rp.status = 'Game status'; await vi.advanceTimersByTimeAsync(LIVE_LOCK_INTERVAL_MS)
+    expect(client.rp.steam_display).toBe('#Fixture'); expect(client.rp.status).toBe('Rendered desired text')
+  })
+  it('never overlaps a slow read and unlock immediately invalidates its late result', async () => {
+    vi.useFakeTimers(); const f = await locked(); const pending = deferred<Record<string, string>>(); f.client.onRead = () => pending.promise
+    const reads = f.client.calls.filter(call => call.method === 'read').length; const writes = mutations(f.client).length
+    await vi.advanceTimersByTimeAsync(LIVE_LOCK_INTERVAL_MS); await vi.advanceTimersByTimeAsync(30000)
+    expect(f.client.calls.filter(call => call.method === 'read')).toHaveLength(reads + 1); expect(f.service.state().busy).toBe(true)
+    await f.service.unlockLive(f.action()); expect(f.service.state().liveLock!.status).toBe('stopped')
+    pending.resolve({ ...f.client.rp, status: 'Late game overwrite' }); await vi.advanceTimersByTimeAsync(60000)
+    expect(mutations(f.client)).toHaveLength(writes); expect(f.service.state().busy).toBe(false); expect(f.service.state().liveLock!.nextCheckAt).toBeNull()
+  })
+  it('unlock cancels a lock still preparing its initial baseline before any upload', async () => {
+    const f = fixture(); const client = f.login(true); const observed = await f.service.observeLive(f.action()); const pending = deferred<Record<string, string>>(); client.onRead = () => pending.promise
+    const locking = f.service.lockLive({ ...f.action(), snapshotId: observed.live!.snapshotId, changes: { status: 'Do not send' } }); const rejected = expect(locking).rejects.toThrow('取消')
+    await f.service.unlockLive(f.action()); pending.resolve({ ...client.rp }); await rejected
+    expect(mutations(client)).toEqual([]); expect(f.service.state().liveLock).toBeNull()
+  })
+  it('unlock cancels a display-template lock awaiting its initial game read', async () => {
+    const f = fixture(); const client = f.login(true); const observed = await f.service.observeLive(f.action()); const pending = deferred<Record<string, string>>(); client.onRead = () => pending.promise
+    const locking = f.service.setLiveDisplay({ ...f.action(), snapshotId: observed.live!.snapshotId, lock: true, presence: { displayToken: '#Fixture', values: { status: 'Do not send' } } }); const rejected = expect(locking).rejects.toThrow('取消')
+    await Promise.resolve(); await f.service.unlockLive(f.action()); pending.resolve({ ...client.rp }); await rejected
+    expect(mutations(client)).toEqual([]); expect(f.service.state().liveLock).toBeNull()
+  })
+  it('unlock with restore drains a pending check without allowing a late reassertion', async () => {
+    vi.useFakeTimers(); const f = await locked(); const pending = deferred<Record<string, string>>(); f.client.onRead = () => pending.promise
+    const writes = mutations(f.client).length; await vi.advanceTimersByTimeAsync(LIVE_LOCK_INTERVAL_MS)
+    const unlocking = f.service.unlockLive({ ...f.action(), restore: true })
+    expect(f.service.state().liveLock!.status).toBe('stopped'); f.client.onRead = null; pending.resolve({ ...f.client.rp })
+    const state = await unlocking
+    expect(state.lastOperation!.outcome).toBe('matched'); expect(f.client.rp.status).toBe('Playing map'); expect(mutations(f.client)).toHaveLength(writes + 1)
+  })
+  it('unlock restoration refuses a newer game-owned value instead of rolling it back', async () => {
+    vi.useFakeTimers(); const f = await locked(); f.client.rp.status = 'Newest game state'; const writes = mutations(f.client).length
+    const state = await f.service.unlockLive({ ...f.action(), restore: true })
+    expect(state.lastOperation!.outcome).toBe('conflict'); expect(f.client.rp.status).toBe('Newest game state'); expect(mutations(f.client)).toHaveLength(writes)
+  })
+  it.each(['exit', 'app', 'logout', 'dispose', 'account'] as const)('stops on %s and discards pending callbacks', async change => {
+    vi.useFakeTimers(); const f = await locked(); const pending = deferred<Record<string, string>>(); f.client.onRead = () => pending.promise
+    const writes = mutations(f.client).length; await vi.advanceTimersByTimeAsync(LIVE_LOCK_INTERVAL_MS)
+    if (change === 'exit') { f.client.external(false, 0); f.client.external(true, 730) }
+    else if (change === 'app') f.client.external(true, 440)
+    else if (change === 'logout') f.service.logout(f.action())
+    else if (change === 'dispose') f.service.dispose()
+    else { f.select(B); f.service.invalidate() }
+    pending.resolve({ ...f.client.rp, status: 'Late overwrite' }); await vi.advanceTimersByTimeAsync(120000)
+    expect(mutations(f.client)).toHaveLength(writes); expect(f.service.state().liveLock).toBeNull()
+  })
+  it('stops even when account selection changes without the normal invalidate notification', async () => {
+    vi.useFakeTimers(); const f = await locked(); const writes = mutations(f.client).length; f.select(B)
+    await vi.advanceTimersByTimeAsync(120000)
+    expect(f.service.state().liveLock!.status).toBe('stopped'); expect(mutations(f.client)).toHaveLength(writes); expect(f.service.state().liveLock!.nextCheckAt).toBeNull()
+  })
+  it('backs off failed reads and pauses after a bounded number without exposing SDK errors', async () => {
+    vi.useFakeTimers(); const f = await locked(); f.client.onRead = async () => { throw new Error(SECRET) }
+    const waits = [5000, 5000, 10000, 20000, 30000]
+    for (let index = 0; index < waits.length; index++) {
+      await vi.advanceTimersByTimeAsync(waits[index]!)
+      expect(f.service.state().liveLock!.consecutiveFailures).toBe(index + 1)
+    }
+    expect(f.service.state().liveLock).toMatchObject({ status: 'paused', matched: false, nextCheckAt: null, consecutiveFailures: LIVE_LOCK_MAX_FAILURES })
+    const reads = f.client.calls.filter(call => call.method === 'read').length; await vi.advanceTimersByTimeAsync(120000)
+    expect(f.client.calls.filter(call => call.method === 'read')).toHaveLength(reads); expect(JSON.stringify(f.service.state())).not.toContain(SECRET)
+  })
+  it('also bounds accepted uploads whose readback never matches', async () => {
+    vi.useFakeTimers(); const f = await locked(); f.client.acceptWrites = false; f.client.rp.status = 'Game refuses desired value'
+    const before = f.client.calls.filter(call => call.method === 'upload').length
+    for (const wait of [5000, 5000, 10000, 20000, 30000]) await vi.advanceTimersByTimeAsync(wait)
+    expect(f.service.state().liveLock!.status).toBe('paused'); expect(f.client.calls.filter(call => call.method === 'upload')).toHaveLength(before + LIVE_LOCK_MAX_FAILURES)
+    await vi.advanceTimersByTimeAsync(120000); expect(f.client.calls.filter(call => call.method === 'upload')).toHaveLength(before + LIVE_LOCK_MAX_FAILURES)
+  })
+  it('requires unlocking before the legacy restore action, leaving the game untouched', async () => {
+    vi.useFakeTimers(); const f = await locked(); const before = mutations(f.client).length
+    await expect(f.service.restoreLive(f.action())).rejects.toThrow('解除锁定'); expect(mutations(f.client)).toHaveLength(before)
   })
 })
 

@@ -3,10 +3,17 @@ export type GameStatusConnectionStatus = 'logged_out' | 'connecting' | 'guard_re
 export interface GameStatusAction { accountId: string; sessionId: string }
 export interface GameStatusConnectInput extends GameStatusAction { accountName: string; password: string }
 export interface GameStatusGuardInput extends GameStatusAction { challengeId: string; code: string }
-export interface GameStatusDraft { displayKind: 'custom' | 'app'; gameName: string; details: string; appId?: number }
+export interface GameStatusPresence { displayToken: string; values: Record<string, string> }
+export interface GameStatusGame { appId: number; name: string; iconUrl: string | null }
+export interface GameStatusTemplate { token: string; text: string; parameters: string[] }
+export interface GameStatusAppInfo extends GameStatusGame { language: 'schinese' | 'english'; templates: GameStatusTemplate[]; templateStatus?: 'available' | 'empty' | 'unavailable' }
+export interface GameStatusAppInput extends GameStatusAction { appId: number; language?: 'schinese' | 'english' }
+export interface GameStatusDraft { displayKind: 'custom' | 'app'; gameName: string; details: string; appId?: number; presence?: GameStatusPresence }
 export interface GameStatusPlayInput extends GameStatusAction, GameStatusDraft {}
 export interface GameStatusSaveDraftInput extends GameStatusAction { draft: GameStatusDraft }
 export interface GameStatusPatchInput extends GameStatusAction { snapshotId: string; changes: Record<string, string> }
+export interface GameStatusLiveDisplayInput extends GameStatusAction { snapshotId: string; presence: GameStatusPresence; lock: boolean }
+export interface GameStatusUnlockInput extends GameStatusAction { restore?: boolean }
 
 export interface GameStatusGuard {
   challengeId: string
@@ -16,7 +23,7 @@ export interface GameStatusGuard {
   retryAfterSeconds: number
 }
 
-export interface GameStatusPlaying extends GameStatusDraft { displayName: string; delivery: 'submitted'; limitations: string[] }
+export interface GameStatusPlaying extends GameStatusDraft { displayName: string; delivery: 'submitted'; limitations: string[]; game?: GameStatusGame; preview?: string | null }
 export interface GameStatusLiveSnapshot {
   snapshotId: string
   appId: number
@@ -26,10 +33,25 @@ export interface GameStatusLiveSnapshot {
   editableKeys: string[]
   readOnlyKeys: string[]
   patchActive: boolean
+  game?: GameStatusGame
+  localizedString?: string | null
+}
+
+export interface GameStatusLiveLock {
+  appId: number
+  gameEpoch: number
+  desired: Record<string, string>
+  status: 'checking' | 'locked' | 'retrying' | 'paused' | 'stopped'
+  matched: boolean
+  localizedString: string | null
+  nextCheckAt: string | null
+  lastCheckedAt: string | null
+  consecutiveFailures: number
+  error: string | null
 }
 
 export interface GameStatusOperation {
-  kind: 'observe' | 'patch' | 'restore'
+  kind: 'observe' | 'patch' | 'restore' | 'lock' | 'unlock'
   outcome: 'observed' | 'matched' | 'unverified' | 'conflict'
   message: string
   at: string
@@ -53,6 +75,8 @@ export interface GameStatusSnapshot {
   busy: boolean
   limitations: string[]
   error: string | null
+  appInfo?: GameStatusAppInfo | null
+  liveLock?: GameStatusLiveLock | null
 }
 
 export interface GameStatusApi {
@@ -64,6 +88,10 @@ export interface GameStatusApi {
   observeLive(input: GameStatusAction): Promise<GameStatusSnapshot>
   patchLive(input: GameStatusPatchInput): Promise<GameStatusSnapshot>
   restoreLive(input: GameStatusAction): Promise<GameStatusSnapshot>
+  inspectApp(input: GameStatusAppInput): Promise<GameStatusAppInfo>
+  lockLive(input: GameStatusPatchInput): Promise<GameStatusSnapshot>
+  unlockLive(input: GameStatusUnlockInput): Promise<GameStatusSnapshot>
+  setLiveDisplay(input: GameStatusLiveDisplayInput): Promise<GameStatusSnapshot>
   loadDraft(input: GameStatusAction): Promise<GameStatusDraft | null>
   saveDraft(input: GameStatusSaveDraftInput): Promise<GameStatusDraft>
   onChange(listener: (snapshot: GameStatusSnapshot) => void): () => void

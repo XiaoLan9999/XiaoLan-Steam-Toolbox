@@ -33,10 +33,6 @@
 .game-status-notice.success { color: var(--green); border-left-color: var(--green); background: #f0f8f2; }
 .game-status-notice.error { color: var(--red); border-left-color: var(--red); background: #fdf2f0; }
 .game-status-notice.info { border-left-color: var(--blue); }
-.game-status-preset { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 19px 0 23px; padding: 14px; border-radius: 9px; background: var(--tea-soft); }
-.game-status-preset > span { color: var(--tea); font-size: 11px; font-weight: 600; }
-.game-status-preset > div { display: flex; flex-wrap: wrap; gap: 7px; }
-.game-status-preset button { padding: 7px 10px; border-color: var(--tea-line); background: var(--panel); font-size: 11px; }
 .game-status-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 19px 17px; }
 .game-status-wide { grid-column: 1 / -1; }
 .game-status-draft-preview { display: flex; flex-direction: column; gap: 10px; margin: 22px 0 18px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
@@ -70,4 +66,28 @@
 .game-status-draft-summary dt { color: var(--muted); }
 .game-status-draft-summary dd { margin: 0; overflow-wrap: anywhere; }
 .game-status-draft-summary code { margin-left: 9px; font-size: 11px; }
+.game-status-game-identity { display: flex; min-width: 0; align-items: center; gap: 12px; margin: 18px 0; }
+.game-status-game-identity img, .game-status-game-placeholder { width: 40px; height: 40px; flex: 0 0 40px; border: 1px solid var(--line); border-radius: 9px; object-fit: cover; }
+.game-status-game-placeholder { display: grid; place-items: center; color: var(--muted); background: var(--panel-2); font-size: 23px; }
+.game-status-game-identity > div { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.game-status-game-identity strong { font-size: 15px; overflow-wrap: anywhere; }
+.game-status-game-identity span:not(.game-status-game-placeholder) { color: var(--muted); font-size: 11px; }
+.game-status-template-editor { display: grid; gap: 16px; margin: 17px 0; }
+.game-status-template-editor select { width: 100%; max-width: 100%; }
+.game-status-template-preview, .game-status-readback { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; padding: 13px 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow-wrap: anywhere; }
+.game-status-template-preview span, .game-status-readback > span { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.game-status-template-preview strong, .game-status-readback > strong { font-size: 13px; line-height: 1.7; }
+.game-status-template-preview.invalid { border-color: var(--tea-line); color: var(--tea); background: var(--tea-soft); }
+.game-status-live-display, .game-status-submitted, .game-status-lock { margin: 20px 0; padding: 17px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.game-status-submitted > strong, .game-status-submitted > p { overflow-wrap: anywhere; }
+.game-status-lock { border-color: #cce0e8; background: var(--sky-soft); }
+.game-status-lock .game-status-section-title { margin-bottom: 10px; }
+.game-status-lock h3 { margin: 0; font-size: 14px; }
+.game-status-lock dl { display: grid; gap: 10px; font-size: 11px; }
+.game-status-lock dl > div { display: grid; grid-template-columns: 85px minmax(0, 1fr); gap: 13px; }
+.game-status-lock dt { color: var(--muted); }
+.game-status-lock dd { margin: 0; overflow-wrap: anywhere; }
+.game-status-panel label.game-status-checkbox { display: flex; flex-direction: row; align-items: flex-start; gap: 9px; margin: 17px 0; font-size: 12px; line-height: 1.7; }
+.game-status-checkbox input { flex-shrink: 0; width: 16px; height: 16px; margin: 3px 0 0; padding: 0; accent-color: var(--blue); }
 @media (max-width: 1180px) { .game-status-panel { padding: 22px; } .game-status-card { padding: 19px; } .game-status-binding { flex-wrap: wrap; } .game-status-binding > p { flex-basis: 100%; max-width: none; margin: 0; padding-left: 51px; } .game-status-section-title { flex-wrap: wrap; } .game-status-key-table th:first-child { width: 26%; } }
+@media (max-width: 700px) { .game-status-panel { padding: 16px; } .game-status-heading { align-items: flex-start; flex-wrap: wrap; } .game-status-form-grid { grid-template-columns: minmax(0, 1fr); } .game-status-tabs { flex-wrap: wrap; } .game-status-tabs button { min-width: 0; } .game-status-actions > button { max-width: 100%; white-space: normal; } .game-status-live-display, .game-status-lock { padding: 13px; } .game-status-lock dl > div { grid-template-columns: minmax(0, 1fr); gap: 4px; } }

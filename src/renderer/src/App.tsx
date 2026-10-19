@@ -11,13 +11,14 @@ import { AccountStatusPanel } from './components/AccountStatusPanel'
 import { UpdateNotice } from './components/UpdateNotice'
 import ScreenshotToolsPanel from './components/ScreenshotToolsPanel'
 import { GameStatusPanel } from './components/GameStatusPanel'
+import { WelcomePanel } from './components/WelcomePanel'
 import type { GameStatusApi } from '../../shared/game-status'
 import { I18nProvider, type Translate } from './i18n'
 import { avatarFallback, unwrap } from './ui'
 import { applyBatchProgress, applyProgressUpdates, createSnapshotRefresh, type BatchProgressUpdate } from './snapshot-refresh'
 import './task-list.css'
 
-type Tab = 'friends' | 'compose' | 'history' | 'tools' | 'screenshots' | 'game-status'
+type Tab = 'home' | 'friends' | 'compose' | 'history' | 'tools' | 'screenshots' | 'game-status'
 
 const gameStatusApi: GameStatusApi = {
   state: async () => unwrap(await window.steamCommenter.gameStatus.state()),
@@ -28,6 +29,10 @@ const gameStatusApi: GameStatusApi = {
   observeLive: async input => unwrap(await window.steamCommenter.gameStatus.observeLive(input)),
   patchLive: async input => unwrap(await window.steamCommenter.gameStatus.patchLive(input)),
   restoreLive: async input => unwrap(await window.steamCommenter.gameStatus.restoreLive(input)),
+  inspectApp: async input => unwrap(await window.steamCommenter.gameStatus.inspectApp(input)),
+  lockLive: async input => unwrap(await window.steamCommenter.gameStatus.lockLive(input)),
+  unlockLive: async input => unwrap(await window.steamCommenter.gameStatus.unlockLive(input)),
+  setLiveDisplay: async input => unwrap(await window.steamCommenter.gameStatus.setLiveDisplay(input)),
   loadDraft: async input => unwrap(await window.steamCommenter.gameStatus.loadDraft(input)),
   saveDraft: async input => unwrap(await window.steamCommenter.gameStatus.saveDraft(input)),
   onChange: callback => window.steamCommenter.onEvent(event => { if (event.type === 'gameStatusChanged') callback(event.state) })
@@ -43,7 +48,7 @@ interface RefreshValue { snapshot: AppSnapshot; batchRevision: number }
 
 export default function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
-  const [tab, setTab] = useState<Tab>('friends')
+  const [tab, setTab] = useState<Tab>('home')
   const [selectedFriends, setSelectedFriends] = useState<Set<string>>(new Set())
   const [loginOpen, setLoginOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -169,6 +174,12 @@ export default function App(): React.JSX.Element {
           </div>
         </div>
 
+        <button className={`sidebar-tools-button ${tab === 'home' ? 'active' : ''}`} onClick={() => setTab('home')}>
+          {t('欢迎首页', 'Welcome home')}
+        </button>
+        <button className={`sidebar-tools-button ${['friends', 'compose', 'history'].includes(tab) ? 'active' : ''}`} onClick={() => setTab('friends')}>
+          {t('好友留言板', 'Friend comments')}
+        </button>
         <button className={`sidebar-tools-button ${tab === 'tools' ? 'active' : ''}`} onClick={() => setTab('tools')}>
           {t('艺术作品与小工具', 'Artwork & tools')}
         </button>
@@ -178,9 +189,6 @@ export default function App(): React.JSX.Element {
         <button className={`sidebar-tools-button ${tab === 'game-status' ? 'active' : ''}`} onClick={() => setTab('game-status')}>
           {t('游戏状态与自定义', 'Game status & presence')}
         </button>
-        {(tab === 'tools' || tab === 'screenshots' || tab === 'game-status') && activeAccount && <button className="sidebar-tools-button" onClick={() => setTab('friends')}>
-          {t('返回好友管理', 'Back to friends')}
-        </button>}
 
         <div className="sidebar-heading">
           <span>{t('STEAM 账号', 'STEAM ACCOUNTS')}</span>
@@ -252,11 +260,11 @@ export default function App(): React.JSX.Element {
       </aside>
 
       <main className="workspace">
-        {tab === 'game-status' ? (
+        {tab === 'home' ? <WelcomePanel snapshot={snapshot} onNavigate={setTab} onLogin={() => setLoginOpen(true)} onSettings={() => setSettingsOpen(true)} /> : tab === 'game-status' ? (
           <>
             <header className="topbar tools-topbar">
               <div><h1>{t('游戏状态与自定义', 'Game status & presence')}</h1><p>{t('自定义游戏显示 · 实际游玩参数实验性修改', 'Custom game presence · Experimental live-game status editing')}</p></div>
-              <button className="ghost" onClick={() => setTab('friends')}>{t('返回', 'Back')}</button>
+              <button className="ghost" onClick={() => setTab('home')}>{t('返回首页', 'Back home')}</button>
             </header>
             <section className="content"><GameStatusPanel activeAccount={activeAccount} api={gameStatusApi} /></section>
           </>
@@ -264,7 +272,7 @@ export default function App(): React.JSX.Element {
           <>
             <header className="topbar tools-topbar">
               <div><h1>{t('Steam 截图工具', 'Steam screenshots')}</h1><p>{t('选择用户与游戏 · 准备本地截图 · 从 Steam 上传', 'Choose a user and game · Prepare screenshots · Upload from Steam')}</p></div>
-              <button className="ghost" onClick={() => setTab('friends')}>{t('返回', 'Back')}</button>
+              <button className="ghost" onClick={() => setTab('home')}>{t('返回首页', 'Back home')}</button>
             </header>
             <section className="content"><ScreenshotToolsPanel visible={!settingsOpen && !loginOpen} runAction={runAction} /></section>
           </>
@@ -272,7 +280,7 @@ export default function App(): React.JSX.Element {
           <>
             <header className="topbar tools-topbar">
               <div><h1>{t('艺术作品与小工具', 'Artwork & tools')}</h1><p>{t('长图上传助手 · 背景裁剪预览', 'Long artwork assistant · Background crop preview')}</p></div>
-              <button className="ghost" onClick={() => setTab('friends')}>{t('返回', 'Back')}</button>
+              <button className="ghost" onClick={() => setTab('home')}>{t('返回首页', 'Back home')}</button>
             </header>
             <section className="content"><ArtworkToolsPanel account={activeAccount} visible={!settingsOpen && !loginOpen && !busy} /></section>
           </>
@@ -280,8 +288,9 @@ export default function App(): React.JSX.Element {
           <>
             <header className="topbar">
               <div>
-                <h1>{activeAccount.displayName}</h1>
+                <h1>{t('好友留言板', 'Friend comments')}</h1>
                 <p>
+                  {activeAccount.displayName} · {' '}
                   {t(`${snapshot.friends.length} 位好友 · ${snapshot.groups.length} 个本地分组`, `${snapshot.friends.length} friends · ${snapshot.groups.length} local groups`)}
                 </p>
               </div>

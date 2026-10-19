@@ -34,6 +34,7 @@ import { ACCESS_DENIED_COOLDOWN_MS, LEGACY_COMMENT_POST_REVIEW_MESSAGE } from '.
 import type { UpdatePreferences } from '../shared/update-types'
 import { defaultUpdatePreferences, normalizeUpdatePreferences } from '../shared/update-preferences'
 import type { CommentAttemptEvidence } from './comment-reconciliation'
+import { DEFAULT_BATCH_FAILURE_POLICY, validateBatchFailurePolicy, type BatchFailurePolicy } from '../shared/batch-failure-policy'
 
 export interface SecretCipher {
   isAvailable(): boolean
@@ -124,6 +125,7 @@ interface BatchRow {
   retry_count: number
   access_denied_count: number
   access_denied_until: string | null
+  failure_policy: string
 }
 
 interface BatchSummaryRow extends BatchRow {
@@ -225,7 +227,7 @@ const batchStopCodes: readonly BatchStopCode[] = [
   'MANUAL_PAUSE', 'RATE_LIMITED', 'ACCESS_DENIED', 'ACCESS_DENIED_PERSISTENT', 'SESSION_EXPIRED', 'SESSION_PREPARATION',
   'LOGIN_REQUIRED', 'NETWORK_ERROR', 'SERVER_ERROR', 'UNCERTAIN_RESULT', 'SESSION_CHANGED',
   'ACCOUNT_CHANGED', 'APP_RESTARTED', 'APP_SHUTDOWN', 'RETRY_EXHAUSTED', 'QUEUE_ERROR',
-  'LEGACY_PAUSED', 'CANCELLED'
+  'LEGACY_PAUSED', 'CANCELLED', 'DELIVERY_FAILED'
 ]
 const deliveryStatuses: readonly DeliveryStatus[] = [
   'pending', 'sending', 'sent_verified', 'accepted_unverified', 'failed', 'uncertain', 'cancelled'
@@ -938,10 +940,12 @@ export class SqliteStore {
     messageTemplate: string,
     delayMs: number,
     deliveries: DeliverySeed[],
-    autoRetryEnabled = true
+    autoRetryEnabled = true,
+    failurePolicy?: BatchFailurePolicy
   ): BatchSummary {
     this.requireTaskAccount(accountId)
     validateAutoRetryEnabled(autoRetryEnabled)
+    const policy = validateBatchFailurePolicy(failurePolicy)
     const batchId = randomUUID()
     const createdAt = now()
     this.transaction(() => {
@@ -949,10 +953,10 @@ export class SqliteStore {
         .prepare(
           `INSERT INTO batches (
              id, account_id, message_template, delay_ms, status, total, completed,
-             succeeded, failed, created_at, auto_retry_enabled
-           ) VALUES (?, ?, ?, ?, 'queued', ?, 0, 0, 0, ?, ?)`
+             succeeded, failed, created_at, auto_retry_enabled, failure_policy
+           ) VALUES (?, ?, ?, ?, 'queued', ?, 0, 0, 0, ?, ?, ?)`
         )
-        .run(batchId, accountId, messageTemplate, delayMs, deliveries.length, createdAt, autoRetryEnabled ? 1 : 0)
+        .run(batchId, accountId, messageTemplate, delayMs, deliveries.length, createdAt, autoRetryEnabled ? 1 : 0, JSON.stringify(policy))
 
       const insert = this.db.prepare(
         `INSERT INTO deliveries (
@@ -1314,6 +1318,20 @@ export class SqliteStore {
     this.db.prepare(`UPDATE batches SET auto_retry_enabled = ?,
       next_retry_at = CASE WHEN ? = 0 THEN NULL ELSE next_retry_at END WHERE id = ?`)
       .run(enabled ? 1 : 0, enabled ? 1 : 0, batchId)
+  }
+
+  setBatchFailurePolicy(batchId: string, value: BatchFailurePolicy): void {
+    const policy = validateBatchFailurePolicy(value)
+    this.transaction(() => {
+      const batch = this.requireBatch(batchId)
+      const checking = this.db.prepare(`SELECT 1 FROM delivery_comment_verification
+        WHERE batch_id = ? AND state IN ('checking', 'waiting') LIMIT 1`).get(batchId)
+      if (batch.status !== 'paused' || batch.sending > 0 || checking) {
+        throw new DomainError('BATCH_POLICY_NOT_EDITABLE', '只能在任务暂停且没有正在发送或核对的请求时修改失败策略')
+      }
+      this.db.prepare('UPDATE batches SET failure_policy = ?, next_retry_at = NULL WHERE id = ?')
+        .run(JSON.stringify(policy), batchId)
+    })
   }
 
   clearBatchRetryCount(batchId: string): void {
@@ -1918,6 +1936,11 @@ export class SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_delivery_verification_sequence
           ON delivery_comment_verification(verification_seq DESC);`)
       if (version.user_version < 8) this.db.exec('PRAGMA user_version = 8;')
+      if (version.user_version < 9) {
+        const columns = new Set((this.db.prepare('PRAGMA table_info(batches)').all() as unknown as Array<{ name: string }>).map(column => column.name))
+        if (!columns.has('failure_policy')) this.db.exec(`ALTER TABLE batches ADD COLUMN failure_policy TEXT NOT NULL DEFAULT '${JSON.stringify(DEFAULT_BATCH_FAILURE_POLICY)}'`)
+        this.db.exec('PRAGMA user_version = 9;')
+      }
     })
   }
 }
@@ -1948,7 +1971,8 @@ function validateDeliveryVerificationProgress(progress: DeliveryVerificationProg
   if (!progress || typeof progress !== 'object' ||
     !['checking', 'waiting', 'confirmed', 'unresolved'].includes(progress.state) ||
     !Number.isSafeInteger(progress.attempt) || !Number.isSafeInteger(progress.maxAttempts) ||
-    progress.maxAttempts < 1 || progress.maxAttempts > 10 || progress.attempt < 1 || progress.attempt > progress.maxAttempts ||
+    progress.maxAttempts < 1 || progress.maxAttempts > 10 || progress.attempt < 0 || progress.attempt > progress.maxAttempts ||
+    (progress.attempt === 0 && progress.state !== 'unresolved') ||
     typeof progress.message !== 'string' || !progress.message.trim() || progress.message.length > 1000 ||
     (progress.nextCheckAt !== null && !isCanonicalIso(progress.nextCheckAt)) ||
     (progress.state === 'waiting' ? progress.nextCheckAt === null : progress.nextCheckAt !== null)) {
@@ -2099,7 +2123,8 @@ function mapBatchFields(row: BatchRow): Omit<BatchRecord, 'deliveries'> {
     nextRetryAt: row.next_retry_at,
     retryCount: row.retry_count,
     accessDeniedCount: row.access_denied_count,
-    accessDeniedUntil: row.access_denied_until
+    accessDeniedUntil: row.access_denied_until,
+    failurePolicy: validateBatchFailurePolicy(JSON.parse(row.failure_policy))
   }
 }
 

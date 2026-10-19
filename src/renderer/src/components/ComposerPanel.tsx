@@ -12,7 +12,9 @@ import { useI18n, type Translate } from '../i18n'
 import { RunAction } from './types'
 import { BatchRecoveryPanel, useBatchCooldownActive } from './BatchRecoveryPanel'
 import { BatchActivityPanel } from './BatchActivityPanel'
-import { BatchVerificationPanel, batchVerificationActive, batchVerificationActionLabel, batchVerificationConfirmation } from './BatchVerificationPanel'
+import { BatchVerificationPanel, batchVerificationActive, batchVerificationActionLabel, batchVerificationConfirmation, batchUncertainPolicyText } from './BatchVerificationPanel'
+import { DEFAULT_BATCH_FAILURE_POLICY, type BatchFailurePolicy } from '../../../shared/batch-failure-policy'
+import { BatchFailurePolicyFields, BatchFailurePolicyPanel, failurePolicySummary } from './BatchFailurePolicyPanel'
 
 interface ComposerPanelProps {
   snapshot: AppSnapshot
@@ -36,6 +38,7 @@ export function ComposerPanel({
   const [draft, setDraft] = useState(snapshot.settings?.draft ?? '')
   const [delaySeconds, setDelaySeconds] = useState((snapshot.settings?.delayMs ?? 15_000) / 1000)
   const [autoRetryEnabled, setAutoRetryEnabled] = useState(true)
+  const [failurePolicy, setFailurePolicy] = useState<BatchFailurePolicy>({ ...DEFAULT_BATCH_FAILURE_POLICY })
   const [emoticonOpen, setEmoticonOpen] = useState(false)
   const [emoticonSearch, setEmoticonSearch] = useState('')
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -53,6 +56,7 @@ export function ComposerPanel({
     setDraft(snapshot.settings?.draft ?? '')
     setDelaySeconds((snapshot.settings?.delayMs ?? 15_000) / 1000)
     setAutoRetryEnabled(true)
+    setFailurePolicy({ ...DEFAULT_BATCH_FAILURE_POLICY })
     setConfirmOpen(false)
     setConfirmed(false)
     setSubmissionError('')
@@ -147,7 +151,8 @@ export function ComposerPanel({
             friendSteamIds: selectedRecords.map((friend) => friend.steamId),
             messageTemplate: draft,
             delayMs: delaySeconds * 1000,
-            autoRetryEnabled
+            autoRetryEnabled,
+            failurePolicy
           }))
         } catch (error) {
           setSubmissionError(error instanceof Error ? error.message : String(error))
@@ -323,12 +328,13 @@ export function ComposerPanel({
               {t('预览并确认发送', 'Preview and confirm')}
             </button>
           </div>
+          <BatchFailurePolicyFields value={failurePolicy} onChange={setFailurePolicy} disabled={submitting} />
           <label className="composer-auto-retry">
             <input type="checkbox" checked={autoRetryEnabled} disabled={submitting}
               onChange={(event) => setAutoRetryEnabled(event.target.checked)} />
             <span>{t('临时错误后自动重试并继续待发', 'Automatically retry temporary errors and resume pending deliveries')}
-              <small>{t('403 冷却后仅自动重试一次，持续拒绝会停止；不重发已发送、已接受或结果不确定的对象。手动暂停后需手动继续。',
-                'HTTP 403 allows one retry after cooldown; persistent denials stop. Sent, accepted, or uncertain deliveries are never resent. A manual pause requires a manual resume.')}</small></span>
+              <small>{t('仅对明确尚未接受的临时错误退避恢复；不重发已发送、已接受或结果不确定的对象。手动暂停后需手动继续。',
+                'Backoff only retries temporary failures known not to have been accepted. Sent, accepted and uncertain deliveries are never resent. A manual pause requires a manual resume.')}</small></span>
           </label>
           <div id="send-readiness" aria-live="polite">
             {issues.length > 0 && <div className="inline-warning"><strong>{t('暂时不能发送：', 'Cannot send yet:')}</strong><ul>
@@ -405,6 +411,7 @@ export function ComposerPanel({
                 <dt>{t('自动重试', 'Automatic retries')}</dt>
                 <dd>{autoRetryEnabled ? t('已开启，仅继续待发', 'Enabled, pending recipients only') : t('已关闭', 'Disabled')}</dd>
               </div>
+              <div><dt>{t('失败处理', 'Failure handling')}</dt><dd>{failurePolicySummary(failurePolicy, t)}</dd></div>
             </dl>
             <div className="confirm-recipients">
               {selectedRecords.map((friend) => (
@@ -480,8 +487,9 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
         <BatchActivityPanel batch={batch} compact />
         <BatchVerificationPanel batch={batch} compact disabled={pendingAction}
           onStop={() => void perform(t('正在停止核对', 'Stopping verification'), async () => unwrap(await window.steamCommenter.pauseBatch(batch.id)))} />
-        {!batch.activity && batch.uncertain > 0 && batch.status !== 'cancelled' && <div className="inline-warning">{t('待核对对象会只读核实；未证实则保留并跳过，不重复发送，也不阻塞其余待发。', 'Uncertain recipients receive read-only checks. Unproven results remain for review and are skipped, never resent, without blocking other pending recipients.')}</div>}
+        {!batch.activity && batch.uncertain > 0 && batch.status !== 'cancelled' && <div className="inline-warning">{batchUncertainPolicyText(batch, t)}</div>}
       <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated} disabled={pendingAction || verifying} runAction={runAction} />
+      <BatchFailurePolicyPanel batch={batch} runAction={runAction} disabled={pendingAction} />
       {onOpenTasks && <button className="ghost" onClick={onOpenTasks}>{t('查看持久任务与明细', 'View saved tasks and details')}</button>}
       {(active || canVerify) && <div className="batch-controls">
         {batch.status === 'running' ? (

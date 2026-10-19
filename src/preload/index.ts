@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { UpdateState } from '../shared/update-types'
 import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from '../shared/steam-screenshots'
 import type { ArtworkBrowserState } from '../shared/artwork-browser'
-import type { GameStatusDraft, GameStatusSnapshot } from '../shared/game-status'
+import type { GameStatusAppInfo, GameStatusDraft, GameStatusSnapshot } from '../shared/game-status'
 import type { ProfileBackgroundCatalog, ProfileBackgroundImage } from '../shared/profile-backgrounds'
 import {
   AppEvent,
@@ -32,6 +32,10 @@ const api: SteamFriendCommenterApi = {
     observeLive: input => invoke<GameStatusSnapshot>('gameStatus:observe', input),
     patchLive: input => invoke<GameStatusSnapshot>('gameStatus:patch', input),
     restoreLive: input => invoke<GameStatusSnapshot>('gameStatus:restore', input),
+    inspectApp: input => invoke<GameStatusAppInfo>('gameStatus:app', input),
+    lockLive: input => invoke<GameStatusSnapshot>('gameStatus:lock', input),
+    unlockLive: input => invoke<GameStatusSnapshot>('gameStatus:unlock', input),
+    setLiveDisplay: input => invoke<GameStatusSnapshot>('gameStatus:display', input),
     loadDraft: input => invoke<GameStatusDraft | null>('gameStatus:loadDraft', input),
     saveDraft: input => invoke<GameStatusDraft>('gameStatus:saveDraft', input)
   },
@@ -99,6 +103,7 @@ const api: SteamFriendCommenterApi = {
   resumeBatch: (batchId) => invoke<void>('batch:resume', batchId),
   verifyBatch: (batchId) => invoke<void>('batch:verify', batchId),
   setBatchAutoRetry: (batchId, enabled) => invoke<void>('batch:autoRetry', batchId, enabled),
+  setBatchFailurePolicy: (batchId, policy) => invoke<void>('batch:failurePolicy', batchId, policy),
   cancelBatch: (batchId) => invoke<void>('batch:cancel', batchId),
   onEvent: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, appEvent: AppEvent): void => callback(appEvent)

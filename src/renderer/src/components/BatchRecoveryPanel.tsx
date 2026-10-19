@@ -60,6 +60,7 @@ export function batchStopLabel(code: BatchStopCode | null, t: Translate): string
     RETRY_EXHAUSTED: t('自动重试次数已用尽', 'Automatic retry limit reached'),
     QUEUE_ERROR: t('任务队列出现错误', 'Task queue error'),
     LEGACY_PAUSED: t('旧版本任务未保存停止原因', 'The older app did not save this task’s stop reason'),
+    DELIVERY_FAILED: t('按所选策略在失败后暂停', 'Paused after failure by the selected policy'),
     CANCELLED: t('用户取消任务', 'Cancelled by the user')
   }
   return labels[code] ?? t('任务已停止', 'The task stopped')
@@ -73,6 +74,7 @@ function stopSource(code: BatchStopCode | null, t: Translate): string {
   if (code === 'APP_RESTARTED' || code === 'APP_SHUTDOWN') return t('软件生命周期', 'App lifecycle')
   if (code === 'NETWORK_ERROR') return t('网络连接', 'Network connection')
   if (code === 'UNCERTAIN_RESULT') return t('发送结果保护', 'Delivery safety check')
+  if (code === 'DELIVERY_FAILED') return t('用户选择的处理策略', 'Selected failure policy')
   if (code === 'QUEUE_ERROR' || code === 'RETRY_EXHAUSTED') return t('任务队列', 'Task queue')
   return t('历史记录', 'Saved history')
 }
@@ -101,6 +103,7 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
   currentBatchId.current = batch.id
   const active = ['queued', 'running', 'paused'].includes(batch.status)
   const verifying = batch.verification?.state === 'checking' || batch.verification?.state === 'waiting'
+  const uncertainPolicy = batch.failurePolicy?.uncertainResult ?? 'verify_then_skip'
   const accessDeniedCount = Number.isSafeInteger(batch.accessDeniedCount) && batch.accessDeniedCount! > 0
     ? batch.accessDeniedCount! : 0
   const unresolvedPost = (batch.stopCode === 'UNCERTAIN_RESULT' && !batch.nextRetryAt) ||
@@ -167,8 +170,14 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
       : t('正在有限次只读核对好友主页，不会重发本条；核对结束后只继续其余待发，发送冷却仍有效。手动暂停或切号会停止继续。',
         'Bounded read-only profile verification is in progress. This comment will not be resent. Only other pending recipients resume afterward, subject to sending cooldown. A manual pause or account switch stops continuation.')
   } else if (active && batch.status === 'paused' && unresolvedPost) {
-    recoveryStatus = t('本对象已列入待核对，可能已经送达。会自动只读核对；找到可靠证据才标记成功。未确定的保留待核对并跳过，不重复发送，也不阻塞其余待发。可选择“核对并继续其余待发”。',
-      'This recipient needs review and may already have received the comment. Verification is read-only; reliable evidence is required to confirm success. Unproven results stay for review and are skipped, never resent, without blocking other pending recipients. Choose “Verify and resume remaining pending”.')
+    recoveryStatus = uncertainPolicy === 'verify_then_pause'
+      ? t('本对象可能已经送达。按所选策略，核对后仍未确认时保持暂停，不重发；可手动再次核对或调整此任务策略。',
+        'This recipient may already have received the comment. The selected policy keeps the task paused if verification is inconclusive. It is never resent; check again or change this task’s policy.')
+      : uncertainPolicy === 'skip'
+        ? t('本对象保留待核对且不会重发。按所选策略直接跳过；仍可手动只读核对，继续仅处理其余待发。',
+          'This recipient stays uncertain and will not be resent. The selected policy skips it; manual read-only checking remains available and continuation handles only other pending recipients.')
+        : t('本对象已列入待核对，可能已经送达。会自动只读核对；找到可靠证据才标记成功。未确定的保留待核对并跳过，不重复发送，也不阻塞其余待发。可选择“核对并继续其余待发”。',
+          'This recipient needs review and may already have received the comment. Verification is read-only; reliable evidence is required to confirm success. Unproven results stay for review and are skipped, never resent, without blocking other pending recipients. Choose “Verify and resume remaining pending”.')
   } else if (active && batch.status === 'paused' && !scheduled && batch.stopCode === 'LOGIN_REQUIRED') {
     recoveryStatus = t('需要重新登录此账号，再手动继续原任务；不会自动扫码。', 'Sign in to this account again, then resume the original task manually. QR sign-in is never automatic.')
   } else if (active && batch.status === 'paused' && persistentAccessDenied) {
@@ -193,8 +202,12 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
       {batch.status === 'paused' && unresolvedPost && <p>{accessCooldown
         ? t('本条需要核对是否送达，不会自动重发；其余待发仍需等待下方冷却结束。',
           'This delivery needs review and will not be resent automatically. Other pending recipients must still wait for the cooldown below.')
-        : t('这不是仍在等待冷却：该条可能已经送达，尚未确认。会自动只读核对；未确定保留待核对并跳过，不重复发送，也不阻塞其余待发。',
-          'This is not a wait for cooldown: the comment may already have arrived, but delivery is not confirmed. Read-only checks verify it; unproven results remain for review and are skipped, never resent, without blocking other pending recipients.')}</p>}
+        : uncertainPolicy === 'verify_then_pause' ? t('这不是仍在等待冷却：本条送达尚未确认，按你的策略保持暂停，不会重发。',
+          'This is not a wait for cooldown: delivery is unconfirmed and your selected policy keeps the task paused. It will not be resent.')
+          : uncertainPolicy === 'skip' ? t('本条保留待核对，按策略跳过，不重发。旧冷却已结束不代表此条已失败或已送达。',
+            'This record stays uncertain and is skipped without resending. An expired cooldown proves neither failure nor delivery.')
+            : t('这不是仍在等待冷却：该条可能已经送达，尚未确认。会自动只读核对；未确定保留待核对并跳过，不重复发送，也不阻塞其余待发。',
+              'This is not a wait for cooldown: the comment may already have arrived, but delivery is not confirmed. Read-only checks verify it; unproven results remain for review and are skipped, never resent, without blocking other pending recipients.')}</p>}
       {batch.stopMessage && !showStopHistory && <p>{localizeMessage(batch.stopMessage, language)}</p>}
       <span>{t('来源', 'Source')}: {stopSource(batch.stopCode, t)} · {timestamp(batch.pausedAt, language)}</span>
     </div>}

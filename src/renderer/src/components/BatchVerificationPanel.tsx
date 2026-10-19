@@ -11,17 +11,37 @@ export function batchVerificationActive(batch: BatchSummary): boolean {
 
 export function batchVerificationActionLabel(batch: BatchSummary, t: Translate): string {
   if (batchVerificationActive(batch)) return t('正在核对', 'Verifying')
+  if (batch.pending > 0 && batch.status !== 'completed' && batch.failurePolicy?.uncertainResult === 'verify_then_pause') {
+    return t('核对留言（未确认则暂停）', 'Verify (pause if still uncertain)')
+  }
   return batch.status === 'completed' || batch.pending === 0
     ? t('仅核对待核对记录', 'Verify uncertain records only')
     : t('核对并继续其余待发', 'Verify and resume remaining pending')
 }
 
 export function batchVerificationConfirmation(batch: BatchSummary, t: Translate): string {
+  if (batch.status !== 'completed' && batch.pending > 0 && batch.failurePolicy?.uncertainResult === 'verify_then_pause') {
+    return t(`只读核对 ${batch.uncertain} 条待核对记录？按此任务策略，找到可靠证据后继续其余待发；仍未确认则保持暂停，不会重发。`,
+      `Read-only check ${batch.uncertain} uncertain records? This task resumes pending recipients only when delivery is confirmed; otherwise it remains paused. Uncertain comments are never resent.`)
+  }
   return batch.status === 'completed' || batch.pending === 0
     ? t(`仅只读核对 ${batch.uncertain} 条待核对记录？找到可靠证据才标记成功，未确认的保留待核对；不会重发，也不会启动任何新发送。`,
       `Read-only check ${batch.uncertain} uncertain records? Only reliable evidence confirms success. Unproven records remain for review. Nothing will be resent and no new sending will start.`)
     : t(`只读核对 ${batch.uncertain} 条待核对记录，然后继续其余 ${batch.pending} 位待发好友？找到可靠证据才标记成功；未确认的仍保留待核对并跳过，不会重发。原有发送间隔和冷却仍有效。`,
       `Read-only check ${batch.uncertain} uncertain records, then resume ${batch.pending} remaining pending recipients? Only reliable evidence confirms success. Unproven records remain for review and are skipped, never resent. Existing send intervals and cooldown still apply.`)
+}
+
+export function batchUncertainPolicyText(batch: BatchSummary, t: Translate): string {
+  if (batch.failurePolicy?.uncertainResult === 'skip') {
+    return t('按此任务策略不自动核对：未确定的保留待核对并直接跳过，不重发；仍可手动只读核对。发送冷却仍有效。',
+      'This task skips automatic checking: uncertain records are kept and skipped, never resent. Manual read-only verification remains available. Sending cooldown still applies.')
+  }
+  if (batch.failurePolicy?.uncertainResult === 'verify_then_pause') {
+    return t('按此任务策略自动只读核对；找到可靠证据才标记成功并继续。仍未确认则保持暂停，不重发，等待你处理。',
+      'This task checks profiles read-only. Only reliable evidence confirms success and continues sending. If still uncertain, it stays paused for your review and never resends the comment.')
+  }
+  return t('会自动只读核对；找到可靠证据才标记成功。未确定的保留待核对并跳过，不重复发送，也不阻塞其余待发。发送冷却仍然有效。',
+    'Checks are read-only; success requires reliable evidence. Unproven results stay for review and are skipped, never resent, without blocking other pending recipients. Sending cooldown still applies.')
 }
 
 export function BatchVerificationPanel({ batch, compact = false, disabled = false, onStop }: {
@@ -79,8 +99,7 @@ export function BatchVerificationPanel({ batch, compact = false, disabled = fals
       : batch.status === 'completed'
       ? t('此任务已结束：仅核对保存的待核对记录，不会启动任何新发送。',
         'This task has ended: only saved uncertain records are checked; no new sending will start.')
-      : t('会自动只读核对；找到可靠证据才标记成功。未确定的保留待核对并跳过，不重复发送，也不阻塞其余待发。发送冷却仍然有效。',
-        'Checks are read-only; success requires reliable evidence. Unproven results stay for review and are skipped, never resent, without blocking other pending recipients. Sending cooldown still applies.')}</p>
+      : batchUncertainPolicyText(batch, t)}</p>
     {active && onStop && <button className="ghost" disabled={disabled} onClick={onStop}>{t('停止核对', 'Stop verification')}</button>}
     {verification?.message && <details className="batch-verification-detail"><summary>{t('核对技术详情', 'Verification technical details')}</summary>
       <p>{localizeMessage(verification.message, language)}</p></details>}

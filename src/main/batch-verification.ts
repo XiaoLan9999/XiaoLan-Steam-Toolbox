@@ -3,6 +3,7 @@ import type { AppEvent, DeliveryRecord } from '../shared/types'
 import type { SqliteStore } from './store'
 import type { SteamService } from './steam-service'
 import { publicErrorMessage } from './steam-service'
+import { validateBatchFailurePolicy } from '../shared/batch-failure-policy'
 
 const CHECK_DELAYS = [5_000, 15_000]
 const MAX_CHECKS = CHECK_DELAYS.length + 1
@@ -22,13 +23,13 @@ export class BatchVerificationController {
       '核对已停止，未确认的记录仍保留待核对，未重复发送')
   }
 
-  async verifyAll(batchId: string, isCurrent: () => boolean): Promise<boolean> {
+  async verifyAll(batchId: string, isCurrent: () => boolean, forceCheck = false): Promise<boolean> {
     let cursor: { createdAt: string; id: string } | undefined
     while (isCurrent()) {
       const delivery = this.store.getNextUncertainDelivery(batchId, cursor)
       if (!delivery) return true
       cursor = { createdAt: delivery.createdAt, id: delivery.id }
-      if (!await this.verifyDelivery(delivery, isCurrent)) return false
+      if (!await this.verifyDelivery(delivery, isCurrent, forceCheck)) return false
       if (this.store.getNextUncertainDelivery(batchId, cursor)) {
         await this.wait(1_000)
       }
@@ -36,9 +37,15 @@ export class BatchVerificationController {
     return false
   }
 
-  async verifyDelivery(delivery: DeliveryRecord, isCurrent: () => boolean): Promise<boolean> {
+  async verifyDelivery(delivery: DeliveryRecord, isCurrent: () => boolean, forceCheck = false): Promise<boolean> {
     const batch = this.store.getBatchSummary(delivery.batchId)
     if (!batch || !isCurrent()) return false
+    const policy = validateBatchFailurePolicy(batch.failurePolicy).uncertainResult
+    if (policy === 'skip' && !forceCheck) {
+      this.record(delivery.id, batch.id, 'unresolved', 0, '按策略跳过，未执行核对；本条保留待核对，不会重复发送')
+      this.emit({ type: 'notice', level: 'warning', message: `${delivery.friendName}：按策略跳过，未执行核对，保留待核对且不重发` })
+      return true
+    }
     const evidence = this.store.getDeliveryCommentEvidence(delivery.id)
     let detail = '当前可见评论未找到足够的送达证据'
     for (let attempt = 1; attempt <= MAX_CHECKS; attempt += 1) {
@@ -82,10 +89,14 @@ export class BatchVerificationController {
     }
     if (!isCurrent()) return false
     const attempt = this.store.getBatchSummary(batch.id)?.verification?.attempt ?? 1
-    this.record(delivery.id, batch.id, 'unresolved', attempt,
-      `${detail}；本条保留待核对并跳过，不会重发，将继续其余待发`)
-    this.emit({ type: 'notice', level: 'warning', message: `${delivery.friendName}：尚未证实送达，保留待核对且不重发；继续处理其余待发好友` })
-    return true
+    const completed = batch.status === 'completed'
+    const pause = policy === 'verify_then_pause' && !completed
+    const disposition = completed ? '已完成任务仅更新核对记录，不会重新发送'
+      : pause ? '按策略暂停任务，等待手动处理；不会重发'
+        : '本条保留待核对并跳过，不会重发，将继续其余待发'
+    this.record(delivery.id, batch.id, 'unresolved', attempt, `${detail}；${disposition}`)
+    this.emit({ type: 'notice', level: 'warning', message: `${delivery.friendName}：尚未证实送达，保留待核对且不重发；${disposition}` })
+    return !pause
   }
 
   private record(deliveryId: string, batchId: string, state: 'checking' | 'waiting' | 'confirmed' | 'unresolved',

@@ -257,7 +257,7 @@ describe('persisted read-only comment verification', () => {
     expect(migrated.getDeliveryCommentEvidence(delivery.id)).toBeNull()
     expect(migrated.getBatchSummary(batch.id)?.verification).toBeNull()
     const inspection = new DatabaseSync(databasePath, { readOnly: true })
-    expect(inspection.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 8 })
+    expect(inspection.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 9 })
     expect(inspection.prepare('SELECT COUNT(*) AS count FROM delivery_comment_verification').get()).toMatchObject({ count: 0 })
     inspection.close()
   })

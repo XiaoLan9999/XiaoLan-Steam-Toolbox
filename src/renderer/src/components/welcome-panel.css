@@ -1,0 +1,21 @@
+.toolbox-home { flex: 1; min-height: 0; overflow: auto; width: min(1160px, 100%); margin: 0 auto; padding: 42px 36px; }
+.toolbox-home-hero { padding: 28px 0 30px; }
+.toolbox-home-kicker { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 1.5px; }
+.toolbox-home-kicker span { margin: 0 8px; opacity: .45; }
+.toolbox-home-hero h1 { margin: 18px 0 12px; font-size: clamp(25px, 3vw, 38px); line-height: 1.25; letter-spacing: -.6px; }
+.toolbox-home-hero > p { max-width: 650px; color: var(--muted); font-size: 14px; line-height: 1.8; }
+.toolbox-home-context { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; margin-top: 23px; color: var(--muted); font-size: 12px; }
+.toolbox-home-context button { margin-left: auto; }
+.toolbox-home-task { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 22px; padding: 19px 23px; border: 1px solid var(--line); border-left: 4px solid var(--blue); border-radius: 12px; background: var(--panel-2); }
+.toolbox-home-task strong { font-size: 14px; }
+.toolbox-home-task p { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+.toolbox-home-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.toolbox-home-card { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 26px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); box-shadow: var(--shadow); }
+.toolbox-home-card-mark { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 20px; color: var(--blue); border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); font: 700 14px ui-monospace, monospace; }
+.toolbox-home-card:nth-child(2n) .toolbox-home-card-mark { color: var(--muted); }
+.toolbox-home-card h2 { margin: 0; font-size: 19px; }
+.toolbox-home-card p { flex: 1; margin: 12px 0 23px; color: var(--muted); line-height: 1.8; font-size: 13px; }
+.toolbox-home-card button { min-height: 38px; }
+.toolbox-home-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; padding-top: 26px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+@media (max-width: 1050px) { .toolbox-home { padding: 28px 22px; } .toolbox-home-card { padding: 21px; } }
+@media (max-width: 760px) { .toolbox-home-grid { grid-template-columns: minmax(0, 1fr); } .toolbox-home-context button { margin-left: 0; } }

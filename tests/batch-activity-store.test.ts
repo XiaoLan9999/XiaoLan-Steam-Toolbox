@@ -207,7 +207,7 @@ describe('bounded batch recipient activity', () => {
     expect(recovered.getBatchSummary(batch.id)?.activity?.recent.find(item => item.status === 'failed')?.recordedAt).toBeNull()
     expect(recovered.getDeliveryRecordById(deliveries[2]!.id)?.sentAt).toBeNull()
     const inspection = new DatabaseSync(databasePath, { readOnly: true })
-    expect(inspection.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 8 })
+    expect(inspection.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 9 })
     inspection.close()
     const before = recovered.listBatchDeliveries(accountA, batch.id)
     expect(recovered.getBatchSummary(batch.id)?.activity).toEqual(recovered.getBatchSummary(batch.id)?.activity)

@@ -8,7 +8,8 @@ import { CommentScanQueue } from './comment-scan-queue'
 import { SecretCipher, SqliteStore } from './store'
 import { SteamService, publicErrorMessage } from './steam-service'
 import { GameStatusService } from './game-status-service'
-import type { GameStatusAction, GameStatusPatchInput, GameStatusPlayInput, GameStatusSaveDraftInput } from '../shared/game-status'
+import type { GameStatusAction, GameStatusAppInput, GameStatusLiveDisplayInput, GameStatusPatchInput, GameStatusPlayInput, GameStatusSaveDraftInput, GameStatusUnlockInput } from '../shared/game-status'
+import type { BatchFailurePolicy } from '../shared/batch-failure-policy'
 import { DomainError } from '../shared/domain'
 import { isAllowedExternalUrl } from './external-links'
 import { localizeMessage } from '../shared/localization'
@@ -433,6 +434,10 @@ function registerIpcHandlers(): void {
   handle('gameStatus:observe', (input: GameStatusAction) => gameStatus.observeLive(input))
   handle('gameStatus:patch', (input: GameStatusPatchInput) => gameStatus.patchLive(input))
   handle('gameStatus:restore', (input: GameStatusAction) => gameStatus.restoreLive(input))
+  handle('gameStatus:app', (input: GameStatusAppInput) => gameStatus.inspectApp(input))
+  handle('gameStatus:lock', (input: GameStatusPatchInput) => gameStatus.lockLive(input))
+  handle('gameStatus:unlock', (input: GameStatusUnlockInput) => gameStatus.unlockLive(input))
+  handle('gameStatus:display', (input: GameStatusLiveDisplayInput) => gameStatus.setLiveDisplay(input))
   handle('gameStatus:loadDraft', (input: GameStatusAction) => gameStatus.loadDraft(input))
   handle('gameStatus:saveDraft', (input: GameStatusSaveDraftInput) => gameStatus.saveDraft(input))
   handle('account:refreshStatus', (accountId: string) => steam.refreshAccountStatus(accountId))
@@ -557,6 +562,7 @@ function registerIpcHandlers(): void {
   handle('batch:resume', (batchId: string) => { requireCurrentTask(batchId); queue.resume(batchId) })
   handle('batch:verify', (batchId: string) => { requireCurrentTask(batchId); queue.verify(batchId) })
   handle('batch:autoRetry', (batchId: string, enabled: boolean) => { requireCurrentTask(batchId); queue.setAutoRetry(batchId, enabled) })
+  handle('batch:failurePolicy', (batchId: string, policy: BatchFailurePolicy) => { requireCurrentTask(batchId); queue.setFailurePolicy(batchId, policy) })
   handle('batch:cancel', (batchId: string) => { requireCurrentTask(batchId); queue.cancel(batchId) })
 }
 

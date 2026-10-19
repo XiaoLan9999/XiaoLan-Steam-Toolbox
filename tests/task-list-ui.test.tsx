@@ -58,7 +58,7 @@ describe('durable task center UI', () => {
     }
     expect(html).toContain('每页 50 条')
     expect(html).toContain('2 条结果待核对，不会自动重发。')
-    expect(html).toContain('继续只处理待发记录')
+    expect(html).toContain('不重复发送，也不阻塞其余待发')
     expect(html).toContain('好友发送状态')
   })
 

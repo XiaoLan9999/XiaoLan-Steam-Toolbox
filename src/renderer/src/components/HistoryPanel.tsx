@@ -7,7 +7,8 @@ import { useI18n, type Translate } from '../i18n'
 import type { RunAction } from './types'
 import { BatchRecoveryPanel, batchStopLabel, useBatchCooldownActive } from './BatchRecoveryPanel'
 import { BatchActivityPanel } from './BatchActivityPanel'
-import { BatchVerificationPanel, batchVerificationActive, batchVerificationActionLabel, batchVerificationConfirmation } from './BatchVerificationPanel'
+import { BatchVerificationPanel, batchVerificationActive, batchVerificationActionLabel, batchVerificationConfirmation, batchUncertainPolicyText } from './BatchVerificationPanel'
+import { BatchFailurePolicyPanel } from './BatchFailurePolicyPanel'
 
 const TASK_PAGE_SIZE = 25
 const DELIVERY_PAGE_SIZE = 50
@@ -296,11 +297,11 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
       <BatchVerificationPanel batch={batch} disabled={acting} onStop={() => void perform('pause')} />
       {!batch.activity && batch.uncertain > 0 && batch.status !== 'cancelled' && <div className="inline-warning task-uncertain-note" role="status">
         <strong>{t(`${batch.uncertain} 条结果待核对，不会自动重发。`, `${batch.uncertain} uncertain results will NOT be automatically retried.`)}</strong>
-        <span>{t('会自动只读核对好友主页；找到可靠证据才标记成功。未确定保留待核对并跳过，不重复发送，也不阻塞其余待发；继续只处理待发记录。',
-          'Profile checks are read-only; only reliable evidence confirms success. Unproven records remain for review and are skipped, never resent, without blocking other pending recipients. Resume only processes pending records.')}</span>
+        <span>{batchUncertainPolicyText(batch, t)}</span>
       </div>}
       <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated}
         otherTaskActive={otherTaskActive} disabled={acting || verifying} runAction={runAction} />
+      <BatchFailurePolicyPanel batch={batch} runAction={runAction} disabled={acting} />
       {!authenticated && <p className="task-offline-note">{t('账号未登录：可查看保存记录，登录此账号后才能继续发送。',
         'Account offline: saved records remain available. Sign in to this account to resume sending.')}</p>}
       {otherTaskActive && active && <p className="task-offline-note">{t('当前账号有其他未结束任务，请先处理或取消该任务。',

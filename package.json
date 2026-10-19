@@ -1,6 +1,6 @@
 {
   "name": "steam-friend-commenter",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "XiaoLan Steam Toolbox: screenshots, artwork, multi-account friends, and profile comments.",
   "main": "out/main/index.js",
   "author": {

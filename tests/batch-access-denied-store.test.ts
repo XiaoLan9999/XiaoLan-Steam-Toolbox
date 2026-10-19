@@ -183,7 +183,7 @@ describe('durable access denial circuit breaker state', () => {
       status: 'paused', stopCode: 'APP_RESTARTED', succeeded: 1, pending: 1 })
     expect(migrated.listBatchDeliveries(accountId, task.id)).toEqual(deliveries)
     const inspection = new DatabaseSync(data.databasePath, { readOnly: true })
-    try { expect(inspection.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 8 }) }
+    try { expect(inspection.prepare('PRAGMA user_version').get()).toMatchObject({ user_version: 9 }) }
     finally { inspection.close() }
   })
 

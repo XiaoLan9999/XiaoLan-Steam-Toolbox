@@ -1,0 +1,8 @@
+.batch-failure-fields { min-width: 0; margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.batch-failure-fields legend { padding: 0 7px; font-size: 13px; font-weight: 700; }
+.batch-failure-fields label { display: flex; flex-direction: column; gap: 8px; margin: 5px 0 14px; color: var(--muted); font-size: 12px; }
+.batch-failure-fields select { width: 100%; min-width: 0; }
+.batch-failure-fields p, .batch-failure-panel > p { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.batch-failure-panel { margin-top: 18px; border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; }
+.batch-failure-panel > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.batch-failure-panel > button { margin-top: 13px; }

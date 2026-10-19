@@ -4,6 +4,7 @@ import type { ArtworkUploadDraft, ProfileBackgroundCatalog, ProfileBackgroundIma
 import type { UpdatePreferences, UpdateState } from './update-types'
 import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from './steam-screenshots'
 import type { GameStatusApi, GameStatusSnapshot } from './game-status'
+import type { BatchFailurePolicy } from './batch-failure-policy'
 
 export type SessionState = 'offline' | 'restoring' | 'authenticated' | 'expired' | 'error'
 
@@ -163,6 +164,7 @@ export type BatchStopCode =
   | 'RETRY_EXHAUSTED'
   | 'QUEUE_ERROR'
   | 'LEGACY_PAUSED'
+  | 'DELIVERY_FAILED'
   | 'CANCELLED'
 
 export interface BatchPauseDetails {
@@ -186,6 +188,7 @@ export interface BatchRecord {
   startedAt: string | null
   finishedAt: string | null
   autoRetryEnabled: boolean
+  failurePolicy?: BatchFailurePolicy
   stopCode: BatchStopCode | null
   stopMessage: string | null
   pausedAt: string | null
@@ -320,6 +323,7 @@ export interface BatchStartInput {
   messageTemplate: string
   delayMs: number
   autoRetryEnabled?: boolean
+  failurePolicy?: BatchFailurePolicy
 }
 
 export type AppEvent =
@@ -398,6 +402,7 @@ export interface SteamFriendCommenterApi {
   resumeBatch(batchId: string): Promise<IpcResult<void>>
   verifyBatch(batchId: string): Promise<IpcResult<void>>
   setBatchAutoRetry(batchId: string, enabled: boolean): Promise<IpcResult<void>>
+  setBatchFailurePolicy(batchId: string, policy: BatchFailurePolicy): Promise<IpcResult<void>>
   cancelBatch(batchId: string): Promise<IpcResult<void>>
   onEvent(callback: (event: AppEvent) => void): () => void
 }
