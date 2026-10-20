@@ -1,6 +1,6 @@
 {
   "name": "steam-friend-commenter",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "XiaoLan Steam Toolbox: screenshots, artwork, multi-account friends, and profile comments.",
   "main": "out/main/index.js",
   "author": {
@@ -11,8 +11,9 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "postinstall": "node scripts/patch-steam-user-rich-presence.mjs",
+    "dev": "node scripts/build-native-presence.mjs && electron-vite dev",
+    "build": "npm run typecheck && node scripts/build-native-presence.mjs && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:watch": "vitest",

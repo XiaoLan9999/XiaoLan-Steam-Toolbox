@@ -9,6 +9,12 @@ files:
   - out/renderer/**
   - package.json
 asar: true
+extraResources:
+  - from: resources/native-presence
+    to: native-presence
+    filter:
+      - worker-x86.exe
+      - worker-x64.exe
 win:
   executableName: XiaoLanSteamToolbox
   target:

@@ -8,6 +8,7 @@ import { CommentScanQueue } from './comment-scan-queue'
 import { SecretCipher, SqliteStore } from './store'
 import { SteamService, publicErrorMessage } from './steam-service'
 import { GameStatusService } from './game-status-service'
+import { NativePresenceBroker } from './native-presence-broker'
 import type { GameStatusAction, GameStatusAppInput, GameStatusLiveDisplayInput, GameStatusPatchInput, GameStatusPlayInput, GameStatusSaveDraftInput, GameStatusUnlockInput } from '../shared/game-status'
 import type { BatchFailurePolicy } from '../shared/batch-failure-policy'
 import { DomainError } from '../shared/domain'
@@ -124,6 +125,7 @@ app.whenReady().then(async () => {
   }, { onDiagnostic: (event) => diagnostics?.sessionEvent(event) })
   queue = new BatchQueue(store, steam, emit)
   gameStatus = new GameStatusService({
+    nativeWriter: new NativePresenceBroker({ workerDirectory: app.isPackaged ? join(process.resourcesPath, 'native-presence') : join(app.getAppPath(), 'resources', 'native-presence'), onContextLost: () => gameStatus.invalidateLiveContext() }),
     getActiveAccount: () => {
       if (accountTransition.active) return null
       const id = store.getActiveAccountId()

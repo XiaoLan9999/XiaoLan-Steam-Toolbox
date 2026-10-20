@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AccountView } from '../../../shared/types'
 import type { GameStatusAction, GameStatusApi, GameStatusAppInfo, GameStatusDraft, GameStatusGame, GameStatusLiveLock, GameStatusLiveSnapshot, GameStatusOperation, GameStatusPresence, GameStatusSnapshot } from '../../../shared/game-status'
 import { validateGameStatusPresence, isSafeGameStatusIconUrl } from '../../../shared/game-status-presence'
+import { gameStatusFailureMessage, gameStatusFailureStageMessage, isGameStatusFailureCode } from '../../../shared/game-status-errors'
 import { useI18n, type Translate } from '../i18n'
 import './game-status.css'
 
@@ -11,14 +12,34 @@ type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null
 const EMPTY_DRAFT: GameStatusDraft = { displayKind: 'app', gameName: '', details: '' }
 
 export function gameStatusError(error: unknown, t: Translate): string {
-  const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : ''
-  if (/ACCOUNT|IDENTITY|WRONG_STEAM/.test(code)) return t('账号身份已变化或不匹配，请重新选中账号，再使用工具箱账号连接。', 'The account changed or its identity does not match. Select it again and connect with the toolbox account.')
-  if (/SESSION|SNAPSHOT|EPOCH|CONFLICT/.test(code)) return t('账号或游戏快照已变化，未继续覆盖。请刷新并重新读取。', 'The account or game snapshot changed. No further overwrite was made. Refresh and read again.')
-  if (/GUARD|CODE/.test(code)) return t('工具箱登录需要重新验证。请回到当前账号页面完成登录，再重试连接。', 'Toolbox sign-in needs verification. Complete sign-in on the current account page, then connect again.')
-  if (/BLOCKED|OCCUPIED/.test(code)) return t('账号正在其他会话游玩，模拟显示已让位。请使用真实游戏状态编辑。', 'The account is playing in another session. Simulation yields to it; use the live game editor.')
-  if (/LOGIN|AUTH/.test(code)) return t('工具箱登录可能已过期，请先回当前账号页面完成登录，再重试连接。', 'Toolbox sign-in may have expired. Sign in again on the current account page, then retry the connection.')
-  if (/INVALID|VALIDATION|TOO_LONG|UNSUPPORTED/.test(code)) return t('输入内容或字段不符合要求，请检查 AppID、文字长度和可编辑字段。', 'An input or field is not valid. Check the AppID, text length and editable fields.')
-  return t('本次操作未完成。请刷新后重试；若登录已过期，请先在工具箱当前账号页面重新登录。', 'The operation did not complete. Refresh and retry; if sign-in expired, sign in again on the current toolbox account page first.')
+  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined
+  return gameStatusFailureMessage(code, t)
+}
+
+export function GameStatusFailureNotice({ failure }: { failure: unknown }): React.JSX.Element {
+  const { language, t } = useI18n()
+  const value = failure && typeof failure === 'object' ? failure as Record<string, unknown> : {}
+  const at = typeof value.at === 'string' && value.at.length <= 40 ? Date.parse(value.at) : NaN
+  const time = Number.isFinite(at) ? new Date(at).toLocaleString(language === 'en' ? 'en-US' : 'zh-CN') : t('时间不可用', 'Time unavailable')
+  const submitted = value.submitted === 'no'
+    ? t('尚未提交状态修改', 'No status changes were submitted')
+    : value.submitted === 'yes'
+      ? t('已尝试提交，是否生效需以回读为准', 'Submission was attempted; readback is needed to confirm the result')
+      : t('是否提交尚不能确定，请先读取核对', 'Submission is not confirmed; read the current status first')
+  return <section className="game-status-notice error" role="alert" aria-label={t('游戏状态操作原因', 'Game status operation reason')}>
+    <strong>{gameStatusFailureMessage(value.code, t)}</strong>
+    <p>{gameStatusFailureStageMessage(value.stage, t)} · {time}</p>
+    <p>{submitted}</p>
+    {isGameStatusFailureCode(value.code) && <code>{value.code}</code>}
+    {typeof value.appId === 'number' && Number.isInteger(value.appId) && value.appId > 0 && value.appId <= 0xffffff && <span> · AppID {value.appId}</span>}
+  </section>
+}
+
+export function GameStatusConnectionNotice({ snapshot }: { snapshot: (Pick<GameStatusSnapshot, 'status' | 'error'> & { failure?: unknown }) | null }): React.JSX.Element | null {
+  const { t } = useI18n()
+  if (snapshot?.failure) return <GameStatusFailureNotice failure={snapshot.failure} />
+  if (snapshot?.status === 'guard_required') return <p className="game-status-inline-error">{gameStatusFailureMessage('GAME_STATUS_GUARD_REQUIRED', t)}</p>
+  return snapshot?.error ? <p className="game-status-inline-error">{gameStatusFailureMessage(undefined, t)}</p> : null
 }
 
 function statusLabel(status: GameStatusSnapshot['status'] | undefined, t: Translate): string {
@@ -266,7 +287,7 @@ export function GameStatusPanel({ activeAccount, api }: GameStatusPanelProps): R
       <section className="game-status-card game-status-login"><div className="game-status-section-title"><div><h3>{t('连接工具箱当前账号', 'Connect the current toolbox account')}</h3><p>{t('复用工具箱已有登录，不需要再次输入登录名、密码或验证码。', 'Reuse the existing toolbox sign-in without entering a login name, password or code again.')}</p></div><button className="ghost" disabled={working || !snapshot} onClick={() => void run('refresh', () => api.state(), setSnapshot)}>{t('刷新状态', 'Refresh state')}</button></div>
         <div className="game-status-connect-actions"><button className="primary" disabled={working || !snapshot || visibleSnapshot?.status === 'connecting'} onClick={connectWithToolbox}>{busy === 'login' || visibleSnapshot?.status === 'connecting' ? t('正在连接…', 'Connecting…') : t('使用工具箱当前账号连接', 'Connect with current toolbox account')}</button><button disabled={working || !sameAccount || !snapshot} onClick={() => void run('logout', context => api.logout(context), replaceLive)}>{t('断开游戏状态连接', 'Disconnect game status')}</button></div>
         <p className="game-status-help">{t('打开本页不会自动连接或修改在线状态。若现有登录已过期，请回到工具箱当前账号页面完成登录，再点击连接重试。', 'Opening this page does not automatically connect or change online presence. If the existing sign-in expired, complete sign-in on the current toolbox account page, then connect again.')}</p>
-        {(visibleSnapshot?.error || visibleSnapshot?.status === 'guard_required') && <p className="game-status-inline-error">{t('游戏状态连接未完成。请先在工具箱当前账号页面检查登录并完成验证，再刷新重试。', 'The game status connection is not ready. Check sign-in and complete verification on the current toolbox account page, then refresh and retry.')}</p>}
+        <GameStatusConnectionNotice snapshot={visibleSnapshot} />
         {sameAccount && snapshot?.status === 'logged_on' && !identityMatches && <p className="game-status-inline-error">{t('登录身份与选中 SteamID 不一致，显示与状态修改已禁用。', 'The signed-in identity differs from the selected SteamID. Display and status changes are disabled.')}</p>}
       </section>
 
@@ -295,7 +316,7 @@ export function GameStatusPanel({ activeAccount, api }: GameStatusPanelProps): R
           <div className="game-status-live-meta"><span>{formatTime(editor.observedAt)}</span><span>{editor.fields && Object.keys(editor.fields).length} {t('个公开字段', 'exposed fields')}</span><span>{changedCount} {t('项未提交修改', 'unsubmitted changes')}</span></div>
           <p className="game-status-readback"><span>{t('Steam 实际子状态回读（不是本机预览）', 'Steam substatus readback (not a local preview)')}</span><strong>{editor.localizedString || t('Steam 未返回可渲染的子状态；不能确认好友端显示。', 'Steam did not return a renderable substatus; the friend-client display is not confirmed.')}</strong></p>
           {liveStale && <div className="game-status-notice info">{t('当前游戏或快照已经变化，旧编辑内容已保留但不能提交。请重新读取。', 'The game or snapshot changed. Old edits are retained but cannot be submitted. Read the current game again.')}</div>}
-          {hasRestorablePatch && <p className="game-status-notice info">{t('上次修改仍有安全恢复记录。请先恢复原字段；若游戏已自行更新，可重新读取来丢弃已被覆盖的旧记录，再提交新修改。', 'A safe-restore record remains from the previous edit. Restore original fields first. If the game has already updated them, read again to retire the superseded record before submitting another edit.')}</p>}
+          {hasRestorablePatch && <p className="game-status-notice info">{t('上次修改仍有安全恢复记录。可先安全恢复原字段；待核对或部分写入的记录会保留，重新读取不会自动重发。已被游戏覆盖的普通旧记录，或超过 10 分钟的记录，可在重新读取后建立新基线。', 'A safe-restore record remains from the previous edit. Safely restore original fields first. Unconfirmed or partial-write records are retained; reading again never resends them. A normal superseded record, or one over 10 minutes old, can be retired by reading again to establish a new baseline.')}</p>}
           <section className="game-status-live-display"><div className="game-status-section-title"><div><h3>{t('模板化子状态', 'Template-based substatus')}</h3><p>{t('使用当前游戏真正发布的模板；不伪造任意显示令牌。', 'Use templates actually published by this game, not invented display tokens.')}</p></div><button disabled={working || !signedIn || liveStale} onClick={inspectLive}>{busy === 'inspectLive' ? t('读取中…', 'Reading…') : t('读取子状态模板与图标', 'Read substatus templates and icon')}</button></div>
             {visibleLiveInfo && <GameStatusTemplateEditor id={`${baseId}-live-display`} info={visibleLiveInfo} presence={livePresence} disabled={working || liveStale || activeLiveLock} onChange={presence => { liveDraftRevision.current++; setLivePresence(presence) }} />}
             <label className="game-status-checkbox"><input type="checkbox" checked={lockDisplay} disabled={foregroundWorking || activeLiveLock} onChange={event => setLockDisplay(event.target.checked)} /><span>{t('持续锁定此子状态，游戏更新后定期重申', 'Keep this substatus locked and periodically reassert it after game updates')}</span></label>

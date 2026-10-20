@@ -1,4 +1,24 @@
+import type { GameStatusFailure } from './game-status-errors'
+
 export type GameStatusConnectionStatus = 'logged_out' | 'connecting' | 'guard_required' | 'logged_on' | 'error' | 'disconnected'
+
+export interface GameStatusPresenceReadDiagnostic {
+  at: string
+  appId: number
+  usersCount: number
+  selfPresent: boolean
+  presenceKind: 'missing' | 'object' | 'array' | 'other'
+  valueCount: number
+  nonStringValues: number
+}
+
+export interface GameStatusPresenceWireDiagnostic {
+  at: string
+  rows: number
+  selfPresent: boolean
+  legacyBytes: number
+  newKvPairs: number
+}
 
 export interface GameStatusAction { accountId: string; sessionId: string }
 export interface GameStatusConnectInput extends GameStatusAction { accountName: string; password: string }
@@ -77,6 +97,9 @@ export interface GameStatusSnapshot {
   error: string | null
   appInfo?: GameStatusAppInfo | null
   liveLock?: GameStatusLiveLock | null
+  failure?: GameStatusFailure | null
+  presenceRead?: GameStatusPresenceReadDiagnostic | null
+  presenceWire?: GameStatusPresenceWireDiagnostic | null
 }
 
 export interface GameStatusApi {

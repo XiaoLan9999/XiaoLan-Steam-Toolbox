@@ -2,6 +2,9 @@ import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { DomainError } from '../shared/domain'
+import { gameStatusFailureMessage, isGameStatusFailureCode, type GameStatusFailureCode, type GameStatusFailureStage } from '../shared/game-status-errors'
+import { summarizeRichPresencePacket } from './steam-presence-wire'
 import type { GameStatusAction, GameStatusAppInfo, GameStatusAppInput, GameStatusConnectInput, GameStatusDraft, GameStatusGuardInput, GameStatusLiveDisplayInput, GameStatusOperation, GameStatusPatchInput, GameStatusPlayInput, GameStatusSaveDraftInput, GameStatusSnapshot, GameStatusUnlockInput } from '../shared/game-status'
 import { isGameStatusPresenceParameter, sanitizeGameStatusPresence, validateGameStatusPresence } from '../shared/game-status-presence'
 import { readGameStatusAppInfo } from './game-status-apps'
@@ -27,6 +30,10 @@ export interface GameStatusServiceOptions {
   createClient?(options: Record<string, unknown>): GameStatusSteamClient
   getToolboxLogin?(accountId: string): Promise<{ steamId: string; accountName: string; webLogonToken: string }>
   draftPath?: string
+  nativeWriter?: {
+    apply(context: { appId: number; steamId: string }, changes: Record<string, string | null>, canSubmit: () => boolean): Promise<void>
+    stop(): void
+  }
 }
 
 export const GAME_STATUS_CLIENT_OPTIONS = Object.freeze({ dataDirectory: null, autoRelogin: false, saveAppTickets: false, enablePicsCache: false, changelistUpdateInterval: 0, renewRefreshTokens: false })
@@ -91,7 +98,7 @@ export function createGameStatusSteamClient(options: Record<string, unknown> = G
 
 interface LiveContext { client: GameStatusSteamClient; generation: number; appId: number; epoch: number; accountId: string; steamId: string }
 interface Observation { context: LiveContext; raw: Record<string, string>; snapshotId: string; observedAt: number }
-interface Patch { context: LiveContext; original: Record<string, string | undefined>; written: Record<string, string>; writtenAt: number }
+interface Patch { context: LiveContext; original: Record<string, string | undefined>; written: Record<string, string>; writtenAt: number; uncertain?: boolean }
 interface PresenceRead { raw: Record<string, string>; localizedString: string | null }
 interface LiveLockController { context: LiveContext; version: number; desired: Record<string, string>; original: Record<string, string | undefined>; timer: ReturnType<typeof setTimeout> | null }
 
@@ -131,18 +138,24 @@ export class GameStatusService {
   snapshot(): GameStatusSnapshot { return this.getSnapshot() }
   state(): GameStatusSnapshot { return this.getSnapshot() }
   private emit(): void { try { this.options.onChange?.(this.getSnapshot()) } catch { /* UI cannot interrupt cleanup. */ } }
+  private operationFailure(code: GameStatusFailureCode, stage: GameStatusFailureStage, appId?: number,
+    submitted: 'no' | 'yes' | 'unknown' = 'no'): DomainError {
+    this.value.failure = { code, stage, at: new Date().toISOString(), ...(appId ? { appId } : {}), submitted }
+    this.emit()
+    return new DomainError(code, gameStatusFailureMessage(code, zh => zh))
+  }
   private selected(input: GameStatusAction): { id: string; steamId: string } {
-    if (this.disposed) throw new Error('游戏状态服务已关闭。')
+    if (this.disposed) throw new DomainError('GAME_STATUS_CONTEXT_CHANGED', '游戏状态服务已关闭。')
     const selected = this.options.getActiveAccount()
-    if (!selected || !input || input.accountId !== selected.id || input.sessionId !== this.value.sessionId) throw new Error('当前工具箱账号或游戏状态会话已经变化，请刷新。')
-    if (this.bound && (this.bound.id !== selected.id || this.bound.steamId !== selected.steamId)) throw new Error('当前工具箱账号已经变化，请重新登录游戏状态会话。')
+    if (!selected || !input || input.accountId !== selected.id || input.sessionId !== this.value.sessionId) throw new DomainError('GAME_STATUS_CONTEXT_CHANGED', '当前工具箱账号或游戏状态会话已经变化，请刷新。')
+    if (this.bound && (this.bound.id !== selected.id || this.bound.steamId !== selected.steamId)) throw new DomainError('GAME_STATUS_CONTEXT_CHANGED', '当前工具箱账号已经变化，请重新登录游戏状态会话。')
     return selected
   }
   private current(client: GameStatusSteamClient, generation: number): boolean {
     const selected = this.options.getActiveAccount()
     return !this.disposed && this.client === client && this.generation === generation && !!selected && selected.id === this.bound?.id && selected.steamId === this.bound.steamId
   }
-  private logged(input: GameStatusAction): void { this.selected(input); if (!this.client || !this.value.connected) throw new Error('请先单独登录当前账号的游戏状态会话。') }
+  private logged(input: GameStatusAction): void { this.selected(input); if (!this.client || !this.value.connected) throw this.operationFailure('GAME_STATUS_NOT_CONNECTED', 'session') }
   private bind(client: GameStatusSteamClient, event: string, listener: Listener): void { client.on(event, listener); this.listeners.push([event, listener]) }
   private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = null }
   private timeout(client: GameStatusSteamClient, generation: number, ms: number, message = 'Steam 登录等待超时，请重试。'): void {
@@ -152,11 +165,12 @@ export class GameStatusService {
   }
   private stopLiveLock(): void {
     this.lockVersion++
+    this.options.nativeWriter?.stop()
     if (this.liveLock?.timer) clearTimeout(this.liveLock.timer)
     this.liveLock = null
     if (this.value.liveLock) Object.assign(this.value.liveLock, { status: 'stopped', nextCheckAt: null })
   }
-  private clearLive(): void { this.stopLiveLock(); this.epoch++; this.observation = null; this.patch = null; this.value.live = null; this.value.liveLock = null; this.value.lastOperation = null }
+  private clearLive(): void { this.stopLiveLock(); this.epoch++; this.observation = null; this.patch = null; this.value.live = null; this.value.liveLock = null; this.value.lastOperation = null; this.value.failure = null; this.value.presenceRead = null; this.value.presenceWire = null }
   private clearSimulation(): void {
     const needed = this.ownsSimulation || this.ownedApps.size > 0 || this.pendingSimulationClear
     this.value.playing = null; this.value.limitations = []
@@ -186,9 +200,10 @@ export class GameStatusService {
     }
     this.listeners = []
   }
-  private fail(message: string): void {
+  private fail(message: string, code: GameStatusFailureCode = 'GAME_STATUS_CM_CONNECT_FAILED', stage: GameStatusFailureStage = 'cm_connect'): void {
     this.retire(false)
     Object.assign(this.value, { status: 'error', connected: false, steamId: null, guard: null, blocked: false, blockingAppId: null, playing: null, live: null, busy: false, error: message })
+    this.value.failure = { code, stage, at: new Date().toISOString(), submitted: 'no' }
     this.emit()
   }
 
@@ -239,7 +254,7 @@ export class GameStatusService {
       return this.startClient({ accountName, steamID: login.steamId, webLogonToken: login.webLogonToken }, true)
     } catch {
       assertPreparation()
-      this.fail(toolboxLoginMessage)
+      this.fail(toolboxLoginMessage, 'GAME_STATUS_WEB_SESSION_FAILED', 'toolbox_login')
       return this.snapshot()
     }
   }
@@ -249,9 +264,14 @@ export class GameStatusService {
     try { client = (this.options.createClient ?? createGameStatusSteamClient)({ ...GAME_STATUS_CLIENT_OPTIONS }) } catch { this.fail(toolboxLogin ? toolboxLoginMessage : '无法初始化 Steam 会话。'); return this.snapshot() }
     this.client = client
     const generation = this.generation
+    this.bind(client, 'debug-traffic-incoming', (packet: unknown, message: unknown) => {
+      if (message !== 7503 || !Buffer.isBuffer(packet) || !this.current(client, generation) || !this.bound) return
+      const summary = summarizeRichPresencePacket(packet, this.bound.steamId)
+      if (summary) this.value.presenceWire = { at: new Date().toISOString(), ...summary }
+    })
     this.bind(client, 'steamGuard', (domain: unknown, callback: (code: string) => void, wrong: boolean) => {
       if (!this.current(client, generation)) return
-      if (toolboxLogin) { this.fail(toolboxLoginMessage); return }
+      if (toolboxLogin) { this.fail(toolboxLoginMessage, 'GAME_STATUS_GUARD_REQUIRED', 'identity'); return }
       const challengeId = id(); this.challenge = { id: challengeId, callback, retryAt: Date.now() + (wrong ? 30000 : 0) }
       this.value.status = 'guard_required'; this.value.guard = { challengeId, type: domain ? 'email' : 'authenticator', emailDomain: typeof domain === 'string' && /^[\w.-]{1,128}$/.test(domain) ? domain : null, lastCodeWrong: !!wrong, retryAfterSeconds: wrong ? 30 : 0 }
       this.timeout(client, generation, 300000); this.emit()
@@ -260,7 +280,7 @@ export class GameStatusService {
       if (!this.current(client, generation)) return
       let steamId: string | null = null
       try { steamId = client.steamID?.getSteamID64() ?? null } catch { /* Reject unknown identity. */ }
-      if (steamId !== this.bound?.steamId) { this.fail(toolboxLogin ? '工具箱登录身份与当前账号不一致，请回到工具箱账号页面重新登录。' : '登录的 Steam 账号与当前工具箱账号不一致，已退出本机会话。'); return }
+      if (steamId !== this.bound?.steamId) { this.fail(toolboxLogin ? '工具箱登录身份与当前账号不一致，请回到工具箱账号页面重新登录。' : '登录的 Steam 账号与当前工具箱账号不一致，已退出本机会话。', 'GAME_STATUS_IDENTITY_MISMATCH', 'identity'); return }
       this.clearTimer(); this.challenge = null
       this.value.status = 'logged_on'; this.value.connected = true; this.value.steamId = steamId; this.value.guard = null
       if (!this.seenPlayingState) { this.value.blocked = !!client.playingState?.blocked; this.value.blockingAppId = this.value.blocked ? client.playingState?.appid || null : null }
@@ -375,22 +395,44 @@ export class GameStatusService {
   invalidate(): void { this.retire(true); this.bound = null; this.value = this.empty(); this.emit() }
   dispose(): void { if (this.disposed) return; this.invalidate(); this.disposed = true }
 
+  invalidateLiveContext(): void {
+    if (this.disposed) return
+    this.stopLiveLock()
+    this.observation = null
+    this.value.failure = { code: 'GAME_STATUS_NATIVE_CONTEXT', stage: 'context', at: new Date().toISOString(),
+      ...(this.value.blockingAppId ? { appId: this.value.blockingAppId } : {}), submitted: this.patch ? 'unknown' : 'no' }
+    this.emit()
+  }
+
   private context(input: GameStatusAction): LiveContext {
     this.logged(input)
-    if (!this.value.blocked || !this.value.blockingAppId) throw new Error('只有账号在其他会话实际运行游戏时才能读取或修补真实状态。')
+    if (!this.value.blocked || !this.value.blockingAppId) throw this.operationFailure('GAME_STATUS_NO_LIVE_GAME', 'playing_state')
     return { client: this.client!, generation: this.generation, appId: this.value.blockingAppId, epoch: this.epoch, accountId: input.accountId, steamId: this.bound!.steamId }
   }
   private assertContext(context: LiveContext): void {
-    if (!this.current(context.client, context.generation) || !this.value.connected || !this.value.blocked || this.value.blockingAppId !== context.appId || this.epoch !== context.epoch || this.bound?.steamId !== context.steamId) throw new Error('账号、真实游戏或登录会话已经变化，已丢弃旧操作。')
+    if (!this.current(context.client, context.generation) || !this.value.connected || !this.value.blocked || this.value.blockingAppId !== context.appId || this.epoch !== context.epoch || this.bound?.steamId !== context.steamId) throw new DomainError('GAME_STATUS_CONTEXT_CHANGED', gameStatusFailureMessage('GAME_STATUS_CONTEXT_CHANGED', zh => zh))
   }
-  private async read(context: LiveContext): Promise<PresenceRead> {
+  private async read(context: LiveContext, submitted: 'no' | 'yes' = 'no'): Promise<PresenceRead> {
     this.assertContext(context)
+    this.value.presenceRead = null
+    this.value.presenceWire = null
     let response: Awaited<ReturnType<GameStatusSteamClient['requestRichPresence']>>
-    try { response = await context.client.requestRichPresence(context.appId, [context.steamId], this.cachedAppInfo(context.appId)?.language ?? 'english') } catch { throw new Error('读取 Steam 游戏详细状态失败。') }
+    try { response = await context.client.requestRichPresence(context.appId, [context.steamId], this.cachedAppInfo(context.appId)?.language ?? 'english') } catch { this.assertContext(context); throw this.operationFailure('GAME_STATUS_RP_READ_FAILED', submitted === 'yes' ? 'readback' : 'read_presence', context.appId, submitted) }
     this.assertContext(context)
     const user = response?.users?.[context.steamId]
     const raw = user?.richPresence
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Buffer.byteLength(JSON.stringify(raw)) > 65536 || Object.values(raw).some(value => typeof value !== 'string')) throw new Error('未取得当前账号有效的游戏详细状态。')
+    const isObject = !!raw && typeof raw === 'object' && !Array.isArray(raw)
+    const values: unknown[] = isObject ? Object.values(raw) : []
+    this.value.presenceRead = { at: new Date().toISOString(), appId: context.appId,
+      usersCount: response?.users && typeof response.users === 'object' ? Object.keys(response.users).length : 0,
+      selfPresent: !!user, presenceKind: raw === undefined || raw === null ? 'missing' : Array.isArray(raw) ? 'array' : isObject ? 'object' : 'other',
+      valueCount: values.length, nonStringValues: values.filter(value => typeof value !== 'string').length }
+    if (!raw) {
+      const wire = this.value.presenceWire as GameStatusSnapshot['presenceWire']
+      throw this.operationFailure(wire?.selfPresent && wire.newKvPairs > 0 ? 'GAME_STATUS_RP_PROTOCOL_MISMATCH' : 'GAME_STATUS_RP_EMPTY',
+        submitted === 'yes' ? 'readback' : 'read_presence', context.appId, submitted)
+    }
+    if (!isObject || Buffer.byteLength(JSON.stringify(raw)) > 65536 || values.some(value => typeof value !== 'string')) throw this.operationFailure('GAME_STATUS_RP_INVALID', submitted === 'yes' ? 'readback' : 'read_presence', context.appId, submitted)
     const localized = user?.localizedString
     const privateValues = Object.entries(raw).filter(([key, value]) => key !== 'steam_display' && !isGameStatusPresenceParameter(key) && value).map(([, value]) => value)
     return { raw: { ...raw }, localizedString: typeof localized === 'string' && !control.test(localized) && Buffer.byteLength(localized) <= 2048 && !privateValues.some(value => localized.includes(value)) ? localized : null }
@@ -426,13 +468,13 @@ export class GameStatusService {
     const game = this.cachedAppInfo(context.appId)
     this.value.live = { snapshotId, appId: context.appId, gameEpoch: context.epoch, observedAt: new Date().toISOString(), fields, editableKeys: Object.keys(fields).filter(key => !readOnly.has(key)), readOnlyKeys: Object.keys(fields).filter(key => readOnly.has(key)), patchActive: !!this.patch, localizedString: this.localizedReadback(context, read), ...(game ? { game: { appId: game.appId, name: game.name, iconUrl: game.iconUrl } } : {}) }
   }
-  private outcome(kind: GameStatusOperation['kind'], outcome: GameStatusOperation['outcome'], message: string, changedKeys?: string[]): void { this.value.lastOperation = { kind, outcome, message, at: new Date().toISOString(), ...(changedKeys ? { changedKeys } : {}) }; this.value.error = null }
+  private outcome(kind: GameStatusOperation['kind'], outcome: GameStatusOperation['outcome'], message: string, changedKeys?: string[]): void { this.value.lastOperation = { kind, outcome, message, at: new Date().toISOString(), ...(changedKeys ? { changedKeys } : {}) }; this.value.error = null; if (outcome !== 'unverified') this.value.failure = null }
   private async once(input: GameStatusAction, operation: (context: LiveContext) => Promise<void>): Promise<GameStatusSnapshot> {
     const context = this.context(input)
-    if (this.busyToken) throw new Error('上一个真实状态操作尚未结束。')
+    if (this.busyToken) throw this.operationFailure('GAME_STATUS_BUSY', 'operation', context.appId)
     let finish!: () => void
     const done = new Promise<void>(resolve => { finish = resolve })
-    const token = {}; this.busyToken = token; this.busyDone = done; this.value.busy = true; this.emit()
+    const token = {}; this.busyToken = token; this.busyDone = done; this.value.busy = true; this.value.failure = null; this.emit()
     try { await operation(context) } finally { finish(); if (this.busyToken === token) { this.busyToken = null; this.busyDone = null; this.value.busy = false; this.emit() } }
     return this.snapshot()
   }
@@ -445,19 +487,47 @@ export class GameStatusService {
       const read = await this.read(context); const raw = read.raw
       const expired = !!this.patch && Date.now() - this.patch.writtenAt >= LIVE_RESTORE_TTL_MS
       const superseded = !!this.patch && !this.writtenMatches(raw, this.patch.written)
-      if (!this.liveLock && (expired || superseded)) this.patch = null // Explicit refresh retires only local history; it does not write to Steam.
+      if (!this.liveLock && (expired || (superseded && !this.patch?.uncertain))) this.patch = null // An uncertain partial write keeps its guarded recovery ledger.
       this.showObservation(context, read)
-      this.outcome('observe', 'observed', expired ? '旧恢复记录已过期，已仅清除本地记录并重新建立读取基线，可重新编辑。' : superseded ? '游戏已覆盖旧修补，已丢弃旧的本地恢复记录，可重新编辑。' : '已读取本人当前游戏的公开字段；不会自动修改。')
+      this.outcome('observe', 'observed', expired ? '旧恢复记录已过期，已仅清除本地记录并重新建立读取基线，可重新编辑。' : this.patch?.uncertain ? '已重新读取当前状态；保留未确认提交的安全恢复记录，不会盲目重发。' : superseded ? '游戏已覆盖旧修补，已丢弃旧的本地恢复记录，可重新编辑。' : '已读取本人当前游戏的公开字段；不会自动修改。')
     })
   }
-  private upload(context: LiveContext, raw: Record<string, string>): void {
+  private async upload(context: LiveContext, raw: Record<string, string>, changes: Record<string, string | undefined>, fresh: () => void): Promise<void> {
     this.assertContext(context)
     const entries = Object.entries(raw)
     if (entries.length > 20 || entries.some(([key, value]) => !key || control.test(key) || Buffer.byteLength(key) > 63 || control.test(value) || Buffer.byteLength(value) > 255)) throw new Error('完整游戏详细状态超过 Steam 协议限制；未删减游戏字段，也未提交。')
-    try { context.client.uploadRichPresence(context.appId, raw) } catch { throw new Error('提交真实游戏详细状态失败。') }
-    this.assertContext(context)
+    fresh()
+    try {
+      if (this.options.nativeWriter) {
+        await this.options.nativeWriter.apply({ appId: context.appId, steamId: context.steamId },
+          Object.fromEntries(Object.entries(changes).map(([key, value]) => [key, value ?? null])),
+          () => { try { fresh(); return true } catch { return false } })
+      } else context.client.uploadRichPresence(context.appId, raw)
+    } catch (error) {
+      fresh()
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : null
+      throw this.operationFailure(isGameStatusFailureCode(code) && code.startsWith('GAME_STATUS_NATIVE_')
+        ? code : 'GAME_STATUS_UPLOAD_FAILED', 'upload', context.appId,
+      error && typeof error === 'object' && 'mayHaveWritten' in error && error.mayHaveWritten === false ? 'no' : 'unknown')
+    }
+    fresh()
   }
   private writtenMatches(raw: Record<string, string>, expected: Record<string, string | undefined>): boolean { return Object.entries(expected).every(([key, value]) => raw[key] === value || (value === '' && raw[key] === undefined)) }
+  private async readAfterUpload(context: LiveContext, expected: Record<string, string | undefined>, fresh: () => void): Promise<PresenceRead> {
+    let returned = await this.read(context, 'yes')
+    fresh()
+    // Native acceptance can precede Steam's CM projection; verify without resubmitting.
+    if (this.options.nativeWriter) {
+      for (const delay of [250, 750, 1500]) {
+        if (this.writtenMatches(returned.raw, expected)) break
+        await new Promise<void>(resolve => setTimeout(resolve, delay))
+        fresh()
+        returned = await this.read(context, 'yes')
+        fresh()
+      }
+    }
+    return returned
+  }
   patchLive(input: GameStatusPatchInput): Promise<GameStatusSnapshot> {
     return this.once(input, context => this.applyLiveChanges(context, input.snapshotId, input.changes, false, false, this.lockVersion))
   }
@@ -481,7 +551,7 @@ export class GameStatusService {
     if (!observed || observed.snapshotId !== snapshotId || this.patch || observed.context.epoch !== context.epoch || this.liveLock) throw new Error('请先重新读取状态，或解除锁定并恢复上一处修补。')
     const fresh = () => {
       this.assertContext(context)
-      if (lock && version !== this.lockVersion) throw new Error('锁定请求已经取消。')
+      if (version !== this.lockVersion) throw new DomainError('GAME_STATUS_CONTEXT_CHANGED', '状态修改请求已经取消。')
       if (Date.now() - observed.observedAt >= LIVE_OBSERVATION_TTL_MS) throw new Error('读取快照已过期，请重新读取后再修改。')
     }
     fresh()
@@ -498,12 +568,22 @@ export class GameStatusService {
     if (Object.keys(changes).some(key => latest.raw[key] !== observed.raw[key])) { this.outcome(kind, 'conflict', '游戏已经更新被修改字段，未发送；请重新读取。', Object.keys(changes)); return }
     const original = Object.fromEntries(Object.keys(changes).map(key => [key, latest.raw[key]]))
     const matchedBefore = this.writtenMatches(latest.raw, changes)
-    if (!matchedBefore) { fresh(); this.upload(context, { ...latest.raw, ...changes }) }
-    this.patch = { context, original, written: changes, writtenAt: Date.now() }; this.value.live!.patchActive = true
+    this.patch = { context, original, written: changes, writtenAt: Date.now(), uncertain: !!this.options.nativeWriter }; this.value.live!.patchActive = true
+    if (!matchedBefore) {
+      try { await this.upload(context, { ...latest.raw, ...changes }, changes, fresh) }
+      catch (error) {
+        fresh()
+        if (this.value.failure?.submitted === 'no') { this.patch = null; this.value.live!.patchActive = false }
+        else { try { const returned = await this.read(context, 'yes'); fresh(); this.showObservation(context, returned) } catch { fresh() } }
+        throw error
+      }
+    }
+    fresh()
     let returned: PresenceRead | null = matchedBefore ? latest : null
-    if (!matchedBefore) { try { returned = await this.read(context) } catch { fresh() } }
+    if (!matchedBefore) { try { returned = await this.readAfterUpload(context, changes, fresh) } catch { fresh() } }
     fresh()
     const matched = !!returned && this.writtenMatches(returned.raw, changes)
+    if (matched && this.patch) this.patch.uncertain = false
     if (returned) this.showObservation(context, returned)
     if (lock) {
       const controller: LiveLockController = { context, version, desired: { ...changes }, original: { ...original }, timer: null }
@@ -541,20 +621,23 @@ export class GameStatusService {
         if (!this.writtenMatches(returned.raw, controller.desired)) {
           for (const [key, expected] of Object.entries(controller.desired)) if (!this.writtenMatches(returned.raw, { [key]: expected })) controller.original[key] = returned.raw[key]
           this.assertLiveLock(controller)
-          this.upload(controller.context, { ...returned.raw, ...controller.desired })
-          this.patch = { context: controller.context, original: { ...controller.original }, written: { ...controller.desired }, writtenAt: Date.now() }
-          returned = await this.read(controller.context)
+          this.patch = { context: controller.context, original: { ...controller.original }, written: { ...controller.desired }, writtenAt: Date.now(), uncertain: !!this.options.nativeWriter }
+          await this.upload(controller.context, { ...returned.raw, ...controller.desired }, controller.desired, () => this.assertLiveLock(controller))
+          this.assertLiveLock(controller)
+          returned = await this.readAfterUpload(controller.context, controller.desired, () => this.assertLiveLock(controller))
           this.assertLiveLock(controller)
         }
         state.lastCheckedAt = new Date().toISOString(); state.localizedString = this.localizedReadback(controller.context, returned)
         state.matched = this.writtenMatches(returned.raw, controller.desired)
+        if (state.matched && this.patch) this.patch.uncertain = false
         this.showObservation(controller.context, returned)
         if (!state.matched) throw new Error('回读未确认锁定字段。')
         state.status = 'locked'; state.consecutiveFailures = 0; state.error = null
+        this.outcome('lock', 'matched', '锁定字段独立回读相符；继续定期核对，不代表其他好友客户端已独立确认。', Object.keys(controller.desired))
       })
     } catch {
       if (!this.liveLockCurrent(controller)) { if (this.liveLock === controller) { this.stopLiveLock(); this.emit() }; return }
-      state.matched = false; state.lastCheckedAt = new Date().toISOString(); state.consecutiveFailures++
+      state.matched = false; state.localizedString = null; state.lastCheckedAt = new Date().toISOString(); state.consecutiveFailures++
       state.status = state.consecutiveFailures >= LIVE_LOCK_MAX_FAILURES ? 'paused' : 'retrying'
       state.error = state.status === 'paused' ? '连续多次无法确认锁定字段，已暂停自动维持；可解除锁定后重新读取。' : '读取或回读未确认锁定字段，将退避重试。'
     }
@@ -581,20 +664,28 @@ export class GameStatusService {
     return this.once(input, async context => {
       const patch = this.patch
       if (!patch || patch.context.epoch !== context.epoch || patch.context.steamId !== context.steamId) throw new Error('没有可安全恢复的本工具修补记录。')
-      const fresh = () => { this.assertContext(context); if (Date.now() - patch.writtenAt >= LIVE_RESTORE_TTL_MS) throw new Error('恢复记录已过期，拒绝覆盖当前游戏状态。') }
+      const fresh = () => { this.assertContext(context); if (Date.now() - patch.writtenAt >= LIVE_RESTORE_TTL_MS) throw this.operationFailure('GAME_STATUS_RESTORE_EXPIRED', 'context', context.appId, 'no') }
       fresh()
       const latest = await this.read(context)
       fresh()
-      if (!this.writtenMatches(latest.raw, patch.written)) { this.outcome('restore', 'conflict', '游戏已经覆盖修补字段，拒绝恢复以保护新的状态。', Object.keys(patch.written)); return }
+      const keys = Object.keys(patch.written)
+      if (keys.some(key => !this.writtenMatches(latest.raw, { [key]: patch.written[key] }) && !this.writtenMatches(latest.raw, { [key]: patch.original[key] }))) { this.outcome('restore', 'conflict', '游戏已经覆盖修补字段，拒绝恢复以保护新的状态。', keys); return }
       const restored = { ...latest.raw }
-      for (const [key, value] of Object.entries(patch.original)) { if (value === undefined) delete restored[key]; else restored[key] = value }
-      fresh(); this.upload(context, restored)
-      this.patch = null
-      let returned: PresenceRead | null = null
-      try { returned = await this.read(context) } catch { this.assertContext(context) }
+      const changes: Record<string, string | undefined> = {}
+      for (const [key, value] of Object.entries(patch.original)) {
+        if (!this.writtenMatches(latest.raw, { [key]: value })) changes[key] = value
+        if (value === undefined) delete restored[key]; else restored[key] = value
+      }
+      patch.uncertain = true
+      const needsWrite = Object.keys(changes).length > 0
+      if (needsWrite) { await this.upload(context, restored, changes, fresh); fresh() }
+      let returned: PresenceRead | null = needsWrite ? null : latest
+      if (needsWrite) { try { returned = await this.readAfterUpload(context, patch.original, fresh) } catch { fresh() } }
+      fresh()
+      if (returned && this.writtenMatches(returned.raw, patch.original)) this.patch = null
       this.outcome('restore', returned && this.writtenMatches(returned.raw, patch.original) ? 'matched' : 'unverified', returned && this.writtenMatches(returned.raw, patch.original) ? '原字段回读相符；好友端显示仍未单独确认。' : '已单次提交恢复，回读尚未确认。', Object.keys(patch.original))
       if (returned) this.showObservation(context, returned)
-      else if (this.value.live) this.value.live.patchActive = false
+      else if (this.value.live) this.value.live.patchActive = !!this.patch
     })
   }
 
