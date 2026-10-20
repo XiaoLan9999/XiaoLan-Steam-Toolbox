@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
@@ -23,8 +23,9 @@ function pe(arch: 'x86' | 'x64' = 'x86') {
   return bytes
 }
 async function fixture(arch: 'x86' | 'x64' = 'x86') {
-  const root = await mkdtemp(join(tmpdir(), 'native-presence-'))
-  folders.push(root)
+  const created = await mkdtemp(join(tmpdir(), 'native-presence-'))
+  folders.push(created)
+  const root = await realpath(created)
   const steam = join(root, 'Steam')
   const installed = join(steam, 'steamapps', 'common', 'Fixture Game')
   const workerDirectory = join(root, 'resources', 'native-presence')

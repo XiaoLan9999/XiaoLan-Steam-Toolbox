@@ -1,5 +1,5 @@
 import type { GameStatusAppInfo } from '../shared/game-status'
-import { gameStatusTemplatesFromTokens, isSafeGameStatusIconUrl } from '../shared/game-status-presence'
+import { GAME_STATUS_MAX_CATALOG_BYTES, GAME_STATUS_MAX_TEMPLATES, gameStatusTemplatesFromTokens, isSafeGameStatusIconUrl } from '../shared/game-status-presence'
 
 export interface GameStatusAppClient {
   getProductInfo?(apps: number[], packages: number[], inclTokens?: boolean): Promise<unknown>
@@ -9,6 +9,28 @@ export interface GameStatusAppClient {
 export const GAME_STATUS_APP_LOOKUP_TIMEOUT_MS = 12000
 const control = /[\p{Cc}\u2028\u2029]/u
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
+
+function sdkLocalizationTokens(value: unknown): Record<string, unknown> {
+  if (!object(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error('Steam 游戏状态模板格式无效。')
+  const entries = Object.entries(value)
+  if (entries.length > GAME_STATUS_MAX_TEMPLATES * 2) throw new Error('Steam 游戏状态模板数量过大。')
+  const folded = new Map<string, { token: string; text: unknown }>()
+  let bytes = 0
+  for (const [token, text] of entries) {
+    bytes += Buffer.byteLength(token) + (typeof text === 'string' ? Buffer.byteLength(text) : 0)
+    if (bytes > GAME_STATUS_MAX_CATALOG_BYTES * 2) throw new Error('Steam 游戏状态模板数据过大。')
+    const normalized = token.toLowerCase()
+    const previous = folded.get(normalized)
+    if (previous) {
+      if (typeof text !== 'string' || previous.text !== text) throw new Error('Steam 游戏状态模板包含冲突别名。')
+      continue
+    }
+    // The SDK adds lowercase aliases to its cached map while localizing RP.
+    // Collapse only identical aliases here; shared/renderer validation stays strict.
+    folded.set(normalized, { token, text })
+  }
+  return Object.fromEntries([...folded.values()].map(entry => [entry.token, entry.text]))
+}
 
 async function bounded<T>(lookup: () => Promise<T>, assertCurrent: () => void): Promise<T> {
   assertCurrent()
@@ -55,7 +77,7 @@ export async function readGameStatusAppInfo(client: GameStatusAppClient, appId: 
   }
   assertCurrent()
   let templates: GameStatusAppInfo['templates']
-  try { templates = gameStatusTemplatesFromTokens(tokens) }
+  try { templates = gameStatusTemplatesFromTokens(sdkLocalizationTokens(tokens)) }
   catch { assertCurrent(); return { appId, name, iconUrl, language: effectiveLanguage, templates: [], templateStatus: 'unavailable' } }
   assertCurrent()
   return { appId, name, iconUrl, language: effectiveLanguage, templates, templateStatus: templates.length ? 'available' : object(tokens) && Object.keys(tokens).length ? 'unavailable' : 'empty' }

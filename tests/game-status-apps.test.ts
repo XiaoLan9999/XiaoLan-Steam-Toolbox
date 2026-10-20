@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createRequire } from 'node:module'
 import { GAME_STATUS_APP_LOOKUP_TIMEOUT_MS, readGameStatusAppInfo, type GameStatusAppClient } from '../src/main/game-status-apps'
 import { GAME_STATUS_MAX_TEMPLATES, gameStatusTemplatesFromTokens, isSafeGameStatusIconUrl, sanitizeGameStatusPresence, validateGameStatusPresence } from '../src/shared/game-status-presence'
 import type { GameStatusAppInfo, GameStatusPresence } from '../src/shared/game-status'
@@ -164,6 +165,50 @@ describe('read-only game metadata and localization catalog', () => {
   it('does not describe a malformed or unsafe nonempty catalog as an empty publication', async () => {
     const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ tokens: { '#Unsafe': '%connect%' } })
     expect(await readGameStatusAppInfo(client, APP, 'english', assertion)).toMatchObject({ name: 'Synthetic Game', iconUrl: ICON, templates: [], templateStatus: 'unavailable' })
+  })
+  it('keeps the catalog available after the installed SDK mutates cached tokens with lowercase aliases', async () => {
+    const tokens: Record<string, string> = { '#Status_Game': '%desc%' }
+    const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ tokens })
+    const before = await readGameStatusAppInfo(client, APP, 'schinese', assertion)
+    const require = createRequire(import.meta.url)
+    const Friends = require('steam-user/components/friends.js') as { prototype: { _getRPLocalizedString(this: unknown, appId: number, values: Record<string, string>, language: string): Promise<string> } }
+    expect(await Friends.prototype._getRPLocalizedString.call(client, APP, { steam_display: '#Status_Game', desc: 'Fixture room' }, 'schinese')).toBe('Fixture room')
+    expect(tokens).toEqual({ '#Status_Game': '%desc%', '#status_game': '%desc%' })
+    const cached = structuredClone(tokens)
+    Object.freeze(tokens)
+    const after = await readGameStatusAppInfo(client, APP, 'schinese', assertion)
+    expect(after).toEqual(before)
+    expect(after).toMatchObject({ language: 'schinese', templateStatus: 'available', templates: [{ token: '#Status_Game', text: '%desc%', parameters: ['desc'] }] })
+    expect(tokens).toEqual(cached)
+  })
+  it('collapses only identical SDK aliases without weakening strict shared validation', async () => {
+    const tokens = Object.freeze({ '#Ready': 'Ready', '#ready': 'Ready' })
+    const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ tokens })
+    expect(await readGameStatusAppInfo(client, APP, 'english', assertion)).toMatchObject({ templateStatus: 'available', templates: [{ token: '#Ready', text: 'Ready', parameters: [] }] })
+    expect(() => gameStatusTemplatesFromTokens(tokens)).toThrow()
+    expect(Object.keys(tokens)).toEqual(['#Ready', '#ready'])
+  })
+  it.each([
+    { '#Status_Game': '%desc%', '#status_game': 'Conflicting text' },
+    { '#Ready': 'Ready', '#ready': 42 },
+    { '#Ready': 42, '#ready': 42 }
+  ])('rejects conflicting or non-string SDK aliases: %j', async tokens => {
+    const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ tokens })
+    const before = structuredClone(tokens)
+    expect(await readGameStatusAppInfo(client, APP, 'schinese', assertion)).toMatchObject({ language: 'schinese', templateStatus: 'unavailable', templates: [] })
+    expect(client.getAppRichPresenceLocalization).toHaveBeenCalledExactlyOnceWith(APP, 'schinese')
+    expect(tokens).toEqual(before)
+  })
+  it('does not launder a non-plain SDK token object or bypass catalog bounds by folding aliases', async () => {
+    const client = fixture()
+    const inherited = Object.create({ inherited: 'not a plain record' }) as Record<string, string>
+    inherited['#Ready'] = 'Ready'
+    client.getAppRichPresenceLocalization.mockResolvedValue({ tokens: inherited })
+    expect(await readGameStatusAppInfo(client, APP, 'english', assertion)).toMatchObject({ templateStatus: 'unavailable', templates: [] })
+    const many = Object.fromEntries(Array.from({ length: GAME_STATUS_MAX_TEMPLATES + 1 }, (_, index) => [`#Token_${index}`, 'Ready']))
+    for (const [token, text] of Object.entries(many)) many[token.toLowerCase()] = text
+    client.getAppRichPresenceLocalization.mockResolvedValue({ tokens: many })
+    expect(await readGameStatusAppInfo(client, APP, 'english', assertion)).toMatchObject({ templateStatus: 'unavailable', templates: [] })
   })
   it('does not leak lookup errors or malformed RPC responses', async () => {
     const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ wrong: TABLE })
