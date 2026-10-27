@@ -48,17 +48,19 @@ function fixture() {
   fixtures.push(directory)
   mkdirSync(join(directory, 'scripts'))
   copyFileSync(join(root, 'scripts/audit-source.mjs'), join(directory, 'scripts/audit-source.mjs'))
-  execFileSync('git', ['init', '--quiet'], { cwd: directory, windowsHide: true })
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)))
+  execFileSync('git', ['init', '--quiet'], { cwd: directory, env, windowsHide: true })
   const put = (path: string, bytes: Buffer | string) => {
     const target = join(directory, path)
     mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes)
   }
-  const audit = (candidates = true) => {
-    const result = spawnSync(process.execPath, ['scripts/audit-source.mjs', ...(candidates ? ['--candidates'] : [])],
-      { cwd: directory, encoding: 'utf8', windowsHide: true })
+  const audit = (candidates = true, options: { scriptRoot?: string; env?: NodeJS.ProcessEnv } = {}) => {
+    const script = options.scriptRoot ? join(options.scriptRoot, 'scripts/audit-source.mjs') : 'scripts/audit-source.mjs'
+    const result = spawnSync(process.execPath, [script, ...(candidates ? ['--candidates'] : [])],
+      { cwd: directory, env: { ...env, ...options.env }, encoding: 'utf8', windowsHide: true })
     return { status: result.status, output: result.stdout + result.stderr }
   }
-  return { directory, put, audit }
+  return { directory, put, audit, env }
 }
 afterEach(() => {
   for (const directory of fixtures.splice(0)) {
@@ -68,6 +70,34 @@ afterEach(() => {
 })
 
 describe('reviewed logo source audit boundary', () => {
+  it.skipIf(process.platform !== 'win32')('accepts a case alias of the same Windows repository', () => {
+    const f = fixture()
+    f.put('build/icon.png', png())
+    expect(f.audit(true, { scriptRoot: f.directory.toUpperCase() })).toMatchObject({ status: 0 })
+  })
+
+  it('still rejects an active Git work tree belonging to a different repository', () => {
+    const f = fixture(), other = fixture()
+    expect(f.audit(true, { env: { GIT_DIR: join(other.directory, '.git'), GIT_WORK_TREE: other.directory } }))
+      .toMatchObject({ status: 1, output: expect.stringContaining('Audit must run in this project repository') })
+  })
+
+  it('isolates temporary fixture commands from inherited Git work-tree and index variables', () => {
+    const other = fixture()
+    const keys = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']
+    const previous = keys.map(key => process.env[key])
+    try {
+      process.env.GIT_DIR = join(other.directory, '.git')
+      process.env.GIT_WORK_TREE = other.directory
+      process.env.GIT_INDEX_FILE = join(other.directory, '.git', 'unrelated-index')
+      const f = fixture()
+      f.put('build/icon.png', png())
+      expect(f.audit()).toMatchObject({ status: 0 })
+    } finally {
+      keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index] })
+    }
+  })
+
   it('recognizes the existing synthetic ID range only in the two reviewed test trees', () => {
     const f = fixture()
     f.put('integrations/asf-status-copy/tests/Program.cs', 'const string fixtureId = "76561198000000001";')
@@ -80,7 +110,7 @@ describe('reviewed logo source audit boundary', () => {
     const f = fixture()
     f.put('build/icon.png', png(512)); f.put('build/icon.ico', ico()); f.put('src/renderer/src/assets/app-logo.png', png())
     expect(f.audit()).toMatchObject({ status: 0 })
-    execFileSync('git', ['add', '--all'], { cwd: f.directory, windowsHide: true })
+    execFileSync('git', ['add', '--all'], { cwd: f.directory, env: f.env, windowsHide: true })
     expect(f.audit(false)).toMatchObject({ status: 0 })
   })
 
@@ -112,8 +142,8 @@ describe('reviewed logo source audit boundary', () => {
 
   it('does not admit a symlink as a reviewed logo in the Git index', () => {
     const f = fixture()
-    const hash = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: f.directory, input: '../outside.png', encoding: 'utf8', windowsHide: true }).trim()
-    execFileSync('git', ['update-index', '--add', '--cacheinfo', `120000,${hash},build/icon.png`], { cwd: f.directory, windowsHide: true })
+    const hash = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: f.directory, env: f.env, input: '../outside.png', encoding: 'utf8', windowsHide: true }).trim()
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', `120000,${hash},build/icon.png`], { cwd: f.directory, env: f.env, windowsHide: true })
     expect(f.audit(false)).toMatchObject({ status: 1, output: expect.stringContaining('symlink, submodule, or unresolved index entry') })
   })
 })

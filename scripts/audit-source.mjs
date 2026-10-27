@@ -3,7 +3,7 @@ import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'))
+const root = realpathSync.native(resolve(dirname(fileURLToPath(import.meta.url)), '..'))
 const candidates = process.argv.includes('--candidates')
 const unknownArguments = process.argv.slice(2).filter((value) => value !== '--candidates')
 const issues = []
@@ -172,7 +172,7 @@ function auditFile(file, mode) {
       report(file, 0, 'candidate is not a regular file')
       return
     }
-    const realPath = realpathSync(path)
+    const realPath = realpathSync.native(path)
     const fromRoot = relative(root, realPath)
     if (isAbsolute(fromRoot) || fromRoot === '..' || fromRoot.startsWith(`..${sep}`)) {
       report(file, 0, 'candidate resolves outside repository')
@@ -211,8 +211,9 @@ function auditFile(file, mode) {
 
 try {
   if (unknownArguments.length) throw new Error('Usage: node scripts/audit-source.mjs [--candidates]')
-  const gitRoot = realpathSync(git(['rev-parse', '--show-toplevel']).toString('utf8').trim())
-  if (gitRoot !== root) throw new Error('Audit must run in this project repository')
+  const gitRoot = realpathSync.native(git(['rev-parse', '--show-toplevel']).toString('utf8').trim())
+  const pathKey = (path) => process.platform === 'win32' ? path.toLowerCase() : path
+  if (pathKey(gitRoot) !== pathKey(root)) throw new Error('Audit must run in this project repository')
   let files
   if (candidates) {
     const output = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z']).toString('utf8')

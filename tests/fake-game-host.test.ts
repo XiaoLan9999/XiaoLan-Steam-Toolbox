@@ -31,9 +31,14 @@ function fixture() {
   return { root, platform: 'win32', windowsDirectory: root, compiler: csc }
 }
 
+function productionSource(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/#if FAKE_GAME_HOST_TEST[\s\S]*?#else\n([\s\S]*?)#endif/g, '$1')
+    .replace(/#if FAKE_GAME_HOST_TEST[\s\S]*?#endif/g, '')
+}
+
 describe('fake-game host build and production boundaries', () => {
-  it('has no Steam API, network transport, remote memory access or external process termination', () => {
-    const code = readFileSync(source, 'utf8').replace(/#if FAKE_GAME_HOST_TEST[\s\S]*?#else\n([\s\S]*?)#endif/g, '$1').replace(/#if FAKE_GAME_HOST_TEST[\s\S]*?#endif/g, '')
+  it.each(['\n', '\r\n'])('has no unsafe operations in production branches for line ending %j', eol => {
+    const code = productionSource(readFileSync(source, 'utf8').replace(/\r\n/g, '\n').replace(/\n/g, eol))
     for (const forbidden of ['SteamAPI', 'steam_api', 'steam_appid', 'steamclient', 'LoadLibrary', 'MainModule', 'ReadProcessMemory', 'OpenProcess', 'TcpClient', 'HttpClient', 'WebSocket', '.Kill(', 'Process.Start(']) expect(code).not.toContain(forbidden)
     expect(code.match(/DllImport\(/g)).toHaveLength(1); expect(code).toContain('GetNamedPipeClientProcessId')
     expect(code).toContain('process.StartTime.ToUniversalTime().Ticks == ticks')
