@@ -49,6 +49,7 @@ export function batchStopLabel(code: BatchStopCode | null, t: Translate): string
     ACCESS_DENIED_PERSISTENT: t('Steam 持续拒绝访问（HTTP 403）', 'Steam repeatedly denied access (HTTP 403)'),
     SESSION_EXPIRED: t('Steam 网页会话失效', 'Steam web session expired'),
     SESSION_PREPARATION: t('Steam 会话尚未准备完成', 'Steam session is not ready'),
+    COMMENT_BASELINE: t('评论基线读取失败，尚未发送', 'Comment baseline could not be read; not sent'),
     LOGIN_REQUIRED: t('需要重新登录 Steam', 'Steam sign-in is required'),
     NETWORK_ERROR: t('网络请求暂时失败', 'Temporary network failure'),
     SERVER_ERROR: t('Steam 服务暂时异常', 'Temporary Steam service error'),
@@ -74,6 +75,7 @@ function stopSource(code: BatchStopCode | null, t: Translate): string {
   if (code === 'APP_RESTARTED' || code === 'APP_SHUTDOWN') return t('软件生命周期', 'App lifecycle')
   if (code === 'NETWORK_ERROR') return t('网络连接', 'Network connection')
   if (code === 'UNCERTAIN_RESULT') return t('发送结果保护', 'Delivery safety check')
+  if (code === 'COMMENT_BASELINE') return t('发送前只读检查', 'Read-only pre-send check')
   if (code === 'DELIVERY_FAILED') return t('用户选择的处理策略', 'Selected failure policy')
   if (code === 'QUEUE_ERROR' || code === 'RETRY_EXHAUSTED') return t('任务队列', 'Task queue')
   return t('历史记录', 'Saved history')

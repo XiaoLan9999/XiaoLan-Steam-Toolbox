@@ -23,6 +23,55 @@ function fixture(maxBytes?: number) {
 }
 
 describe('bounded local runtime diagnostics', () => {
+  it('records simulation stages without account, title or login data', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.gameStatusEvent({ stage: 'simulation-submit', connectionKind: 'cm', generation: 3,
+      steamId: '76561198000000001', accountName: 'synthetic-private-account', gameName: 'synthetic-private-title',
+      webLogonToken: 'synthetic-private-token' } as never)
+    diagnostics.gameStatusEvent({ stage: 'synthetic-private-stage', connectionKind: 'synthetic-private-kind', generation: -1 })
+    diagnostics.gameStatusEvent({ stage: 'simulation-context-confirmed', connectionKind: 'cm', generation: Infinity })
+    const contents = readFileSync(join(directory, 'runtime-current.jsonl'), 'utf8')
+    expect(contents).not.toContain('synthetic-private'); expect(contents).not.toContain('7656119')
+    const entries = contents.trim().split('\n').map(line => JSON.parse(line))
+    expect(entries[0]).toEqual({ at: expect.any(String), version: '0.7.0', event: 'game-status',
+      stage: 'simulation-submit', connectionKind: 'cm', generation: 3 })
+    expect(entries[1]).toEqual({ at: expect.any(String), version: '0.7.0', event: 'game-status', stage: 'unknown' })
+    expect(entries[2]).not.toHaveProperty('generation')
+  })
+
+  it('does not append simulation events after shutdown', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.gameStatusEvent({ stage: 'connect-requested', connectionKind: 'cm', generation: 1 })
+    diagnostics.shutdown()
+    const path = join(directory, 'runtime-current.jsonl'); const contents = readFileSync(path, 'utf8')
+    diagnostics.gameStatusEvent({ stage: 'cm-retired', connectionKind: 'cm', generation: 1 })
+    expect(readFileSync(path, 'utf8')).toBe(contents)
+  })
+
+  it('records bounded native cleanup facts without account, message, pipe or path data', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.nativePresenceEvent({ stage: 'release-pipe-returned', ok: false, elapsedMs: 12, helperPid: 123,
+      accountId: 'synthetic-private-account', steamId: '76561198000000001', pipe: 2001, desc: 'synthetic-private-body', path: 'synthetic-private-path' } as never)
+    diagnostics.nativePresenceEvent({ stage: 'worker-closed', exitCode: 0, forced: false, retiringCount: 0 })
+    diagnostics.nativePresenceEvent({ stage: 'synthetic-private-stage', ok: 'synthetic-private', helperPid: -1, elapsedMs: Infinity, exitCode: 76561198000000001, forced: 'synthetic-private', retiringCount: -1 } as never)
+    const contents = readFileSync(join(directory, 'runtime-current.jsonl'), 'utf8')
+    expect(contents).not.toContain('synthetic-private'); expect(contents).not.toContain('7656119')
+    const events = contents.trim().split('\n').map(line => JSON.parse(line))
+    expect(events[0]).toMatchObject({ event: 'native-presence', stage: 'release-pipe-returned', ok: false, elapsedMs: 12, helperPid: 123 })
+    expect(events[0]).not.toHaveProperty('pipe')
+    expect(events[1]).toMatchObject({ stage: 'worker-closed', exitCode: 0, forced: false, retiringCount: 0 })
+    expect(events[2]).toEqual({ at: expect.any(String), version: '0.7.0', event: 'native-presence', stage: 'unknown' })
+  })
+
+  it('does not record native lifecycle events after diagnostics shutdown', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.nativePresenceEvent({ stage: 'cleanup-complete', ok: true, elapsedMs: 0 })
+    diagnostics.shutdown()
+    const path = join(directory, 'runtime-current.jsonl')
+    const contents = readFileSync(path, 'utf8')
+    diagnostics.nativePresenceEvent({ stage: 'forced-kill', forced: true })
+    expect(readFileSync(path, 'utf8')).toBe(contents)
+  })
   it('samples once per minute and stops without retaining timers or private content', async () => {
     vi.useFakeTimers()
     const { directory, diagnostics, metrics } = fixture()
@@ -93,6 +142,17 @@ describe('bounded local runtime diagnostics', () => {
     expect(events[1]).not.toHaveProperty('responseKind')
     expect(events[1]).not.toHaveProperty('denialKind')
     expect(events.at(-1)).toMatchObject({ endpoint: 'session-verify', responseKind: 'html', denialKind: 'challenge', responseCode: 0, retryAfterMs: 0 })
+  })
+
+  it.each(['baseline-missing', 'baseline-incomplete', 'baseline-unreadable', 'target-unavailable'])
+  ('records a safe preflight reason %s without profile data', reason => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.sessionEvent({ phase: 'comment-preflight', outcome: 'unverified', reason,
+      method: 'GET', endpoint: 'profile-comment', profileHtml: 'private-fixture', steamId: '76561198000000002' } as never)
+    const contents = readFileSync(join(directory, 'runtime-current.jsonl'), 'utf8')
+    expect(contents).not.toContain('private-fixture')
+    expect(contents).not.toContain('7656119')
+    expect(JSON.parse(contents.trim())).toMatchObject({ phase: 'comment-preflight', reason, method: 'GET' })
   })
 
   it('ignores collection/storage failures and does not write arbitrary exit strings', () => {

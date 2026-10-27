@@ -85,10 +85,11 @@ describe('published Steam rich-presence templates', () => {
     expect(Object.keys(sanitizeGameStatusPresence(input('#Direct', nineteen)).values)).toHaveLength(19)
     expect(() => sanitizeGameStatusPresence(input('#Direct', { ...nineteen, extra: 'x' }))).toThrow()
   })
-  it('rejects static cycles, missing dependencies, malformed instructions and oversized rendered results', () => {
+  it('rejects static cycles, missing dependencies and oversized rendered results', () => {
     expect(gameStatusTemplatesFromTokens({ '#A': '{#B}', '#B': '{#A}' })).toEqual([])
     expect(gameStatusTemplatesFromTokens({ '#A': '{#Missing}' })).toEqual([])
-    expect(gameStatusTemplatesFromTokens({ '#A': '{#Missing', '#B': '%bad-name%' })).toEqual([])
+    expect(validateGameStatusPresence(info({ '#A': '{#Missing' }), input('#A', {})).preview).toBe('{#Missing')
+    expect(validateGameStatusPresence(info({ '#B': '%bad-name%' }), input('#B', {})).preview).toBe('%bad-name%')
     const cyclic = { ...info(), templates: [{ token: '#A', text: '{#A}', parameters: [] }] }
     expect(() => validateGameStatusPresence(cyclic, input('#A', {}))).toThrow()
     expect(() => validateGameStatusPresence(info({ '#A': '%details%'.repeat(12) }), input('#A', { details: 'x'.repeat(255) }))).toThrow()
@@ -127,7 +128,8 @@ describe('read-only game metadata and localization catalog', () => {
   it('uses only the public SDK read APIs and preserves account checks', async () => {
     const client = fixture(); const assertCurrent = vi.fn()
     const result = await readGameStatusAppInfo(client, APP, 'english', assertCurrent)
-    expect(result).toEqual(info())
+    expect(result).toMatchObject(info())
+    expect(result.templateDiagnostics).toEqual({ reason: 'available', requestedLanguage: 'english', sourceLanguage: 'english', rawTokenCount: Object.keys(TABLE).length, usedEnglishFallback: false })
     expect(client.getProductInfo).toHaveBeenCalledExactlyOnceWith([APP], [], true)
     expect(client.getAppRichPresenceLocalization).toHaveBeenCalledExactlyOnceWith(APP, 'english')
     expect(assertCurrent.mock.calls.length).toBeGreaterThanOrEqual(6)
@@ -135,7 +137,7 @@ describe('read-only game metadata and localization catalog', () => {
   it('supports localization without metadata and preserves metadata without localization capability', async () => {
     const result = await readGameStatusAppInfo({ getAppRichPresenceLocalization: async () => ({ tokens: { '#Ready': 'Ready' } }) }, APP, 'english', assertion)
     expect(result).toMatchObject({ appId: APP, name: `App ${APP}`, iconUrl: null })
-    expect(await readGameStatusAppInfo({}, APP, 'english', assertion)).toEqual({ appId: APP, name: `App ${APP}`, iconUrl: null, language: 'english', templates: [], templateStatus: 'unavailable' })
+    expect(await readGameStatusAppInfo({}, APP, 'english', assertion)).toMatchObject({ appId: APP, name: `App ${APP}`, iconUrl: null, language: 'english', templates: [], templateStatus: 'unavailable', templateDiagnostics: { reason: 'lookup-unavailable', rawTokenCount: null } })
     const client = fixture()
     const withoutLocalization = { getProductInfo: client.getProductInfo }
     expect(await readGameStatusAppInfo(withoutLocalization, APP, 'english', assertion)).toMatchObject({ name: 'Synthetic Game', iconUrl: ICON, templates: [], templateStatus: 'unavailable' })
@@ -153,7 +155,7 @@ describe('read-only game metadata and localization catalog', () => {
       expect((await readGameStatusAppInfo(client, APP, 'english', assertion)).iconUrl).toBeNull()
     }
   })
-  it('falls back to English only after a Chinese localization read fails', async () => {
+  it('falls back to English after a Chinese localization read fails', async () => {
     const client = fixture(); client.getAppRichPresenceLocalization.mockRejectedValueOnce(new Error('Language missing'))
     expect((await readGameStatusAppInfo(client, APP, 'schinese', assertion)).language).toBe('english')
     expect(client.getAppRichPresenceLocalization.mock.calls).toEqual([[APP, 'schinese'], [APP, 'english']])
@@ -161,6 +163,84 @@ describe('read-only game metadata and localization catalog', () => {
   it('treats an empty published catalog as unsupported, not a generic status template', async () => {
     const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ tokens: {} })
     expect(await readGameStatusAppInfo(client, APP, 'english', assertion)).toMatchObject({ templates: [], templateStatus: 'empty' })
+  })
+  it('uses the English base when the preferred language returns an empty catalog', async () => {
+    const client = fixture()
+    client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => ({ tokens: language === 'schinese' ? {} : { '#Status': '%details%' } }))
+    const result = await readGameStatusAppInfo(client, APP, 'schinese', assertion)
+    expect(result).toMatchObject({ language: 'english', templateStatus: 'available', templates: [{ token: '#Status', text: '%details%', parameters: ['details'] }], templateDiagnostics: { reason: 'available', requestedLanguage: 'schinese', sourceLanguage: 'english', rawTokenCount: 1, usedEnglishFallback: true } })
+    expect(client.getAppRichPresenceLocalization.mock.calls).toEqual([[APP, 'schinese'], [APP, 'english']])
+  })
+  it('overlays preferred text case-insensitively while resolving missing dependencies from English', async () => {
+    const client = fixture()
+    client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => ({ tokens: language === 'schinese'
+      ? { '#DISPLAY': 'Chinese: {#Mode_%mode%}' }
+      : { '#Display': 'English: {#Mode_%mode%}', '#Mode_Menu': 'Menu', '#Mode_Playing': '%map%' } }))
+    const result = await readGameStatusAppInfo(client, APP, 'schinese', assertion)
+    expect(result).toMatchObject({ language: 'schinese', templateStatus: 'available', templateDiagnostics: { sourceLanguage: 'mixed', rawTokenCount: 3, usedEnglishFallback: true } })
+    expect(validateGameStatusPresence(result, input('#Display', { mode: 'Menu' }))).toEqual({ fields: { steam_display: '#DISPLAY', mode: 'Menu' }, preview: 'Chinese: Menu' })
+    expect(validateGameStatusPresence(result, input('#Display', { mode: 'Playing', map: 'map_a' })).preview).toBe('Chinese: map_a')
+  })
+  it('falls back to English for an explicitly empty preferred token, including dependencies', async () => {
+    const client = fixture()
+    client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => ({ tokens: language === 'schinese'
+      ? { '#DISPLAY': '', '#Mode_Menu': '', '#Translated': 'Chinese text' }
+      : { '#Display': '{#Mode_%mode%}', '#Mode_Menu': 'English menu', '#Translated': 'English text' } }))
+    const result = await readGameStatusAppInfo(client, APP, 'schinese', assertion)
+    expect(result).toMatchObject({ templateStatus: 'available', templateDiagnostics: { sourceLanguage: 'mixed', rawTokenCount: 3, usedEnglishFallback: true } })
+    expect(validateGameStatusPresence(result, input('#Display', { mode: 'Menu' })).preview).toBe('English menu')
+    expect(validateGameStatusPresence(result, input('#Translated', {})).preview).toBe('Chinese text')
+  })
+  it('does not treat nonempty whitespace in a preferred token as missing localization', async () => {
+    const client = fixture()
+    client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => ({ tokens: language === 'schinese'
+      ? { '#Display': 'Before{#Whitespace}After', '#Whitespace': ' ' }
+      : { '#Display': 'English display', '#Whitespace': 'English text' } }))
+    const result = await readGameStatusAppInfo(client, APP, 'schinese', assertion)
+    expect(result.templateDiagnostics).toMatchObject({ sourceLanguage: 'schinese', usedEnglishFallback: false })
+    expect(result.templates.find(template => template.token === '#Whitespace')?.text).toBe(' ')
+    expect(result.templates.find(template => template.token === '#Display')?.text).toBe('Before{#Whitespace}After')
+  })
+  it('retains a self-contained preferred catalog if the English lookup fails, without claiming complete lookup success', async () => {
+    const client = fixture()
+    client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => {
+      if (language === 'english') throw new Error('FAKE-private-detail')
+      return { tokens: { '#Status': '%details%' } }
+    })
+    expect(await readGameStatusAppInfo(client, APP, 'schinese', assertion)).toMatchObject({ language: 'schinese', templateStatus: 'available', templateDiagnostics: { reason: 'available', sourceLanguage: 'schinese', rawTokenCount: 1, usedEnglishFallback: false, lookupCode: 'unavailable' } })
+  })
+  it('reports empty only when both preferred and English catalogs were actually read empty', async () => {
+    const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ tokens: {} })
+    expect(await readGameStatusAppInfo(client, APP, 'schinese', assertion)).toMatchObject({ templateStatus: 'empty', templateDiagnostics: { reason: 'empty', rawTokenCount: 0 } })
+    client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => {
+      if (language === 'english') throw new Error('FAKE-private-detail')
+      return { tokens: {} }
+    })
+    expect(await readGameStatusAppInfo(client, APP, 'schinese', assertion)).toMatchObject({ templateStatus: 'unavailable', templateDiagnostics: { reason: 'lookup-unavailable', rawTokenCount: 0, lookupCode: 'unavailable' } })
+  })
+  it('distinguishes an actual nonempty but unusable catalog from lookup failure', async () => {
+    const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ tokens: { '#MissingDependency': '{#Absent}', '#Unsafe': '%connect%' } })
+    expect(await readGameStatusAppInfo(client, APP, 'schinese', assertion)).toMatchObject({ templateStatus: 'unavailable', templateDiagnostics: { reason: 'no-safe-templates', rawTokenCount: 2 } })
+  })
+  it.each([
+    ['LOCAL_APP_CATALOG_UNAVAILABLE', 'unavailable'], ['LOCAL_APP_CATALOG_TIMEOUT', 'timeout'],
+    ['LOCAL_APP_CATALOG_RESPONSE_INVALID', 'invalid-response'], ['LOCAL_APP_CATALOG_CANCELLED', 'cancelled'],
+    ['LOCAL_APP_CATALOG_LANGUAGE_MISSING', 'language-missing'], ['LOCAL_APP_CATALOG_APP_MISMATCH', 'app-mismatch']
+  ])('preserves fixed native lookup cause %s without exposing raw error data', async (code, lookupCode) => {
+    const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ available: false, tokens: {}, code, steamResult: 15, message: 'FAKE-private-detail', rawResponse: 'FAKE-private-detail' })
+    const result = await readGameStatusAppInfo(client, APP, 'english', assertion)
+    expect(result).toMatchObject({ templateStatus: 'unavailable', templateDiagnostics: { reason: 'lookup-unavailable', lookupCode, steamResult: 15, rawTokenCount: null } })
+    expect(JSON.stringify(result)).not.toContain('FAKE-private-detail')
+  })
+  it('does not expose arbitrary lookup codes or out-of-range Steam results', async () => {
+    const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ available: false, tokens: {}, code: 'FAKE-private-detail', steamResult: 256 })
+    const result = await readGameStatusAppInfo(client, APP, 'english', assertion)
+    expect(result.templateDiagnostics).toEqual({ reason: 'invalid-catalog', requestedLanguage: 'english', sourceLanguage: null, rawTokenCount: null, usedEnglishFallback: false, lookupCode: 'invalid-response' })
+    expect(JSON.stringify(result)).not.toContain('FAKE-private-detail')
+  })
+  it.each(['__proto__', 'constructor', 'toString', 'FAKE-private-detail'])('does not resolve inherited or unknown native code %s', async code => {
+    const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ available: false, tokens: {}, code })
+    expect((await readGameStatusAppInfo(client, APP, 'english', assertion)).templateDiagnostics?.lookupCode).toBe('unavailable')
   })
   it('does not describe a malformed or unsafe nonempty catalog as an empty publication', async () => {
     const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ tokens: { '#Unsafe': '%connect%' } })
@@ -210,6 +290,22 @@ describe('read-only game metadata and localization catalog', () => {
     client.getAppRichPresenceLocalization.mockResolvedValue({ tokens: many })
     expect(await readGameStatusAppInfo(client, APP, 'english', assertion)).toMatchObject({ templateStatus: 'unavailable', templates: [] })
   })
+  it('does not launder malformed preferred or English catalogs through the other valid language', async () => {
+    const invalid = Object.create({ inherited: 'FAKE-private-detail' }) as Record<string, string>
+    invalid['#Known'] = 'Safe text'
+    for (const malformedLanguage of ['schinese', 'english']) {
+      const client = fixture()
+      client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => ({ tokens: language === malformedLanguage ? invalid : { '#Known': 'Valid' } }))
+      expect(await readGameStatusAppInfo(client, APP, 'schinese', assertion)).toMatchObject({ templates: [], templateStatus: 'unavailable', templateDiagnostics: { reason: 'invalid-catalog', lookupCode: 'invalid-response' } })
+    }
+  })
+  it('rejects a combined catalog beyond the shared item or byte bounds instead of dropping dependencies', async () => {
+    const client = fixture()
+    client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => ({ tokens: Object.fromEntries(Array.from({ length: 600 }, (_, index) => [`#${language}_${index}`, 'Ready'])) }))
+    expect(await readGameStatusAppInfo(client, APP, 'schinese', assertion)).toMatchObject({ templates: [], templateDiagnostics: { reason: 'invalid-catalog', lookupCode: 'invalid-response' } })
+    client.getAppRichPresenceLocalization.mockImplementation(async (_app, language) => ({ tokens: Object.fromEntries(Array.from({ length: 200 }, (_, index) => [`#${language}_${index}`, 'x'.repeat(1800)])) }))
+    expect(await readGameStatusAppInfo(client, APP, 'schinese', assertion)).toMatchObject({ templates: [], templateDiagnostics: { reason: 'invalid-catalog', lookupCode: 'invalid-response' } })
+  })
   it('does not leak lookup errors or malformed RPC responses', async () => {
     const client = fixture(); client.getAppRichPresenceLocalization.mockResolvedValue({ wrong: TABLE })
     expect(await readGameStatusAppInfo(client, APP, 'english', assertion)).toMatchObject({ name: 'Synthetic Game', iconUrl: ICON, templates: [], templateStatus: 'unavailable' })
@@ -248,6 +344,7 @@ describe('read-only game metadata and localization catalog', () => {
     const pending = readGameStatusAppInfo(client, APP, 'english', assertion)
     await vi.advanceTimersByTimeAsync(GAME_STATUS_APP_LOOKUP_TIMEOUT_MS)
     expect(await pending).toMatchObject({ name: 'Synthetic Game', iconUrl: ICON, templates: [], templateStatus: 'unavailable' })
+    expect((await pending).templateDiagnostics?.lookupCode).toBe('timeout')
     expect(vi.getTimerCount()).toBe(0)
   })
 })

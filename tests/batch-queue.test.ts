@@ -35,12 +35,16 @@ afterEach(async () => {
 
 describe('delivery error classification', () => {
   it.each([
-    new TypeError('fetch failed'), new Error('Steam returned invalid JSON'),
+    new Error('Steam returned invalid JSON'),
     new Error('Steam returned a malformed comment response'),
-    new Error('Steam response exceeded the size limit'), new Error('Steam response interrupted'),
-    new Error('This operation was aborted'), new Error('Steam HTTP error 503')
+    new Error('Steam response exceeded the size limit'), new Error('Steam response interrupted')
   ])('pauses without automatically retrying ambiguous failure %s', (error) => {
     expect(classifyDeliveryError(error)).toEqual({ status: 'uncertain', pauseBatch: true })
+  })
+
+  it.each([new TypeError('fetch failed'), new Error('This operation was aborted'), new Error('Steam HTTP error 503')])
+  ('records a submitted network or service error %s as uncertain without pausing the rest', error => {
+    expect(classifyDeliveryError(error)).toEqual({ status: 'uncertain', pauseBatch: false })
   })
 
   it.each([new Error('Steam HTTP error 429'), new DomainError('RATE_LIMITED', '频率限制'), new Error('Not logged in')])
@@ -50,6 +54,11 @@ describe('delivery error classification', () => {
 
   it('allows a definite friend-specific rejection to be recorded without a blind retry', () => {
     expect(classifyDeliveryError(new Error('Comments are disabled for this profile')))
+      .toEqual({ status: 'failed', pauseBatch: false })
+  })
+
+  it('classifies a proven unavailable target as a definite failure regardless of message heuristics', () => {
+    expect(classifyDeliveryError(new DomainError('COMMENT_TARGET_UNAVAILABLE', 'Steam session / connection / HTTP 403')))
       .toEqual({ status: 'failed', pauseBatch: false })
   })
 
@@ -220,18 +229,16 @@ describe('persistent sending queue', () => {
       completed: 40, succeeded: 40, failed: 0 })
   }, 60_000)
 
-  it('records fetch failures as uncertain, surfaces them, and only resumes pending recipients', async () => {
+  it('records submitted fetch failures as uncertain and automatically continues only other recipients', async () => {
     const { queue, store, post, events, input } = fixture(2)
     post.mockRejectedValueOnce(new TypeError('fetch failed'))
     const batch = queue.start(input)
     await vi.advanceTimersByTimeAsync(0)
-    expect(store.getBatch(batch.id)).toMatchObject({ status: 'paused', failed: 1 })
+    expect(store.getBatch(batch.id)).toMatchObject({ status: 'running', failed: 1 })
     expect(store.getBatch(batch.id)?.deliveries.filter((item) => item.status === 'uncertain')).toHaveLength(1)
-    expect(events).toContainEqual(expect.objectContaining({ type: 'notice', message: expect.stringContaining('fetch failed') }))
-    await vi.advanceTimersByTimeAsync(5000)
-    expect(post).toHaveBeenCalledTimes(1)
-    queue.resume(batch.id)
-    await vi.advanceTimersByTimeAsync(0)
+    expect(events).not.toContainEqual(expect.objectContaining({ type: 'notice', message: expect.stringContaining('fetch failed') }))
+    expect(store.getBatchSummary(batch.id)?.verification).toMatchObject({ state: 'unresolved', attempt: 0 })
+    await vi.advanceTimersByTimeAsync(1000)
     expect(post).toHaveBeenCalledTimes(2)
     expect(new Set(post.mock.calls.map((call) => call[1])).size).toBe(2)
     expect(store.getBatch(batch.id)).toMatchObject({ status: 'completed', failed: 1, succeeded: 1 })

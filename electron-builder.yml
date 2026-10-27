@@ -10,17 +10,26 @@ files:
   - package.json
 asar: true
 extraResources:
+  - from: build/icon.png
+    to: icon.png
   - from: resources/native-presence
     to: native-presence
     filter:
       - worker-x86.exe
       - worker-x64.exe
+  - from: resources/local-app-simulation
+    to: local-app-simulation
+    filter:
+      - local-app-host-x64.exe
 win:
+  icon: build/icon.ico
   executableName: XiaoLanSteamToolbox
   target:
     - nsis
     - portable
 nsis:
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
   artifactName: XiaoLan-Steam-Toolbox-Setup-${version}-${arch}.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true

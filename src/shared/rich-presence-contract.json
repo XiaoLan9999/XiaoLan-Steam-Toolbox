@@ -1,0 +1,52 @@
+{
+  "catalog": {
+    "wireBytes": 4194304,
+    "jsonBytes": 524288,
+    "tokenCount": 1024,
+    "tokenNameUtf8Bytes": 128,
+    "tokenValueUtf8Bytes": 4096,
+    "languageListCount": 64,
+    "languageNameUtf8Bytes": 64
+  },
+  "render": {
+    "catalogPayloadBytes": 524288,
+    "templateUtf8Bytes": 2048,
+    "maximumDepth": 12,
+    "maximumSteps": 4096,
+    "maximumHintSteps": 65536,
+    "maximumAssignmentsPerToken": 64
+  },
+  "presence": {
+    "maxKeys": 20,
+    "valueUtf8Bytes": 255,
+    "keyAsciiLength": 63,
+    "displayTokenBodyLength": 127,
+    "localizedReadUtf8Bytes": 4096,
+    "rawReadJsonBytes": 65536,
+    "maxGroupSize": 2147483647,
+    "reservedGroupKeys": 2
+  },
+  "transport": {
+    "requestLineBytes": 16384,
+    "ordinaryFrameBytes": 32768,
+    "catalogFrameBytes": 1048576,
+    "receiveBufferBytes": 1048576
+  },
+  "syntax": {
+    "parameter": "A-Za-z0-9_:",
+    "displayToken": "A-Za-z0-9_:.-"
+  },
+  "fieldPolicy": {
+    "nativeReadableKeys": ["desc", "status", "activity", "details", "state", "currentmap", "map", "mode", "score", "matchgrouploc", "game:state", "game:mode", "game:map", "game:act", "game:score", "steam_display", "steam_player_group_size"],
+    "sensitive": "connect|join|invite|lobby|token|password|secret|auth|ticket|credential|session|group|party|steamid|userid|address|server|url|endpoint|(?:^|[_:])(?:ip|port)(?:$|[_:])",
+    "forbidden": ["steam_display", "steam_player_group", "steam_player_group_size", "__proto__", "prototype", "constructor", "version"],
+    "exceptions": ["matchgrouploc"],
+    "experimentalSensitive": "private|(?:^|[_:])room(?:id|name|code|key|number|address|url)?(?:$|[_:])"
+  },
+  "lookup": {
+    "languages": ["schinese", "english"],
+    "catalogCodes": ["LOCAL_APP_CATALOG_UNAVAILABLE", "LOCAL_APP_CATALOG_TIMEOUT", "LOCAL_APP_CATALOG_RESPONSE_INVALID", "LOCAL_APP_CATALOG_CANCELLED", "LOCAL_APP_CATALOG_LANGUAGE_MISSING", "LOCAL_APP_CATALOG_APP_MISMATCH"],
+    "steamResultMin": 0,
+    "steamResultMax": 255
+  }
+}

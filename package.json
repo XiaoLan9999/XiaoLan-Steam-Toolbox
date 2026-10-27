@@ -1,6 +1,6 @@
 {
   "name": "steam-friend-commenter",
-  "version": "0.11.2",
+  "version": "0.16.0",
   "description": "XiaoLan Steam Toolbox: screenshots, artwork, multi-account friends, and profile comments.",
   "main": "out/main/index.js",
   "author": {
@@ -12,11 +12,12 @@
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/patch-steam-user-rich-presence.mjs",
-    "dev": "node scripts/build-native-presence.mjs && electron-vite dev",
-    "build": "npm run typecheck && node scripts/build-native-presence.mjs && electron-vite build",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "dev": "node scripts/build-native-presence.mjs && node scripts/build-local-app-host.mjs && electron-vite dev",
+    "build": "npm run typecheck && node scripts/build-native-presence.mjs && node scripts/build-local-app-host.mjs && electron-vite build",
+    "check:presence-contract": "node scripts/generate-rich-presence-contract.mjs --check",
+    "typecheck": "npm run check:presence-contract && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "npm run check:presence-contract && vitest run",
+    "test:watch": "npm run check:presence-contract && vitest",
     "dist": "npm run test && npm run build && electron-builder --win nsis portable",
     "dist:dir": "npm run test && npm run build && electron-builder --win --dir"
   },

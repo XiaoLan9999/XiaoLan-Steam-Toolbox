@@ -157,7 +157,7 @@ describe('application catalog language and successful-inspection ordering', () =
     english = 'Refreshed English'
     await f.service.inspectApp({ ...f.action(), appId: APP, language: 'english' })
     f.client.emit('playingState', false, 0)
-    const result = f.service.play({ ...f.action(), displayKind: 'app', appId: APP, gameName: '', details: '', presence: { displayToken: '#SyntheticStatus', values: { status: 'Ready' } } })
+    const result = await f.service.play({ ...f.action(), displayKind: 'app', appId: APP, gameName: '', details: '', presence: { displayToken: '#SyntheticStatus', values: { status: 'Ready' } } })
     expect(result.playing!.preview).toBe('Refreshed English: Ready')
   })
   it('does not let a newer unavailable language lookup hide an existing verified catalog', async () => {

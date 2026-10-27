@@ -10,11 +10,13 @@ import { AppSnapshot, BatchSummary, SteamEmoticon } from '../../../shared/types'
 import { avatarFallback, formatDuration, unwrap } from '../ui'
 import { useI18n, type Translate } from '../i18n'
 import { RunAction } from './types'
-import { BatchRecoveryPanel, useBatchCooldownActive } from './BatchRecoveryPanel'
+import { BatchRecoveryPanel, batchStopLabel, useBatchCooldownActive } from './BatchRecoveryPanel'
 import { BatchActivityPanel } from './BatchActivityPanel'
 import { BatchVerificationPanel, batchVerificationActive, batchVerificationActionLabel, batchVerificationConfirmation, batchUncertainPolicyText } from './BatchVerificationPanel'
 import { DEFAULT_BATCH_FAILURE_POLICY, type BatchFailurePolicy } from '../../../shared/batch-failure-policy'
 import { BatchFailurePolicyFields, BatchFailurePolicyPanel, failurePolicySummary } from './BatchFailurePolicyPanel'
+import { ComposerErrorLog } from './ComposerErrorLog'
+import './composer-task-details.css'
 
 interface ComposerPanelProps {
   snapshot: AppSnapshot
@@ -49,6 +51,22 @@ export function ComposerPanel({
   const submissionLock = useRef(false)
   const hydratedAccount = useRef(account.id)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const diagnosticsRef = useRef<HTMLDetailsElement>(null)
+  const [diagnosticsBatchId, setDiagnosticsBatchId] = useState<string | null>(null)
+  const [batchActionPending, setBatchActionPending] = useState(false)
+  const batchActionLock = useRef(false)
+  const runBatchAction: RunAction = async <T,>(label: string, action: () => Promise<T>, successMessage?: string): Promise<T | null> => {
+    if (batchActionLock.current) return null
+    batchActionLock.current = true
+    setBatchActionPending(true)
+    try { return await runAction(label, action, successMessage) }
+    finally { batchActionLock.current = false; setBatchActionPending(false) }
+  }
+  const openDiagnostics = (): void => {
+    if (!diagnosticsRef.current) return
+    diagnosticsRef.current.open = true
+    diagnosticsRef.current.scrollIntoView({ block: 'nearest' })
+  }
 
   useEffect(() => {
     if (hydratedAccount.current === account.id) return
@@ -343,6 +361,23 @@ export function ComposerPanel({
             {saveError && <div className="inline-warning">{t('草稿保存失败：', 'Draft could not be saved: ')}{saveError}</div>}
           </div>
         </section>
+        {lastBatch && <details key={lastBatch.id} ref={diagnosticsRef} className="card composer-task-details"
+          onToggle={event => setDiagnosticsBatchId(event.currentTarget.open ? lastBatch.id : null)}
+          aria-label={t('任务运行记录与错误', 'Task activity and errors')}>
+          <summary><strong>{t('任务运行记录与错误', 'Task activity and errors')}</strong>
+            <span>{t(`失败 ${lastBatch.failedCount} · 待核对 ${lastBatch.uncertain}`, `Failed ${lastBatch.failedCount} · Uncertain ${lastBatch.uncertain}`)}</span></summary>
+          <div className="composer-task-details-content">
+            <ComposerErrorLog batch={lastBatch} enabled={diagnosticsBatchId === lastBatch.id} />
+            <BatchActivityPanel batch={lastBatch} compact />
+            <BatchVerificationPanel batch={lastBatch} compact disabled={batchActionPending}
+              onStop={() => void runBatchAction(t('正在停止核对', 'Stopping verification'), async () => unwrap(await window.steamCommenter.pauseBatch(lastBatch.id)))} />
+            {!lastBatch.activity && lastBatch.uncertain > 0 && lastBatch.status !== 'cancelled' && <div className="inline-warning">{batchUncertainPolicyText(lastBatch, t)}</div>}
+            <BatchRecoveryPanel key={lastBatch.id} batch={lastBatch} authenticated={account.sessionState === 'authenticated'}
+              disabled={batchActionPending || batchVerificationActive(lastBatch)} runAction={runBatchAction} />
+            <BatchFailurePolicyPanel batch={lastBatch} runAction={runBatchAction} disabled={batchActionPending} />
+            {onOpenTasks && <button className="ghost" onClick={onOpenTasks}>{t('查看全部好友投递与错误', 'View all deliveries and errors')}</button>}
+          </div>
+        </details>}
       </div>
 
       <aside className="composer-aside">
@@ -367,7 +402,8 @@ export function ComposerPanel({
         </section>
 
         {lastBatch && (
-          <ActiveBatchPanel batch={lastBatch} authenticated={account.sessionState === 'authenticated'} onOpenTasks={onOpenTasks} runAction={runAction} />
+          <ActiveBatchPanel batch={lastBatch} authenticated={account.sessionState === 'authenticated'} onOpenTasks={onOpenTasks}
+            onOpenDiagnostics={openDiagnostics} pendingAction={batchActionPending} runAction={runBatchAction} />
         )}
 
         <section className="card boundary-card">
@@ -443,21 +479,15 @@ export function ComposerPanel({
   )
 }
 
-function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
-  batch: BatchSummary; authenticated: boolean; onOpenTasks?(): void; runAction: RunAction
+function ActiveBatchPanel({ batch, authenticated, onOpenTasks, onOpenDiagnostics, pendingAction, runAction }: {
+  batch: BatchSummary; authenticated: boolean; onOpenTasks?(): void; onOpenDiagnostics(): void; pendingAction: boolean; runAction: RunAction
 }): React.JSX.Element {
   const { t } = useI18n()
   const coolingDown = useBatchCooldownActive(batch)
   const verifying = batchVerificationActive(batch)
   const canVerify = batch.uncertain > 0 && (batch.status === 'paused' || batch.status === 'completed')
-  const [pendingAction, setPendingAction] = useState(false)
-  const actionLock = useRef(false)
   const perform = async (label: string, action: () => Promise<void>): Promise<void> => {
-    if (actionLock.current) return
-    actionLock.current = true
-    setPendingAction(true)
-    try { await runAction(label, action) }
-    finally { actionLock.current = false; setPendingAction(false) }
+    await runAction(label, action)
   }
   const progress = batch.total ? Math.round((batch.completed / batch.total) * 100) : 0
   const active = ['queued', 'running', 'paused'].includes(batch.status)
@@ -484,13 +514,19 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, runAction }: {
         <span className="failed">{t('失败', 'Failed')} {batch.failedCount}</span>
         <span className="failed">{t('待核对', 'Uncertain')} {batch.uncertain}</span>
       </div>
-        <BatchActivityPanel batch={batch} compact />
-        <BatchVerificationPanel batch={batch} compact disabled={pendingAction}
-          onStop={() => void perform(t('正在停止核对', 'Stopping verification'), async () => unwrap(await window.steamCommenter.pauseBatch(batch.id)))} />
-        {!batch.activity && batch.uncertain > 0 && batch.status !== 'cancelled' && <div className="inline-warning">{batchUncertainPolicyText(batch, t)}</div>}
-      <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated} disabled={pendingAction || verifying} runAction={runAction} />
-      <BatchFailurePolicyPanel batch={batch} runAction={runAction} disabled={pendingAction} />
+      {batch.activity && <dl className="composer-batch-position">
+        <div><dt>{batch.activity.current ? t('当前处理', 'Processing') : t('最近处理', 'Last processed')}</dt>
+          <dd dir="auto">{(batch.activity.current ?? batch.activity.lastProcessed)?.friendName || t('尚无记录', 'No record yet')}</dd></div>
+        {batch.pending > 0 && <div><dt>{t('下一位待发', 'Next pending')}</dt>
+          <dd dir="auto">{batch.activity.nextPending?.friendName || t('请刷新任务明细', 'Refresh task details')}</dd></div>}
+      </dl>}
+      {batch.status === 'paused' && <p className="composer-batch-stop" role="status">{batchStopLabel(batch.stopCode, t)}</p>}
+      {coolingDown && <p className="composer-batch-note">{t('发送冷却尚未结束，详情见运行记录。', 'Sending is cooling down. See task activity for details.')}</p>}
+      {verifying && <p className="composer-batch-note" role="status">{t('正在只读核对，不重发待核对留言。', 'Checking read-only; uncertain comments are never resent.')}</p>}
+      <button className="ghost composer-open-diagnostics" onClick={onOpenDiagnostics}>{t('展开运行记录与错误', 'Open activity and errors')}</button>
       {onOpenTasks && <button className="ghost" onClick={onOpenTasks}>{t('查看持久任务与明细', 'View saved tasks and details')}</button>}
+      {verifying && <button className="ghost" disabled={pendingAction}
+        onClick={() => void perform(t('正在停止核对', 'Stopping verification'), async () => unwrap(await window.steamCommenter.pauseBatch(batch.id)))}>{t('停止核对', 'Stop verification')}</button>}
       {(active || canVerify) && <div className="batch-controls">
         {batch.status === 'running' ? (
           <button disabled={pendingAction} onClick={() => void perform(t('正在暂停', 'Pausing'), async () => unwrap(await window.steamCommenter.pauseBatch(batch.id)))}>

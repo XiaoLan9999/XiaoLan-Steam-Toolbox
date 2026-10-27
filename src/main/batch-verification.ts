@@ -4,9 +4,11 @@ import type { SqliteStore } from './store'
 import type { SteamService } from './steam-service'
 import { publicErrorMessage } from './steam-service'
 import { validateBatchFailurePolicy } from '../shared/batch-failure-policy'
+import { batchInterruption } from '../shared/batch-retry-policy'
 
 const CHECK_DELAYS = [5_000, 15_000]
 const MAX_CHECKS = CHECK_DELAYS.length + 1
+const REQUEST_FAILURE_SKIP_MESSAGE = '网络或服务请求失败，本条保留待核对并跳过；不会重复发送，将继续其余待发'
 
 export class BatchVerificationController {
   constructor(
@@ -21,6 +23,19 @@ export class BatchVerificationController {
     if (!progress || !['checking', 'waiting'].includes(progress.state)) return
     this.record(progress.deliveryId, batchId, 'unresolved', progress.attempt,
       '核对已停止，未确认的记录仍保留待核对，未重复发送')
+  }
+
+  skipAfterRequestFailure(delivery: DeliveryRecord, isCurrent: () => boolean): boolean {
+    if (!isCurrent()) return false
+    this.record(delivery.id, delivery.batchId, 'unresolved', 0, REQUEST_FAILURE_SKIP_MESSAGE)
+    return true
+  }
+
+  skipAfterPermissionDenial(delivery: DeliveryRecord, isCurrent: () => boolean): boolean {
+    if (!isCurrent()) return false
+    this.record(delivery.id, delivery.batchId, 'unresolved', 0,
+      'Steam 明确提示无法留言，本条保留待核对并跳过；不会重复发送，将继续其余待发')
+    return true
   }
 
   async verifyAll(batchId: string, isCurrent: () => boolean, forceCheck = false): Promise<boolean> {
@@ -51,9 +66,11 @@ export class BatchVerificationController {
     for (let attempt = 1; attempt <= MAX_CHECKS; attempt += 1) {
       if (!isCurrent()) return false
       this.record(delivery.id, batch.id, 'checking', attempt, '正在只读核对好友主页；不会提交或重发留言')
+      let readCompleted = false
       try {
         const result = await this.steam.reconcileProfileComment(batch.accountId, delivery.friendSteamId,
           delivery.renderedMessage, evidence, isCurrent)
+        readCompleted = true
         if (!isCurrent()) return false
         if (result.status === 'confirmed') {
           if (this.store.confirmUncertainDelivery(delivery.id, batch.accountId, result.commentId, result.postedAtSeconds)) {
@@ -71,6 +88,11 @@ export class BatchVerificationController {
         if (!evidence?.serverWindow || result.reason.includes('multiple')) break
       } catch (error) {
         if (!isCurrent()) return false
+        if (readCompleted) throw error
+        if (['NETWORK_ERROR', 'SERVER_ERROR'].includes(batchInterruption(error).code)) {
+          this.record(delivery.id, batch.id, 'unresolved', attempt, REQUEST_FAILURE_SKIP_MESSAGE)
+          return true
+        }
         if (error instanceof DomainError && ['SESSION_EXPIRED', 'SESSION_CHANGED', 'SESSION_CHECK_FAILED',
           'SESSION_PREPARATION_FAILED', 'NOT_AUTHENTICATED', 'CHECK_CANCELLED', 'COMMUNITY_ACCESS_DENIED', 'RATE_LIMITED'].includes(error.code)) {
           this.record(delivery.id, batch.id, 'unresolved', attempt,

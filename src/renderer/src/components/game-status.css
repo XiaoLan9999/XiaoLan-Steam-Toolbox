@@ -74,6 +74,9 @@
 .game-status-game-identity span:not(.game-status-game-placeholder) { color: var(--muted); font-size: 11px; }
 .game-status-template-editor { display: grid; gap: 16px; margin: 17px 0; }
 .game-status-template-editor select { width: 100%; max-width: 100%; }
+.game-status-parameter-help { color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
+.game-status-parameter-help.invalid { color: var(--red); }
+.game-status-parameter [aria-invalid="true"] { border-color: var(--red); }
 .game-status-template-preview, .game-status-readback { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; padding: 13px 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow-wrap: anywhere; }
 .game-status-template-preview span, .game-status-readback > span { color: var(--muted); font-size: 11px; line-height: 1.7; }
 .game-status-template-preview strong, .game-status-readback > strong { font-size: 13px; line-height: 1.7; }

@@ -3,6 +3,8 @@ import type { UpdateState } from '../shared/update-types'
 import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from '../shared/steam-screenshots'
 import type { ArtworkBrowserState } from '../shared/artwork-browser'
 import type { GameStatusAppInfo, GameStatusDraft, GameStatusSnapshot } from '../shared/game-status'
+import type { LocalAppSimulationSnapshot } from '../shared/local-app-simulation'
+import type { StatusCopySnapshot } from '../shared/status-copy'
 import type { ProfileBackgroundCatalog, ProfileBackgroundImage } from '../shared/profile-backgrounds'
 import {
   AppEvent,
@@ -23,8 +25,22 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<IpcResult<T>> =
   ipcRenderer.invoke(channel, ...args) as Promise<IpcResult<T>>
 
 const api: SteamFriendCommenterApi = {
+  statusCopy: {
+    state: () => invoke<StatusCopySnapshot>('statusCopy:state'),
+    save: input => invoke<StatusCopySnapshot>('statusCopy:save', input),
+    preview: input => invoke<StatusCopySnapshot>('statusCopy:preview', input),
+    start: input => invoke<StatusCopySnapshot>('statusCopy:start', input),
+    stop: input => invoke<StatusCopySnapshot>('statusCopy:stop', input)
+  },
+  localAppSimulation: {
+    state: () => invoke<LocalAppSimulationSnapshot>('localAppSimulation:state'),
+    inspect: input => invoke<GameStatusAppInfo>('localAppSimulation:inspect', input),
+    start: input => invoke<LocalAppSimulationSnapshot>('localAppSimulation:start', input),
+    stop: input => invoke<LocalAppSimulationSnapshot>('localAppSimulation:stop', input)
+  },
   gameStatus: {
     state: () => invoke<GameStatusSnapshot>('gameStatus:state'),
+    connectLocal: input => invoke<GameStatusSnapshot>('gameStatus:connectLocal', input),
     connectWithToolbox: input => invoke<GameStatusSnapshot>('gameStatus:connectWithToolbox', input),
     play: input => invoke<GameStatusSnapshot>('gameStatus:play', input),
     stop: input => invoke<GameStatusSnapshot>('gameStatus:stop', input),

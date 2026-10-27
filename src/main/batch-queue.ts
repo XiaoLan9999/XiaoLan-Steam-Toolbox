@@ -7,6 +7,8 @@ import {
 } from '../shared/domain'
 import { AppEvent, BatchSummary, BatchStartInput, BatchStopCode } from '../shared/types'
 import { batchInterruption } from '../shared/batch-retry-policy'
+import { CommentPreflightError } from '../shared/comment-preflight'
+import { CommentPermissionDeniedError } from '../shared/comment-permission'
 import { DeliverySeed, SqliteStore } from './store'
 import { publicErrorMessage, SteamService } from './steam-service'
 import { BatchRecoveryController } from './batch-recovery'
@@ -362,18 +364,23 @@ export class BatchQueue {
         if (nextAt > Date.now() && await waitForNextDelivery(this.store, batchId, nextAt,
           () => this.stopped, ms => this.wait(ms))) return
         if (this.stopped) return
+        let preparationFailure: CommentPreflightError | null = null
         if (typeof this.steam.ensureSessionFresh === 'function') {
           try { await this.steam.ensureSessionFresh(batch.accountId) }
           catch (error) {
             if (this.stopped || !this.recovery.isCurrent(batchId, intent)) return
             const detail = batchInterruption(error)
-            const denied = detail.code === 'ACCESS_DENIED'
-            if (denied) this.store.extendBatchAccessDeniedCooldown(batchId, detail.retryAfterMs)
-            this.recovery.interrupt(batchId, { code: denied && (batch.accessDeniedCount ?? 0) > 0 ? 'ACCESS_DENIED_PERSISTENT'
-              : detail.code === 'QUEUE_ERROR' ? 'SESSION_PREPARATION' : detail.code,
-              message: publicErrorMessage(error), allowAuto: !denied && !['ACCOUNT_CHANGED', 'LOGIN_REQUIRED'].includes(detail.code),
-              retryAfterMs: detail.retryAfterMs }, intent)
-            return
+            if (isRequestFailure(detail.code)) {
+              preparationFailure = new CommentPreflightError('留言前网络或服务请求失败，尚未提交留言', detail)
+            } else {
+              const denied = detail.code === 'ACCESS_DENIED'
+              if (denied) this.store.extendBatchAccessDeniedCooldown(batchId, detail.retryAfterMs)
+              this.recovery.interrupt(batchId, { code: denied && (batch.accessDeniedCount ?? 0) > 0 ? 'ACCESS_DENIED_PERSISTENT'
+                : detail.code === 'QUEUE_ERROR' ? 'SESSION_PREPARATION' : detail.code,
+                message: publicErrorMessage(error), allowAuto: !denied && !['ACCOUNT_CHANGED', 'LOGIN_REQUIRED'].includes(detail.code),
+                retryAfterMs: detail.retryAfterMs }, intent)
+              return
+            }
           }
           if (this.stopped) return
           const current = this.store.getBatchSummary(batchId)
@@ -384,18 +391,22 @@ export class BatchQueue {
             return
           }
         }
-        if ((batch.accessDeniedCount ?? 0) > 0 && typeof this.steam.verifyCommentSession === 'function') {
+        if (!preparationFailure && (batch.accessDeniedCount ?? 0) > 0 && typeof this.steam.verifyCommentSession === 'function') {
           try { await this.steam.verifyCommentSession(batch.accountId) }
           catch (error) {
             if (this.stopped || !this.recovery.isCurrent(batchId, intent)) return
             const detail = batchInterruption(error)
-            if (detail.code === 'ACCESS_DENIED') this.store.extendBatchAccessDeniedCooldown(batchId, detail.retryAfterMs)
-            this.recovery.interrupt(batchId, {
-              code: detail.code === 'ACCESS_DENIED' ? 'ACCESS_DENIED_PERSISTENT' : detail.code,
-              message: `恢复前的登录核验未通过，尚未提交新留言。${publicErrorMessage(error)}`,
-              allowAuto: detail.canRetry && detail.code !== 'ACCESS_DENIED', retryAfterMs: detail.retryAfterMs
-            }, intent)
-            return
+            if (isRequestFailure(detail.code)) {
+              preparationFailure = new CommentPreflightError('留言前网络或服务请求失败，尚未提交留言', detail)
+            } else {
+              if (detail.code === 'ACCESS_DENIED') this.store.extendBatchAccessDeniedCooldown(batchId, detail.retryAfterMs)
+              this.recovery.interrupt(batchId, {
+                code: detail.code === 'ACCESS_DENIED' ? 'ACCESS_DENIED_PERSISTENT' : detail.code,
+                message: `恢复前的登录核验未通过，尚未提交新留言。${publicErrorMessage(error)}`,
+                allowAuto: detail.canRetry && detail.code !== 'ACCESS_DENIED', retryAfterMs: detail.retryAfterMs
+              }, intent)
+              return
+            }
           }
           if (this.stopped || !this.recovery.isCurrent(batchId, intent)) return
           const checked = this.store.getBatchSummary(batchId)
@@ -445,7 +456,11 @@ export class BatchQueue {
         let shouldPause = false
         let interruption: ReturnType<typeof batchInterruption> | null = null
         let stopMessage = ''
+        let skipUncertainCheck = false
+        let skipPermissionCheck = false
+        let postCompleted = false
         try {
+          if (preparationFailure) throw preparationFailure
           submitted = true
           this.postingAccounts.add(batch.accountId)
           const result = await this.steam.postProfileComment(
@@ -458,6 +473,7 @@ export class BatchQueue {
               this.store.getDeliveryRecordById(delivery.id)?.status === 'sending',
             evidence => this.store.saveDeliveryCommentEvidence(delivery.id, evidence)
           )
+          postCompleted = true
           if (this.stopped) return
           this.store.completeDelivery(
             delivery.id,
@@ -466,7 +482,40 @@ export class BatchQueue {
           )
           this.store.resetBatchAccessDenials(batchId)
           this.clearRetryCountAfterProgress(batchId)
+          if (result.commentId && this.recovery.isCurrent(batchId, intent) && this.store.getActiveAccountId() === batch.accountId) {
+            this.recordAvailability(batch.accountId, delivery.friendSteamId, 'allowed', '已确认本次留言成功')
+          }
         } catch (error) {
+          if (postCompleted) throw error
+          const detail = error instanceof CommentPreflightError ? error.interruption : batchInterruption(error)
+          const requestFailure = isRequestFailure(detail.code)
+          const targetUnavailable = error instanceof DomainError && error.code === 'COMMENT_TARGET_UNAVAILABLE'
+          const permissionUncertain = error instanceof CommentPermissionDeniedError && error.code === 'COMMENT_POST_UNCERTAIN'
+          const skipUnreadableComments = error instanceof CommentPreflightError &&
+            ((detail.code === 'COMMENT_BASELINE' && failurePolicy.definiteFailure === 'skip') || requestFailure)
+          if (error instanceof CommentPreflightError) {
+            submitted = false
+            if (this.stopped) {
+              try { this.store.resetDeliveryToPending(delivery.id) } catch { /* Storage may already be closed. */ }
+              return
+            }
+            if (!this.recovery.isCurrent(batchId, intent) || this.store.getBatchSummary(batchId)?.status !== 'running' ||
+              this.store.getActiveAccountId() !== batch.accountId || !this.steam.isAuthenticated(batch.accountId)) {
+              this.store.resetDeliveryToPending(delivery.id)
+              activeDeliveryId = null
+              return
+            }
+            const detail = error.interruption
+            if (!skipUnreadableComments) {
+              this.store.resetDeliveryToPending(delivery.id)
+              activeDeliveryId = null
+              if (detail.code === 'ACCESS_DENIED') this.store.extendBatchAccessDeniedCooldown(batchId, detail.retryAfterMs)
+              this.recovery.interrupt(batchId, { code: detail.code,
+                message: `${delivery.friendName} (SteamID: ${delivery.friendSteamId})：${error.message}`,
+                allowAuto: detail.canRetry, retryAfterMs: detail.retryAfterMs }, intent)
+              return
+            }
+          }
           if (error instanceof DomainError && error.code === 'SESSION_PREPARATION_FAILED') {
             if (this.stopped) {
               try { this.store.resetDeliveryToPending(delivery.id) } catch { /* Storage may already be closed. */ }
@@ -479,25 +528,41 @@ export class BatchQueue {
             return
           }
           if (this.stopped) return
-          const classification = classifyDeliveryError(error)
-          interruption = batchInterruption(error)
+          const classification = skipUnreadableComments ? { status: 'failed' as const, pauseBatch: false }
+            : requestFailure || permissionUncertain ? { status: 'uncertain' as const, pauseBatch: false } : classifyDeliveryError(error)
+          const failureMessage = skipUnreadableComments
+            ? `已跳过（未发送）：${publicErrorMessage(error).replace(/；尚未提交留言，当前好友保留待发$/, '')}`
+            : requestFailure ? '网络或服务请求在提交期间中断，发送结果待核对；已跳过本条，不会重复发送'
+            : publicErrorMessage(error)
+          interruption = detail
+          if (requestFailure || permissionUncertain) {
+            interruption = null
+            skipUncertainCheck = classification.status === 'uncertain'
+            skipPermissionCheck = permissionUncertain
+          }
           const accessDenied = error instanceof DomainError && error.code === 'COMMUNITY_ACCESS_DENIED'
           if (accessDenied) this.store.recordBatchAccessDenied(batchId, error.retryAfterMs)
           const current = this.store.getBatchSummary(batchId)
-          if (accessDenied || (classification.pauseBatch && interruption.rejectedBeforeAcceptance && current?.autoRetryEnabled)) {
+          if (accessDenied || (classification.pauseBatch && interruption?.rejectedBeforeAcceptance && current?.autoRetryEnabled)) {
             this.store.resetDeliveryToPending(delivery.id)
           } else {
-            this.store.completeDelivery(delivery.id, classification.status, { error: publicErrorMessage(error) })
+            this.store.completeDelivery(delivery.id, classification.status, { error: failureMessage })
             if (!classification.pauseBatch) this.clearRetryCountAfterProgress(batchId)
           }
-          stopMessage = publicErrorMessage(error)
+          stopMessage = failureMessage
           shouldPause = classification.pauseBatch
-          if (classification.status === 'failed' && !classification.pauseBatch && failurePolicy.definiteFailure === 'pause') {
+          if (this.recovery.isCurrent(batchId, intent) && this.store.getActiveAccountId() === batch.accountId) {
+            if (targetUnavailable || permissionUncertain) this.recordAvailability(batch.accountId, delivery.friendSteamId, 'blocked',
+              permissionUncertain ? 'Steam 明确提示当前账号无法向此好友留言；该次投递仍保留待核对' : publicErrorMessage(error))
+            else if (requestFailure) this.recordAvailability(batch.accountId, delivery.friendSteamId, 'unknown', '本次网络或服务请求失败，尚未确定留言权限')
+          }
+          if (classification.status === 'failed' && !classification.pauseBatch && failurePolicy.definiteFailure === 'pause'
+            && !targetUnavailable && !requestFailure) {
             shouldPause = true
-            interruption = { ...interruption, code: 'DELIVERY_FAILED', canRetry: false }
+            interruption = { ...(interruption ?? batchInterruption(error)), code: 'DELIVERY_FAILED', canRetry: false }
             stopMessage = `该好友留言明确失败，已保留失败记录；按策略暂停，需手动继续。${stopMessage}`
           }
-          this.emit({
+          if (!skipUnreadableComments && !requestFailure && !targetUnavailable && !permissionUncertain) this.emit({
             type: 'notice',
             level: 'warning',
             message: `${delivery.friendName}：${classification.status === 'uncertain' ? '发送结果待核对，不会自动重发' : '留言失败'}。${publicErrorMessage(error)}`
@@ -509,7 +574,14 @@ export class BatchQueue {
         this.nextDeliveryAt.set(batchId, Date.now() + batch.delayMs + Math.floor(Math.random() * 3_001))
 
         this.emit({ type: 'batchProgress', batchId })
-        if (this.store.getDeliveryRecordById(delivery.id)?.status === 'uncertain' &&
+        if (skipUncertainCheck && this.store.getDeliveryRecordById(delivery.id)?.status === 'uncertain') {
+          const current = (): boolean => !this.stopped && this.recovery.isCurrent(batchId, intent) &&
+            this.store.getActiveAccountId() === batch.accountId && this.steam.isAuthenticated(batch.accountId) &&
+            this.store.getBatchSummary(batchId)?.status === 'running'
+          const skipped = skipPermissionCheck ? this.verification.skipAfterPermissionDenial(delivery, current)
+            : this.verification.skipAfterRequestFailure(delivery, current)
+          if (!skipped) return
+        } else if (this.store.getDeliveryRecordById(delivery.id)?.status === 'uncertain' &&
           (failurePolicy.uncertainResult === 'skip' || typeof this.steam.reconcileProfileComment === 'function')) {
           const isCurrent = (): boolean => !this.stopped && this.recovery.isCurrent(batchId, intent) &&
             this.store.getActiveAccountId() === batch.accountId && this.steam.isAuthenticated(batch.accountId) &&
@@ -608,6 +680,16 @@ export class BatchQueue {
     const batch = this.store.getBatchSummary(batchId)
     if (batch && !batch.nextRetryAt) this.store.clearBatchRetryCount(batchId)
   }
+
+  private recordAvailability(accountId: string, steamId: string, status: 'allowed' | 'blocked' | 'unknown', reason: string): void {
+    if (!this.store.hasActiveFriend(accountId, steamId)) return
+    const policy = this.store.recordFriendCommentAvailability(accountId, steamId, { status, reason })
+    this.emit({ type: 'friendPolicyChanged', policy })
+  }
+}
+
+function isRequestFailure(code: BatchStopCode): boolean {
+  return code === 'NETWORK_ERROR' || code === 'SERVER_ERROR'
 }
 
 export function classifyDeliveryError(error: unknown): {
@@ -615,12 +697,14 @@ export function classifyDeliveryError(error: unknown): {
   pauseBatch: boolean
 } {
   if (error instanceof DomainError) {
+    if (error.code === 'COMMENT_TARGET_UNAVAILABLE') return { status: 'failed', pauseBatch: false }
     if (['SESSION_CHANGED', 'COMMENT_POST_UNCERTAIN'].includes(error.code)) return { status: 'uncertain', pauseBatch: true }
     if (['COMMUNITY_ACCESS_DENIED', 'RATE_LIMITED', 'SESSION_CHECK_FAILED', 'SESSION_EXPIRED',
       'NOT_AUTHENTICATED', 'WRONG_ACCOUNT', 'CHECK_CANCELLED'].includes(error.code)) {
       return { status: 'failed', pauseBatch: true }
     }
   }
+  if (isRequestFailure(batchInterruption(error).code)) return { status: 'uncertain', pauseBatch: false }
   const message = publicErrorMessage(error).toLowerCase()
   const rateLimited = /rate|limit|too many|\b429\b|频率|限制/.test(message)
   const sessionFailure = /not logged|login|session|access denied|expired|登录|会话/.test(message)

@@ -27,6 +27,16 @@ function render(state: AppSnapshot, language: 'zh-CN' | 'en' = 'zh-CN') {
 }
 
 describe('toolbox welcome home', () => {
+  it('shows the connection recovery notice on home without starting other work', () => {
+    const actions = { onNavigate: vi.fn(), onLogin: vi.fn(), onSettings: vi.fn() }
+    const html = renderToStaticMarkup(<I18nProvider language="en"><WelcomePanel snapshot={snapshot()} {...actions}
+      connectionNotice={<section aria-label="Session connection">Automatic retry scheduled</section>} /></I18nProvider>)
+    expect(html).toContain('Automatic retry scheduled')
+    expect(html.indexOf('Automatic retry scheduled')).toBeLessThan(html.indexOf('toolbox-home-grid'))
+    expect(actions.onLogin).not.toHaveBeenCalled()
+    expect(actions.onNavigate).not.toHaveBeenCalled()
+  })
+
   it.each(['zh-CN', 'en'] as const)('offers four separate tools without starting work in %s', language => {
     const { html, actions } = render(snapshot(), language)
     expect(html).toContain(language === 'en' ? 'Your Steam tools, in one place.' : '你的 Steam 工具，都在这里。')

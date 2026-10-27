@@ -24,6 +24,18 @@ afterEach(() => {
 })
 
 describe('durable batch stop reasons and bounded retry state', () => {
+  it('accepts a concrete pre-send baseline stop without changing any recipient state', () => {
+    const { store } = fixture()
+    const task = store.createBatchTask(accountId, 'Hello', 100, recipients(2), false)
+    store.setBatchRunning(task.id)
+    store.pauseBatch(task.id, { code: 'COMMENT_BASELINE', message: 'Unreadable comment baseline; no POST' })
+    for (const value of [store.getBatchSummary(task.id), store.listBatchTasks(accountId).items[0]]) {
+      expect(value).toMatchObject({ status: 'paused', stopCode: 'COMMENT_BASELINE',
+        pending: 2, sending: 0, completed: 0, uncertain: 0, failedCount: 0,
+        stopMessage: 'Unreadable comment baseline; no POST', autoRetryEnabled: false, nextRetryAt: null })
+    }
+  })
+
   it('enables retry on new tasks by default and preserves an explicit opt-out', () => {
     const { store } = fixture()
     const enabled = store.createBatchTask(accountId, 'Hello', 100, recipients(2))

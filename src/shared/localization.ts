@@ -1,6 +1,7 @@
 const messages = new Map<string, string>([
   ['请先切换到需要检查的账号', 'Switch to the account you want to check first.'],
   ['账号正在登录或恢复，请稍后检查', 'The account is signing in or recovering. Check again shortly.'],
+  ['启动时未能恢复账号连接，请查看账号提示后重试；保存的账号未被删除', 'The saved account could not be reconnected at startup. Review the account message and retry; the saved account was not deleted.'],
   ['当前没有可核验的网页会话，请先登录或稍后重试', 'There is no verifiable web session. Sign in first or try again later.'],
   ['账号或会话已改变，本次检查已取消', 'The account or session changed. This check was cancelled.'],
   ['已核验当前 Steam 网页登录身份；不代表留言权限或客户端在线状态', 'The current Steam web identity is verified. This does not verify comment permissions or Steam client online status.'],
@@ -19,6 +20,34 @@ const messages = new Map<string, string>([
   ['未知原因', 'Unknown reason'],
   ['旧版 HTTP 403 可能已经送达，该对象已移入待核对；核对后可继续其余待发。为避免重复，未自动重发。', 'A comment reported as HTTP 403 by the older app may already have been delivered. This recipient now needs review. Review it before resuming other pending recipients; it was not resent automatically to prevent duplicates.'],
   ['留言前无法可靠读取目标评论基线，尚未提交留言；请稍后继续原任务', 'The target comment baseline could not be read reliably. No comment was submitted; resume the original task later.'],
+  ['读取目标评论区触发 Steam 频率限制（HTTP 429）', 'Reading the target comments hit the Steam rate limit (HTTP 429)'],
+  ['Steam 拒绝读取目标评论区（HTTP 403），尚不能确定具体限制原因', 'Steam denied reading the target comments (HTTP 403); the specific restriction is not confirmed'],
+  ['读取目标评论区时 Steam 网页登录已失效', 'Steam web sign-in expired while reading the target comments'],
+  ['读取目标评论区时无法核验当前登录身份', 'The signed-in identity could not be verified while reading the target comments'],
+  ['读取目标评论区时登录会话发生变更', 'The sign-in session changed while reading the target comments'],
+  ['读取目标评论区前需要登录 Steam', 'Steam sign-in is required before reading the target comments'],
+  ['读取目标评论区时账号发生变更', 'The account changed while reading the target comments'],
+  ['读取目标评论区时网络请求失败', 'The network request failed while reading the target comments'],
+  ['读取目标评论区时 Steam 服务暂时异常', 'Steam was temporarily unavailable while reading the target comments'],
+  ['资料页未提供可核验的目标评论区，暂不能确定留言权限', 'The profile did not provide a verifiable target comment section; eligibility is unknown'],
+  ['目标评论区内容不完整或结构无法可靠解析', 'The target comment section was incomplete or could not be parsed reliably'],
+  ['暂时无法可靠读取目标评论区', 'The target comment section could not be read reliably'],
+  ['尚未提交留言，当前好友保留待发', 'No comment was submitted; this recipient stays pending'],
+  ['留言前检查未通过：', 'The pre-send check did not pass: '],
+  ['尚未提交留言', 'No comment was submitted'],
+  ['资料页明确提示为私密，当前无法留言', 'The profile is explicitly private; comments are currently unavailable'],
+  ['留言前网络或服务请求失败，尚未提交留言', 'A network or service request failed before submission; no comment was submitted'],
+  ['本次网络或服务请求失败，尚未确定留言权限', 'This network or service request failed; comment eligibility remains unknown'],
+  ['网络或服务请求在提交期间中断，发送结果待核对；已跳过本条，不会重复发送', 'The network or service request failed during submission. Delivery is uncertain; this recipient was skipped and will not be sent the comment again.'],
+  ['网络或服务请求失败，本条保留待核对并跳过；不会重复发送，将继续其余待发', 'The network or service request failed. This recipient stays uncertain and is skipped without resending; other pending recipients will continue.'],
+  ['已确认本次留言成功', 'This comment was confirmed delivered'],
+  ['Steam 明确提示该资料页已关闭留言', 'Steam explicitly reports that this profile has disabled comments'],
+  ['Steam 明确提示该资料页仅允许好友留言，当前请求被拒绝', 'Steam explicitly reports friends-only comments; this request was denied'],
+  ['Steam 明确提示该好友已屏蔽当前账号', 'Steam explicitly reports that this friend has blocked the current account'],
+  ['Steam 明确提示当前账号没有此资料页留言权限', 'Steam explicitly reports that the current account cannot comment on this profile'],
+  ['Steam 返回的留言结果与权限提示不一致，保留待核对且不会重复发送', 'The comment result conflicts with the permission notice. It stays uncertain and will not be resent.'],
+  ['Steam 明确提示当前账号无法向此好友留言；该次投递仍保留待核对', 'Steam explicitly reports that this account cannot comment on this friend; this delivery still needs review.'],
+  ['Steam 明确提示无法留言，本条保留待核对并跳过；不会重复发送，将继续其余待发', 'Steam explicitly denied commenting. This delivery stays uncertain and is skipped without resending; other pending recipients will continue.'],
   ['无法核验目标资料页中的当前登录身份', 'The current signed-in identity on the target profile could not be verified.'],
   ['任务已暂停，需手动继续', 'The task is paused. Resume it manually.'],
   ['用户手动暂停任务', 'The user paused this task.'],
@@ -41,6 +70,11 @@ const messages = new Map<string, string>([
   ['Steam 服务已关闭', 'The Steam service is closed.'],
   ['自动登录令牌已失效，请重新登录', 'The automatic sign-in token has expired. Sign in again.'],
   ['Steam 自动登录暂时失败，将稍后重试；无需反复扫码', 'Automatic Steam sign-in is temporarily unavailable and will retry later. Repeated QR scans are not needed.'],
+  ['Steam 登录连接暂时中断，已保留登录信息，正在自动重连；无需重新扫码', 'The Steam sign-in connection was temporarily interrupted. Saved sign-in information was retained and reconnection is automatic; no new QR scan is needed.'],
+  ['Steam 登录服务暂时拒绝或限流，已保留登录信息；等待后会自动重连', 'Steam temporarily denied or rate-limited sign-in. Saved sign-in information was retained and reconnection will follow after the wait.'],
+  ['Steam 登录服务要求较长等待，已保留登录信息；请稍后手动重连', 'Steam requires a longer wait. Saved sign-in information was retained; reconnect manually later.'],
+  ['Steam 登录服务要求的等待时间超出可自动处理范围，已停止本次重连；登录信息仍保留', 'Steam requires a wait beyond the automatic recovery range. Reconnection stopped for this run; saved sign-in information is retained.'],
+  ['已切换为手动登录，自动重连已停止；保存的登录信息未删除', 'Manual sign-in was selected and automatic reconnection stopped. Saved sign-in information was not deleted.'],
   ['Steam 网页会话已失效，正在自动恢复；任务保持暂停', 'The Steam web session expired and is being restored automatically. Tasks remain paused.'],
   ['Steam 会话已自动恢复；请手动继续暂停的任务', 'The Steam session was restored automatically. Resume paused tasks manually.'],
   ['Steam 会话已自动恢复，原任务仍保持暂停，请手动继续', 'The Steam session was restored automatically. The original task remains paused; resume it manually.'],
@@ -166,7 +200,15 @@ export function localizeMessage(message: string, language: 'zh-CN' | 'en'): stri
   const translated = messages.get(message)
   if (translated !== undefined) return translated
 
-  let match = /^Steam 拒绝响应，但发送结果待核对；为防重复不会自动重发。([\s\S]*)$/.exec(message)
+  let match = /^已跳过（未发送）：([\s\S]*)$/.exec(message)
+  if (match) return `Skipped (not sent): ${localizeMessage(match[1]!, language)}`
+  match = /^([\s\S]* \(SteamID: 7656119\d{10}\))：([\s\S]*)$/.exec(message)
+  if (match) return `${match[1]}: ${localizeMessage(match[2]!, language)}`
+  match = /^([\s\S]+)；尚未提交留言，当前好友保留待发$/.exec(message)
+  if (match) return `${localizeMessage(match[1]!, language)}. No comment was submitted; this recipient stays pending.`
+  match = /^留言前检查未通过：([\s\S]+)；尚未提交留言$/.exec(message)
+  if (match) return `The pre-send check did not pass: ${localizeMessage(match[1]!, language)} No comment was submitted.`
+  match = /^Steam 拒绝响应，但发送结果待核对；为防重复不会自动重发。([\s\S]*)$/.exec(message)
   if (match) return `Steam returned a refusal, but the delivery result needs review. It will not be resent automatically to prevent duplicates. ${localizeMessage(match[1]!, language)}`.trimEnd()
   match = /^(Steam 返回(?:JSON 拒绝|HTML 拒绝|验证页面拒绝|访问拒绝)（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试)。Steam 原因：([\s\S]*)$/.exec(message)
   if (match) return `${localizeMessage(match[1]!, language)} Steam reason: ${match[2]}`

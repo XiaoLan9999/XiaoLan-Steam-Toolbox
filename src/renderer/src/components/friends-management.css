@@ -175,6 +175,14 @@
   margin-left: auto;
 }
 
+.comment-unavailable-badge {
+  display: block;
+  color: var(--tea);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .friend-management .friend-toolbar {
   flex-wrap: wrap;
 }

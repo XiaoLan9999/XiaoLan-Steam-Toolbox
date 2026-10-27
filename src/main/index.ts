@@ -7,8 +7,17 @@ import { BatchQueue } from './batch-queue'
 import { CommentScanQueue } from './comment-scan-queue'
 import { SecretCipher, SqliteStore } from './store'
 import { SteamService, publicErrorMessage } from './steam-service'
-import { GameStatusService } from './game-status-service'
+import { GameStatusService, createGameStatusSteamClient } from './game-status-service'
 import { NativePresenceBroker } from './native-presence-broker'
+import { NativeGameStatusClient } from './native-game-status-client'
+import { readLocalSimulationContext } from './simulation-local-context'
+import { LocalAppSimulationService } from './local-app-simulation'
+import { StatusCopyService } from './status-copy-service'
+import { ToolboxStatusCopyBackend } from './status-copy-toolbox'
+import { AsfStatusCopyBackend } from './status-copy-asf'
+import type { StatusCopyAction, StatusCopyInput } from '../shared/status-copy'
+import type { LocalAppSimulationAction, LocalAppSimulationInspectInput, LocalAppSimulationStartInput } from '../shared/local-app-simulation'
+import { QuitDrain } from './quit-drain'
 import type { GameStatusAction, GameStatusAppInput, GameStatusLiveDisplayInput, GameStatusPatchInput, GameStatusPlayInput, GameStatusSaveDraftInput, GameStatusUnlockInput } from '../shared/game-status'
 import type { BatchFailurePolicy } from '../shared/batch-failure-policy'
 import { DomainError } from '../shared/domain'
@@ -49,9 +58,12 @@ let mainWindow: BrowserWindow | null = null
 let store: SqliteStore
 let steam: SteamService
 let gameStatus: GameStatusService
+let localAppSimulation: LocalAppSimulationService | undefined
+let statusCopy: StatusCopyService | undefined
 let queue: BatchQueue
 let commentScans: CommentScanQueue
 let diagnostics: RuntimeDiagnostics | undefined
+let nativePresenceForQuit: NativePresenceBroker | undefined
 let recoveringRenderer = false
 let shuttingDown = false
 let exportInProgress = false
@@ -68,6 +80,23 @@ let backgroundMedia: BackgroundMediaService | null = null
 let startupUpdateTimer: ReturnType<typeof setTimeout> | undefined
 let periodicUpdateTimer: ReturnType<typeof setInterval> | undefined
 const updatePackageKind: UpdatePackageKind = process.env.PORTABLE_EXECUTABLE_FILE ? 'portable' : 'setup'
+const quitDrain = new QuitDrain({
+  prepare: [
+    () => clearTimeout(startupUpdateTimer),
+    () => clearInterval(periodicUpdateTimer),
+    () => queue?.shutdown(),
+    () => commentScans?.shutdown(),
+    () => gameStatus?.dispose(),
+    () => { void localAppSimulation?.invalidate().catch(() => {}) },
+    () => { void statusCopy?.invalidate().catch(() => {}) }
+  ],
+  drain: async () => {
+    const results = await Promise.allSettled([gameStatus?.shutdown() ?? nativePresenceForQuit?.shutdown(), localAppSimulation?.shutdown(), statusCopy?.shutdown()])
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failed) throw failed.reason
+  },
+  onSettled: () => app.quit()
+})
 
 // Retain the existing account database if Electron uses the renamed product name.
 if ([APP_NAME_ZH, APP_NAME_EN].includes(app.getName())) {
@@ -95,6 +124,8 @@ app.whenReady().then(async () => {
     if (shuttingDown) return
     if (event.type === 'authFinished') {
       gameStatus?.invalidate()
+      void localAppSimulation?.invalidate().catch(() => {})
+      void statusCopy?.invalidate().catch(() => {})
       artworkUploads?.invalidate()
       backgroundMedia?.invalidate()
       void artworkBrowser?.close()
@@ -124,8 +155,17 @@ app.whenReady().then(async () => {
     commentScans?.pauseForAccount(accountId)
   }, { onDiagnostic: (event) => diagnostics?.sessionEvent(event) })
   queue = new BatchQueue(store, steam, emit)
+  const nativePresence = new NativePresenceBroker({
+    workerDirectory: app.isPackaged ? join(process.resourcesPath, 'native-presence') : join(app.getAppPath(), 'resources', 'native-presence'),
+    onContextLost: () => gameStatus.invalidateLiveContext(),
+    onLifecycle: event => diagnostics?.nativePresenceEvent(event)
+  })
+  nativePresenceForQuit = nativePresence
   gameStatus = new GameStatusService({
-    nativeWriter: new NativePresenceBroker({ workerDirectory: app.isPackaged ? join(process.resourcesPath, 'native-presence') : join(app.getAppPath(), 'resources', 'native-presence'), onContextLost: () => gameStatus.invalidateLiveContext() }),
+    nativeWriter: nativePresence,
+    createLocalClient: steamId => new NativeGameStatusClient({ broker: nativePresence, steamId, createMetadataClient: () => createGameStatusSteamClient() }),
+    checkSimulationContext: () => readLocalSimulationContext(),
+    onDiagnostic: event => diagnostics?.gameStatusEvent(event),
     getActiveAccount: () => {
       if (accountTransition.active) return null
       const id = store.getActiveAccountId()
@@ -133,8 +173,50 @@ app.whenReady().then(async () => {
       return account ? { id: account.id, steamId: account.steamId } : null
     },
     onChange: state => emit({ type: 'gameStatusChanged', state }),
-    getToolboxLogin: accountId => steam.getGameStatusLogin(accountId),
     draftPath: join(app.getPath('userData'), 'game-status-drafts.json')
+  })
+  localAppSimulation = new LocalAppSimulationService({
+    getWorkerPath: () => app.isPackaged
+      ? join(process.resourcesPath, 'local-app-simulation', 'local-app-host-x64.exe')
+      : join(app.getAppPath(), 'resources', 'local-app-simulation', 'local-app-host-x64.exe'),
+    getActiveAccount: () => {
+      if (accountTransition.active) return null
+      const id = store.getActiveAccountId()
+      const account = id ? store.getAccount(id) : null
+      return account ? { id: account.id, steamId: account.steamId } : null
+    },
+    beforeStart: async () => {
+      const state = gameStatus.snapshot()
+      if (state.live?.patchActive || state.liveLock && state.liveLock.status !== 'stopped') {
+        throw new DomainError('LOCAL_APP_LIVE_RESTORE_REQUIRED', '请先解除真实游戏锁定并安全恢复，再启动本机模拟。')
+      }
+      await statusCopy?.invalidate()
+      await gameStatus.retireConnection()
+    },
+    onChange: state => emit({ type: 'localAppSimulationChanged', state })
+  })
+  statusCopy = new StatusCopyService({
+    getActiveAccount: () => {
+      if (accountTransition.active) return null
+      const id = store.getActiveAccountId()
+      const account = id ? store.getAccount(id) : null
+      return account ? { id: account.id, steamId: account.steamId } : null
+    },
+    getToolboxLogin: accountId => steam.getGameStatusLogin(accountId),
+    createBackend: mode => mode === 'asf' ? new AsfStatusCopyBackend() : new ToolboxStatusCopyBackend({
+      getToolboxLogin: accountId => steam.getGameStatusLogin(accountId)
+    }),
+    beforeStart: async () => {
+      const state = gameStatus.snapshot()
+      if (state.live?.patchActive || state.liveLock && state.liveLock.status !== 'stopped') {
+        throw new DomainError('COPY_LIVE_RESTORE_REQUIRED', '请先解除真实游戏锁定并安全恢复。')
+      }
+      await localAppSimulation?.invalidate()
+      await gameStatus.retireConnection()
+    },
+    preferencesPath: join(app.getPath('userData'), 'status-copy-preferences.json'),
+    cipher: createSecretCipher(),
+    onChange: state => emit({ type: 'statusCopyChanged', state })
   })
   commentScans = new CommentScanQueue(store, steam, emit)
   diagnostics = new RuntimeDiagnostics({
@@ -164,7 +246,9 @@ app.whenReady().then(async () => {
   registerIpcHandlers()
   createWindow()
   void screenshotController.refresh().catch(() => { /* The screenshot page offers a manual directory selector. */ })
-  void steam.restoreActiveAccount()
+  void steam.restoreActiveAccount().catch(() => {
+    emit({ type: 'notice', level: 'warning', message: '启动时未能恢复账号连接，请查看账号提示后重试；保存的账号未被删除' })
+  })
   const automaticCheck = (): void => {
     if (app.isPackaged && store.getUpdatePreferences().autoCheck && updater.getState().phase !== 'downloading') {
       void updater.checkForUpdates()
@@ -196,6 +280,8 @@ app.on('will-quit', () => {
   commentScans?.shutdown()
   steam?.dispose()
   gameStatus?.dispose()
+  void localAppSimulation?.shutdown().catch(() => {})
+  void statusCopy?.shutdown().catch(() => {})
   screenshotController?.dispose()
   screenshotImageAdapter?.dispose()
   diagnostics?.shutdown()
@@ -207,7 +293,13 @@ app.on('child-process-gone', (_event, details) => {
 })
 
 app.on('before-quit', (event) => {
-  if (!exportInProgress && !screenshotImportInProgress) { shuttingDown = true; return }
+  if (!exportInProgress && !screenshotImportInProgress) {
+    shuttingDown = true
+    if (!nativePresenceForQuit || quitDrain.settled) return
+    event.preventDefault()
+    void quitDrain.begin().catch(() => {})
+    return
+  }
   event.preventDefault()
   if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, {
     type: 'info', message: screenshotImportInProgress ? store.getLanguage() === 'en'
@@ -228,6 +320,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#f3f6f7',
+    icon: app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'build/icon.png'),
     title: APP_NAME_ZH,
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -292,6 +385,9 @@ function createWindow(): void {
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     diagnostics?.processGone('renderer', details.reason, details.exitCode)
     if (details.reason === 'clean-exit' || shuttingDown || rendererWindow.isDestroyed() || recoveringRenderer) return
+    gameStatus.invalidateForRendererLoss()
+    void localAppSimulation?.invalidate().catch(() => {})
+    void statusCopy?.invalidate().catch(() => {})
     for (const account of store.getAccounts()) {
       const batch = store.getActiveBatchSummary(account.id)
       if (batch && (batch.status === 'running' || batch.status === 'queued' || batch.nextRetryAt)) {
@@ -303,10 +399,10 @@ function createWindow(): void {
     const en = store.getLanguage() === 'en'
     void dialog.showMessageBox(rendererWindow, {
       type: 'error', title: en ? 'Toolbox interface stopped' : '工具箱界面已停止',
-      message: en ? 'Tasks are paused. Saved results and pending recipients remain in the task list.'
-        : '任务已暂停，已保存的结果和未发送对象仍保留在任务列表中。',
-      detail: en ? 'Reloading the interface does not resume sending. Check the task list and continue manually.'
-        : '重新加载界面不会自动继续发送，请在任务列表核对后手动继续。',
+      message: en ? 'Tasks are paused. Game status maintenance has stopped and connection shutdown has been requested. Saved comment results remain in the task list.'
+        : '任务已暂停，游戏状态维持已停止并已请求关闭连接，已保存的留言结果仍保留在任务列表中。',
+      detail: en ? 'Reloading will not resume sending or game status maintenance. Disconnecting does not mean the original game text was restored. Revisit an in-game page to let the game refresh its own status.'
+        : '重新加载不会自动继续发送或恢复游戏状态维持。断开连接并不表示已恢复游戏原生文字；可重新进入游戏页面，让游戏自行刷新状态。',
       buttons: en ? ['Reload interface (keep paused)', 'Exit'] : ['重新加载界面（保持暂停）', '退出'],
       defaultId: 0, cancelId: 1
     }).then(({ response }) => {
@@ -429,7 +525,26 @@ function registerIpcHandlers(): void {
   })
   handle('snapshot:get', () => getSnapshot())
   handle('gameStatus:state', () => gameStatus.snapshot())
-  handle('gameStatus:connectWithToolbox', (input: GameStatusAction) => gameStatus.connectWithToolbox(input))
+  handle('gameStatus:connectLocal', async (input: GameStatusAction) => {
+    if (input?.accountId !== store.getActiveAccountId() || input?.sessionId !== gameStatus.snapshot().sessionId) {
+      throw new DomainError('GAME_STATUS_CONTEXT_CHANGED', '账号或游戏状态会话已变化，请刷新后重试。')
+    }
+    await localAppSimulation?.invalidate()
+    await statusCopy?.invalidate()
+    return gameStatus.connectLocal(input)
+  })
+  handle('gameStatus:connectWithToolbox', (_input: GameStatusAction) => {
+    throw new DomainError('GAME_STATUS_PERSONAL_CM_DISABLED', '模拟已经改为本机 AppID 进程，不再建立独立 CM 登录。')
+  })
+  handle('localAppSimulation:state', () => localAppSimulation!.state())
+  handle('localAppSimulation:inspect', (input: LocalAppSimulationInspectInput) => localAppSimulation!.inspect(input))
+  handle('localAppSimulation:start', (input: LocalAppSimulationStartInput) => localAppSimulation!.start(input))
+  handle('localAppSimulation:stop', (input: LocalAppSimulationAction) => localAppSimulation!.stop(input))
+  handle('statusCopy:state', () => statusCopy!.state())
+  handle('statusCopy:save', (input: StatusCopyInput) => statusCopy!.save(input))
+  handle('statusCopy:preview', (input: StatusCopyInput) => statusCopy!.preview(input))
+  handle('statusCopy:start', (input: StatusCopyInput) => statusCopy!.start(input))
+  handle('statusCopy:stop', (input: StatusCopyAction) => statusCopy!.stop(input))
   handle('gameStatus:play', (input: GameStatusPlayInput) => gameStatus.play(input))
   handle('gameStatus:stop', (input: GameStatusAction) => gameStatus.stop(input))
   handle('gameStatus:logout', (input: GameStatusAction) => gameStatus.logout(input))
@@ -444,12 +559,18 @@ function registerIpcHandlers(): void {
   handle('gameStatus:saveDraft', (input: GameStatusSaveDraftInput) => gameStatus.saveDraft(input))
   handle('account:refreshStatus', (accountId: string) => steam.refreshAccountStatus(accountId))
   handle('account:activate', (accountId: string) => accountTransition.run(async () => {
+    if (store.getActiveAccountId() === accountId) {
+      await steam.activateAccount(accountId)
+      return getSnapshot()
+    }
     artworkUploads?.invalidate()
     backgroundMedia?.invalidate()
     await artworkBrowser?.close()
     const previousId = store.getActiveAccountId()
     if (previousId && previousId !== accountId) {
       gameStatus.invalidate()
+      await localAppSimulation?.invalidate()
+      await statusCopy?.invalidate()
       commentScans.pauseForAccount(previousId)
       queue.pauseForAccountChange(previousId)
     }
@@ -461,11 +582,12 @@ function registerIpcHandlers(): void {
     if (batch) {
       throw new DomainError('ACCOUNT_HAS_ACTIVE_BATCH', '请先取消这个账号的未完成批次')
     }
-    if (store.getActiveAccountId() === accountId) gameStatus.invalidate()
+    if (store.getActiveAccountId() === accountId) { gameStatus.invalidate(); await localAppSimulation?.invalidate(); await statusCopy?.invalidate() }
     artworkUploads?.invalidate()
     backgroundMedia?.invalidate()
     if (artworkBrowser?.getState().accountId === accountId) await artworkBrowser.close()
     commentScans.pauseForAccount(accountId)
+    await statusCopy?.forgetAccount(accountId)
     steam.removeAccount(accountId)
   }))
   handle('auth:startQr', () => steam.startQrLogin())
@@ -581,6 +703,10 @@ function requireCurrentTask(batchId: string): void {
 }
 
 function ensureInstallationIdle(): void {
+  const copy = statusCopy?.state()
+  if (copy && (copy.busy || ['previewing', 'starting', 'following', 'waiting', 'stopping'].includes(copy.phase) || copy.error?.code === 'COPY_STOP_UNCONFIRMED')) {
+    throw new DomainError('update.installBusy', 'update.installBusy')
+  }
   if (artworkBrowser?.getState().tool) throw new DomainError('update.installArtworkBusy', 'update.installArtworkBusy')
   const hasActiveWork = store.getAccounts().some((account) => {
     const batch = store.getActiveBatchSummary(account.id)

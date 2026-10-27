@@ -1,14 +1,16 @@
 import type { AppSnapshot } from '../../../shared/types'
+import type { ReactNode } from 'react'
 import { useI18n } from '../i18n'
 import './welcome-panel.css'
 
 export type WelcomeDestination = 'friends' | 'history' | 'tools' | 'screenshots' | 'game-status'
 
-export function WelcomePanel({ snapshot, onNavigate, onLogin, onSettings }: {
+export function WelcomePanel({ snapshot, onNavigate, onLogin, onSettings, connectionNotice }: {
   snapshot: AppSnapshot
   onNavigate(destination: WelcomeDestination): void
   onLogin(): void
   onSettings(): void
+  connectionNotice?: ReactNode
 }): React.JSX.Element {
   const { t } = useI18n()
   const account = snapshot.accounts.find(item => item.id === snapshot.activeAccountId)
@@ -38,6 +40,7 @@ export function WelcomePanel({ snapshot, onNavigate, onLogin, onSettings }: {
         <button className="ghost" onClick={onLogin}>{t('添加账号', 'Add account')}</button>
       </div>
     </header>
+    {connectionNotice}
     {batch && <section className="toolbox-home-task" aria-label={t('当前留言任务', 'Current comment task')}>
       <div><strong>{batch.status === 'running' ? t('留言任务正在进行', 'Comment task in progress')
         : batch.status === 'paused' ? t('有一项暂停的留言任务', 'A comment task is paused') : t('有一项待处理留言任务', 'A comment task is pending')}</strong>

@@ -10,9 +10,17 @@ const MAX_TREE_DEPTH = 256
 export function parseCommentEligibility(html: string, steamId: string): CommentCheckResult {
   if (!/^7656119\d{10}$/.test(steamId)) return unknown('目标 SteamID 无效，无法检查')
   const prefix = `commentthread_Profile_${steamId}`
-  const roots = [...walkNodes(parse(html))].filter(
+  const document = parse(html)
+  const pageNodes = [...walkNodes(document)]
+  const roots = pageNodes.filter(
     (node): node is HtmlElement => isElement(node) && attribute(node, 'id') === `${prefix}_area`
   )
+  if (isPrivateTargetProfile(pageNodes, steamId)) {
+    if (pageNodes.some(node => isElement(node) && (hasCommentContentClass(node) || hasClass(node, 'commentthread_area')))) {
+      return unknown('资料私密提示与评论区不一致，暂无法确认')
+    }
+    return { status: 'blocked', reason: '资料页明确提示为私密，当前无法留言' }
+  }
   if (roots.length !== 1) return unknown('未找到唯一的目标评论区；资料可能私密或页面结构已变化')
   const root = roots[0]!
   if (hasUnavailableAncestor(root)) return unknown('目标评论区当前不可见，无法确定留言权限')
@@ -47,6 +55,124 @@ export function parseCommentEligibility(html: string, steamId: string): CommentC
   }
   if (blockedReason) return { status: 'blocked', reason: blockedReason }
   return unknown('未找到启用的留言输入框和提交入口，暂无法确定权限')
+}
+
+function isPrivateTargetProfile(nodes: HtmlNode[], steamId: string): boolean {
+  const elements = nodes.filter(isElement)
+  const bodies = elements.filter(node => node.tagName === 'body')
+  const templates = elements.filter(node => attribute(node, 'id') === 'responsive_page_template_content')
+  const profiles = elements.filter(node => node.tagName !== 'body' && hasClass(node, 'profile_page'))
+  if (bodies.length !== 1 || templates.length !== 1 || profiles.length !== 1) return false
+  const body = bodies[0]!
+  const template = templates[0]!
+  const profile = profiles[0]!
+  if (!hasClass(body, 'profile_page') || !hasClass(body, 'private_profile') ||
+    !hasClass(body, 'responsive_page') || template.tagName !== 'div' ||
+    !hasClass(template, 'responsive_page_template_content') ||
+    profile.tagName !== 'div' || !hasClass(profile, 'private_profile') ||
+    !hasLayoutAncestor(template, body) || !hasLayoutAncestor(profile, template) ||
+    hasUnavailableAncestor(profile)) return false
+  // Steam emits this owner bootstrap beside the private profile, not in user-authored HTML.
+  const owners: Array<string | null> = []
+  for (const node of template.childNodes) {
+    if (!isElement(node) || node.tagName !== 'script' || attribute(node, 'src') ||
+      !['', 'text/javascript', 'application/javascript'].includes(attribute(node, 'type').trim().toLowerCase())) continue
+    const source = node.childNodes.filter(child => child.nodeName === '#text')
+      .map(child => 'value' in child ? child.value : '').join('')
+    owners.push(...profileOwnerAssignments(source))
+  }
+  return owners.length === 1 && owners[0] === steamId
+}
+
+function hasLayoutAncestor(node: HtmlNode, expected: HtmlNode): boolean {
+  let current: HtmlNode | null = node
+  for (let depth = 0; current && depth <= MAX_TREE_DEPTH; depth++) {
+    if (current === expected) return true
+    if (isElement(current) && (IGNORED_ELEMENTS.has(current.tagName) ||
+      hasCommentContentClass(current) || hasClass(current, 'commentthread_area') ||
+      hasClass(current, 'profile_summary') || hasClass(current, 'bb_code'))) return false
+    current = 'parentNode' in current ? current.parentNode : null
+  }
+  return false
+}
+
+function profileOwnerAssignments(source: string): Array<string | null> {
+  const owners: Array<string | null> = []
+  let depth = 0
+  let previous = ''
+  let beforePrevious = ''
+  for (let index = 0; index < source.length;) {
+    const character = source[index]!
+    if (/\s/.test(character)) { index++; continue }
+    if (source.startsWith('//', index)) {
+      const end = source.indexOf('\n', index + 2)
+      index = end < 0 ? source.length : end + 1; continue
+    }
+    if (source.startsWith('/*', index)) {
+      const end = source.indexOf('*/', index + 2)
+      index = end < 0 ? source.length : end + 2; continue
+    }
+    if ('"\'`/'.includes(character)) {
+      index = quotedEnd(source, index, character)
+      beforePrevious = previous; previous = '<quoted>'; continue
+    }
+    const identifier = source.slice(index).match(/^[A-Za-z_$][\w$]*/)?.[0]
+    if (!identifier) {
+      if ('{(['.includes(character)) depth++
+      if ('})]'.includes(character)) depth = Math.max(0, depth - 1)
+      beforePrevious = previous; previous = character; index++; continue
+    }
+    index += identifier.length
+    if (identifier === 'g_rgProfileData' && depth === 0) {
+      const direct = previous === '' || previous === ';' ||
+        (['var', 'let', 'const'].includes(previous) && ['', ';'].includes(beforePrevious))
+      const assignment = source.slice(index).match(/^\s*=\s*(?!=)/)
+      let owner: string | null = null
+      if (direct && assignment) {
+        const start = index + assignment[0].length
+        let end = start
+        let objectDepth = 0
+        let ownerKeys = 0
+        if (source[start] === '{') {
+          for (; end < source.length; end++) {
+            if (source[end] === '"') {
+              const stringEnd = quotedEnd(source, end, '"')
+              if (objectDepth === 1 && /^\s*:/.test(source.slice(stringEnd))) {
+                try { if (JSON.parse(source.slice(end, stringEnd)) === 'steamid') ownerKeys++ }
+                catch { /* The enclosing JSON parse rejects malformed strings. */ }
+              }
+              end = stringEnd - 1; continue
+            }
+            if (source[end] === '{') objectDepth++
+            if (source[end] === '}' && --objectDepth === 0) { end++; break }
+          }
+          if (ownerKeys === 1 && /^\s*(?:;|$)/.test(source.slice(end))) {
+            try {
+              const data: unknown = JSON.parse(source.slice(start, end))
+              if (typeof data === 'object' && data !== null && !Array.isArray(data) &&
+                'steamid' in data && typeof data.steamid === 'string' && /^7656119\d{10}$/.test(data.steamid)) owner = data.steamid
+            } catch { /* Non-literal or malformed owner data cannot establish a target. */ }
+          }
+        }
+      }
+      owners.push(owner)
+    }
+    beforePrevious = previous; previous = identifier
+  }
+  return owners
+}
+
+function quotedEnd(source: string, start: number, quote: string): number {
+  for (let index = start + 1; index < source.length; index++) {
+    if (source[index] === '\\') { index++; continue }
+    if (source[index] === quote) return index + 1
+  }
+  return source.length
+}
+
+function hasCommentContentClass(node: HtmlElement): boolean {
+  return ['commentthread_comments', 'commentthread_comment', 'commentthread_comment_text']
+    .some(name => hasClass(node, name))
 }
 
 function explicitRestriction(text: string): string | null {

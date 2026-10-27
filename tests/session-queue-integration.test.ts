@@ -87,6 +87,139 @@ afterEach(async () => {
 })
 
 describe('real login, community client and persistent queue integration', () => {
+  it.each([200, 403])('categorizes a real HTTP %s explicit permission denial and continues despite the pause policy', async status => {
+    const fixture = await createFixture()
+    const verify = vi.spyOn(fixture.service, 'reconcileProfileComment')
+    fixture.postReplies.push(new Response(JSON.stringify({ success: 2,
+      error: 'Your account does not have permission to post comments.' }),
+    { status, headers: { Date: new Date().toUTCString(), 'Content-Type': 'application/json' } }), success('101'), success('102'))
+    const batch = fixture.queue.start({ accountId: accountA, friendSteamIds: friendIds,
+      messageTemplate: 'Synthetic comment', delayMs: 100, autoRetryEnabled: true,
+      failurePolicy: { definiteFailure: 'pause', uncertainResult: 'verify_then_pause' } })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed', pending: 0,
+      failedCount: status === 200 ? 1 : 0, uncertain: status === 403 ? 1 : 0, sentVerified: 2,
+      accessDeniedCount: 0, nextRetryAt: null })
+    const denied = /\/post\/(7656119\d{10})\//.exec(String(posts(fixture)[0]![0]))![1]!
+    expect(posts(fixture).filter(([url]) => String(url).includes(`/post/${denied}/`))).toHaveLength(1)
+    const readbacks = fixture.fetch.mock.calls.filter(([input, init]) => (init?.method ?? 'GET') === 'GET' &&
+      new URL(String(input)).pathname === `/profiles/${denied}/`)
+    expect(readbacks).toHaveLength(status === 403 ? 2 : 1)
+    expect(verify).not.toHaveBeenCalled()
+    expect(fixture.store.getFriendPolicies(accountA).find(item => item.steamId === denied)?.commentStatus).toBe('blocked')
+    expect(fixture.events).toContainEqual(expect.objectContaining({ type: 'friendPolicyChanged',
+      policy: expect.objectContaining({ steamId: denied, commentStatus: 'blocked' }) }))
+    expect(fixture.service.isAuthenticated(accountA)).toBe(true)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['baseline', 'post'] as const)('continues after a real %s network failure without repeating that recipient or reading it back', async stage => {
+    const fixture = await createFixture()
+    const original = fixture.fetch.getMockImplementation()!
+    let failedTarget: string | null = null
+    let failedTargetReads = 0
+    fixture.fetch.mockImplementation(async (input, init) => {
+      const url = new URL(String(input))
+      const target = /^\/profiles\/(7656119\d{10})\/$/.exec(url.pathname)?.[1]
+      if ((init?.method ?? 'GET') === 'GET' && target) {
+        failedTarget ??= target
+        if (target === failedTarget) {
+          failedTargetReads++
+          if (stage === 'baseline') throw new TypeError('fetch failed')
+        }
+      }
+      if (init?.method === 'POST' && url.pathname === `/comment/Profile/post/${failedTarget}/-1/`) throw new TypeError('fetch failed')
+      return original(input, init)
+    })
+    const verification = vi.spyOn(fixture.service, 'reconcileProfileComment')
+    fixture.postReplies.push(success('101'), success('102'))
+    const batch = fixture.queue.start({ accountId: accountA, friendSteamIds: friendIds,
+      messageTemplate: 'Synthetic comment', delayMs: 100, autoRetryEnabled: true,
+      failurePolicy: { definiteFailure: 'pause', uncertainResult: 'verify_then_pause' } })
+    await vi.advanceTimersByTimeAsync(99)
+    expect(posts(fixture)).toHaveLength(stage === 'post' ? 1 : 0)
+    await vi.advanceTimersByTimeAsync(101)
+    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed', sentVerified: 2,
+      failedCount: stage === 'baseline' ? 1 : 0, uncertain: stage === 'post' ? 1 : 0,
+      pending: 0, nextRetryAt: null, retryCount: 0 })
+    expect(posts(fixture)).toHaveLength(stage === 'post' ? 3 : 2)
+    expect(posts(fixture).filter(([url]) => new URL(String(url)).pathname === `/comment/Profile/post/${failedTarget}/-1/`))
+      .toHaveLength(stage === 'post' ? 1 : 0)
+    expect(failedTargetReads).toBe(1)
+    expect(verification).not.toHaveBeenCalled()
+    expect(fixture.store.getFriendPolicies(accountA).find(item => item.steamId === failedTarget))
+      .toMatchObject({ commentStatus: 'unknown' })
+    expect(fixture.events).toContainEqual(expect.objectContaining({ type: 'friendPolicyChanged',
+      policy: expect.objectContaining({ steamId: failedTarget, commentStatus: 'unknown' }) }))
+    expect(fixture.service.isAuthenticated(accountA)).toBe(true)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['missing', 'skip'], ['incomplete', 'skip'], ['missing', 'pause'], ['incomplete', 'pause']
+  ] as const)('handles a %s authenticated comment baseline with the %s policy without submitting to that friend', async (shape, definiteFailure) => {
+    const fixture = await createFixture()
+    const original = fixture.fetch.getMockImplementation()!
+    let unreadableTarget: string | null = null
+    fixture.fetch.mockImplementation(async (input, init) => {
+      const url = new URL(String(input))
+      if ((init?.method ?? 'GET') === 'GET') unreadableTarget ??= /^\/profiles\/(7656119\d{10})\/$/.exec(url.pathname)?.[1] ?? null
+      if ((init?.method ?? 'GET') === 'GET' && url.pathname === `/profiles/${unreadableTarget}/`) {
+        return new Response(`<script>g_steamID="${accountA}";</script>` + (shape === 'incomplete'
+          ? `<div id="commentthread_Profile_${unreadableTarget}_area" class="commentthread_area"></div>` : ''))
+      }
+      return original(input, init)
+    })
+    fixture.postReplies.push(success('101'), success('102'))
+    const batch = fixture.queue.start({ accountId: accountA, friendSteamIds: friendIds,
+      messageTemplate: 'Synthetic comment', delayMs: 100, autoRetryEnabled: false,
+      failurePolicy: { definiteFailure, uncertainResult: 'verify_then_skip' } })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: definiteFailure === 'skip' ? 'completed' : 'paused',
+      failedCount: definiteFailure === 'skip' ? 1 : 0, uncertain: 0, sentVerified: definiteFailure === 'skip' ? 2 : 0,
+      pending: definiteFailure === 'skip' ? 0 : 3, nextRetryAt: null, accessDeniedCount: 0 })
+    const unreadable = fixture.store.getBatch(batch.id)!.deliveries.find(item => item.friendSteamId === unreadableTarget)!
+    expect(unreadable.status).toBe(definiteFailure === 'skip' ? 'failed' : 'pending')
+    if (definiteFailure === 'skip') expect(unreadable.error).toMatch(/^已跳过（未发送）：/)
+    expect(fixture.store.getDeliveryCommentEvidence(unreadable.id)).toBeNull()
+    expect(posts(fixture)).toHaveLength(definiteFailure === 'skip' ? 2 : 0)
+    expect(posts(fixture).some(([url]) => new URL(String(url)).pathname === `/comment/Profile/post/${unreadableTarget}/-1/`)).toBe(false)
+    expect(new Set(posts(fixture).map(([url]) => String(url))).size).toBe(posts(fixture).length)
+    expect(fixture.service.isAuthenticated(accountA)).toBe(true)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['skip', 'pause'] as const)('handles a real private-profile preflight with the %s policy and no POST to that friend', async definiteFailure => {
+    const fixture = await createFixture()
+    const original = fixture.fetch.getMockImplementation()!
+    let first: string | null = null
+    fixture.fetch.mockImplementation(async (input, init) => {
+      const url = new URL(String(input))
+      if ((init?.method ?? 'GET') === 'GET') first ??= /^\/profiles\/(7656119\d{10})\/$/.exec(url.pathname)?.[1] ?? null
+      if ((init?.method ?? 'GET') === 'GET' && url.pathname === `/profiles/${first}/`) {
+        return new Response(`<html><body class="profile_page private_profile responsive_page"><div class="responsive_page_frame"><div class="responsive_page_content"><div id="responsive_page_template_content" class="responsive_page_template_content"><div class="profile_page private_profile"></div><script>g_rgProfileData={"steamid":"${first}"};g_steamID="${accountA}";</script></div></div></div></body></html>`)
+      }
+      return original(input, init)
+    })
+    fixture.postReplies.push(success('101'), success('102'))
+    const batch = fixture.queue.start({ accountId: accountA, friendSteamIds: friendIds,
+      messageTemplate: 'Synthetic comment', delayMs: 100, autoRetryEnabled: false,
+      failurePolicy: { definiteFailure, uncertainResult: 'verify_then_skip' } })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(fixture.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed',
+      failedCount: 1, uncertain: 0, sentVerified: 2, pending: 0 })
+    const privateDelivery = fixture.store.getBatch(batch.id)!.deliveries.find(item => item.friendSteamId === first)!
+    expect(privateDelivery).toMatchObject({ status: 'failed', error: expect.stringContaining('私密') })
+    expect(fixture.store.getDeliveryCommentEvidence(privateDelivery.id)).toBeNull()
+    expect(posts(fixture)).toHaveLength(2)
+    expect(posts(fixture).some(([url]) => new URL(String(url)).pathname === `/comment/Profile/post/${first}/-1/`)).toBe(false)
+    expect(fixture.service.isAuthenticated(accountA)).toBe(true)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(1)
+    expect(fixture.store.getFriendPolicies(accountA).find(item => item.steamId === first)?.commentStatus).toBe('blocked')
+    expect(fixture.events).toContainEqual(expect.objectContaining({ type: 'friendPolicyChanged',
+      policy: expect.objectContaining({ accountId: accountA, steamId: first, commentStatus: 'blocked' }) }))
+  })
+
   it.each([403, 429])('handles HTTP %s without expiring the QR login or replaying the affected POST', async status => {
     const fixture = await createFixture()
     fixture.postReplies.push(success('100'), new Response('Request denied', { status }), success('300'), success('400'))

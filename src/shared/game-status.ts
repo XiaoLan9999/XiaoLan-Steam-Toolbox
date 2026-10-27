@@ -26,9 +26,18 @@ export interface GameStatusGuardInput extends GameStatusAction { challengeId: st
 export interface GameStatusPresence { displayToken: string; values: Record<string, string> }
 export interface GameStatusGame { appId: number; name: string; iconUrl: string | null }
 export interface GameStatusTemplate { token: string; text: string; parameters: string[] }
-export interface GameStatusAppInfo extends GameStatusGame { language: 'schinese' | 'english'; templates: GameStatusTemplate[]; templateStatus?: 'available' | 'empty' | 'unavailable' }
+export interface GameStatusTemplateDiagnostics {
+  reason: 'available' | 'empty' | 'lookup-unavailable' | 'invalid-catalog' | 'no-safe-templates'
+  requestedLanguage: 'schinese' | 'english'
+  sourceLanguage: 'schinese' | 'english' | 'mixed' | null
+  rawTokenCount: number | null
+  usedEnglishFallback: boolean
+  lookupCode?: 'unavailable' | 'timeout' | 'invalid-response' | 'cancelled' | 'language-missing' | 'app-mismatch'
+  steamResult?: number
+}
+export interface GameStatusAppInfo extends GameStatusGame { language: 'schinese' | 'english'; templates: GameStatusTemplate[]; templateStatus?: 'available' | 'empty' | 'unavailable'; templateDiagnostics?: GameStatusTemplateDiagnostics }
 export interface GameStatusAppInput extends GameStatusAction { appId: number; language?: 'schinese' | 'english' }
-export interface GameStatusDraft { displayKind: 'custom' | 'app'; gameName: string; details: string; appId?: number; presence?: GameStatusPresence }
+export interface GameStatusDraft { displayKind: 'custom' | 'app'; gameName: string; details: string; appId?: number; presence?: GameStatusPresence; groupSize?: number }
 export interface GameStatusPlayInput extends GameStatusAction, GameStatusDraft {}
 export interface GameStatusSaveDraftInput extends GameStatusAction { draft: GameStatusDraft }
 export interface GameStatusPatchInput extends GameStatusAction { snapshotId: string; changes: Record<string, string> }
@@ -55,6 +64,8 @@ export interface GameStatusLiveSnapshot {
   patchActive: boolean
   game?: GameStatusGame
   localizedString?: string | null
+  verificationSource?: 'local-cache' | 'server'
+  displayTokenReadable?: boolean
 }
 
 export interface GameStatusLiveLock {
@@ -76,6 +87,7 @@ export interface GameStatusOperation {
   message: string
   at: string
   changedKeys?: string[]
+  verificationSource?: 'local-cache' | 'server'
 }
 
 export interface GameStatusSnapshot {
@@ -84,10 +96,14 @@ export interface GameStatusSnapshot {
   boundSteamId: string | null
   status: GameStatusConnectionStatus
   connected: boolean
+  connectionKind?: 'local' | 'cm'
+  localConnectionAvailable?: boolean
   accountName: string | null
   steamId: string | null
   guard: GameStatusGuard | null
   blocked: boolean
+  playingStateConfirmed?: boolean
+  simulationReady?: boolean
   blockingAppId: number | null
   playing: GameStatusPlaying | null
   live: GameStatusLiveSnapshot | null
@@ -104,6 +120,7 @@ export interface GameStatusSnapshot {
 
 export interface GameStatusApi {
   state(): Promise<GameStatusSnapshot>
+  connectLocal(input: GameStatusAction): Promise<GameStatusSnapshot>
   connectWithToolbox(input: GameStatusAction): Promise<GameStatusSnapshot>
   play(input: GameStatusPlayInput): Promise<GameStatusSnapshot>
   stop(input: GameStatusAction): Promise<GameStatusSnapshot>

@@ -4,6 +4,7 @@ import { AppSnapshot, CommentEligibility, FriendGroup, FriendPolicy, FriendRecor
 import { invertFriendSelection } from '../friend-selection'
 import { useFriendSelection } from '../use-friend-selection'
 import { savePausedScanDelay } from '../comment-scan-actions'
+import { localizeMessage } from '../../../shared/localization'
 import { useI18n } from '../i18n'
 import { avatarFallback, formatDate, unwrap } from '../ui'
 import { RunAction } from './types'
@@ -30,7 +31,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   const { t } = useI18n()
   const [search, setSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState('all')
-  const [listView, setListView] = useState<'normal' | 'blacklist' | 'removed' | 'nameChanges'>('normal')
+  const [listView, setListView] = useState<'normal' | 'blacklist' | 'unavailable' | 'removed' | 'nameChanges'>('normal')
   const [statusFilter, setStatusFilter] = useState<CommentEligibility | 'all'>('all')
   const [newGroupName, setNewGroupName] = useState('')
   const [newGroupColor, setNewGroupColor] = useState('#66c0f4')
@@ -46,20 +47,25 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   const accountIdRef = useRef(account.id)
   accountIdRef.current = account.id
   const headerCheckbox = useRef<HTMLInputElement>(null)
-  const policies = useMemo(() => new Map(snapshot.friendPolicies.map((policy) => [policy.steamId, policy])), [snapshot.friendPolicies])
-  const blacklistedCount = useMemo(() => snapshot.friends.filter((friend) => policies.get(friend.steamId)?.blacklisted).length, [policies, snapshot.friends])
+  const friends = useMemo(() => snapshot.friends.filter(friend => friend.accountId === account.id), [account.id, snapshot.friends])
+  const policies = useMemo(() => new Map(snapshot.friendPolicies.filter(policy => policy.accountId === account.id)
+    .map((policy) => [policy.steamId, policy])), [account.id, snapshot.friendPolicies])
+  const blacklistedCount = useMemo(() => friends.filter((friend) => policies.get(friend.steamId)?.blacklisted).length, [policies, friends])
+  const unavailableCount = useMemo(() => friends.filter(friend => policies.get(friend.steamId)?.commentStatus === 'blocked').length, [policies, friends])
+  const regularCount = useMemo(() => friends.filter(friend => !policies.get(friend.steamId)?.blacklisted &&
+    policies.get(friend.steamId)?.commentStatus !== 'blocked').length, [policies, friends])
   const friendRemovals = useMemo(() => snapshot.friendRemovals.filter((removal) => removal.accountId === account.id), [account.id, snapshot.friendRemovals])
   const removedCount = friendRemovals.filter((removal) => removal.restoredAt === null).length
   const friendNameChanges = useMemo(() => snapshot.friendNameChanges.filter((change) => change.accountId === account.id), [account.id, snapshot.friendNameChanges])
   const readOnlyView = listView === 'removed' || listView === 'nameChanges'
   const groupCounts = useMemo(() => {
-    const counts = new Map<string, number>([['all', snapshot.friends.length], ['ungrouped', 0]])
-    for (const friend of snapshot.friends) {
+    const counts = new Map<string, number>([['all', friends.length], ['ungrouped', 0]])
+    for (const friend of friends) {
       if (!friend.groupIds.length) counts.set('ungrouped', counts.get('ungrouped')! + 1)
       for (const id of friend.groupIds) counts.set(id, (counts.get(id) ?? 0) + 1)
     }
     return counts
-  }, [snapshot.friends])
+  }, [friends])
 
   useEffect(() => {
     setSearch('')
@@ -76,10 +82,10 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   }, [account.id])
 
   useEffect(() => {
-    const known = new Set(snapshot.friends.map((friend) => friend.steamId))
+    const known = new Set(friends.map((friend) => friend.steamId))
     const next = new Set([...selected].filter((steamId) => known.has(steamId)))
     if (next.size !== selected.size) onSelectedChange(next)
-  }, [onSelectedChange, selected, snapshot.friends])
+  }, [friends, onSelectedChange, selected])
 
   useEffect(() => {
     if (groupFilter !== 'all' && groupFilter !== 'ungrouped' && !snapshot.groups.some((group) => group.id === groupFilter)) {
@@ -90,15 +96,16 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   const visibleFriends = useMemo(() => {
     if (listView === 'removed' || listView === 'nameChanges') return []
     const query = search.trim().toLocaleLowerCase()
-    return snapshot.friends.filter((friend) => {
+    return friends.filter((friend) => {
       const policy = policies.get(friend.steamId)
-      const matchesList = listView === 'blacklist' ? policy?.blacklisted === true : !policy?.blacklisted
+      const matchesList = listView === 'unavailable' ? policy?.commentStatus === 'blocked'
+        : listView === 'blacklist' ? policy?.blacklisted === true : !policy?.blacklisted && policy?.commentStatus !== 'blocked'
       const matchesStatus = statusFilter === 'all' || (policy?.commentStatus ?? 'unchecked') === statusFilter
       const matchesQuery = !query || friend.displayName.toLocaleLowerCase().includes(query) || friend.steamId.includes(query)
       const matchesGroup = groupFilter === 'all' || (groupFilter === 'ungrouped' ? friend.groupIds.length === 0 : friend.groupIds.includes(groupFilter))
       return matchesList && matchesStatus && matchesQuery && matchesGroup
     })
-  }, [groupFilter, listView, policies, search, snapshot.friends, statusFilter])
+  }, [friends, groupFilter, listView, policies, search, statusFilter])
   const visibleIds = useMemo(() => visibleFriends.map((friend) => friend.steamId), [visibleFriends])
   const selection = useFriendSelection(account.id, visibleIds, selected, onSelectedChange)
   const selectedVisibleCount = visibleIds.filter((id) => selected.has(id)).length
@@ -111,7 +118,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   const scanIntervalLocked = scan?.status === 'running' || scanSubmitting || scanUpdating
   const canScan = account.sessionState === 'authenticated' && !scanBusy && Number.isFinite(scanDelay)
   const safeScanDelay = Math.min(60, Math.max(MIN_DELAY_MS / 1000, Number.isFinite(scanDelay) ? scanDelay : 10))
-  const currentScanFriend = scan?.currentSteamId ? snapshot.friends.find((friend) => friend.steamId === scan.currentSteamId) : null
+  const currentScanFriend = scan?.currentSteamId ? friends.find((friend) => friend.steamId === scan.currentSteamId) : null
 
   useEffect(() => {
     if (scan?.accountId === account.id) setScanDelay(scan.delayMs / 1000)
@@ -148,11 +155,11 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
     visibleIds.forEach((id) => allVisibleSelected ? next.delete(id) : next.add(id))
     onSelectedChange(next)
   }
-  const switchView = (view: 'normal' | 'blacklist' | 'removed' | 'nameChanges'): void => {
+  const switchView = (view: 'normal' | 'blacklist' | 'unavailable' | 'removed' | 'nameChanges'): void => {
     if (view === listView) return
     selection.stopDrag()
     setListView(view)
-    onSelectedChange(new Set())
+    if (view === 'unavailable') setStatusFilter('all')
   }
   const createGroup = async (): Promise<void> => {
     const name = newGroupName.trim()
@@ -199,7 +206,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
   return (
     <div className="panel-stack friend-management">
       <section className="stats-row">
-        <article><span>{t('好友总数', 'Total friends')}</span><strong>{snapshot.friends.length}</strong><small>{t('同步于', 'Synced')} {formatDate(account.lastFriendSyncAt)}</small></article>
+        <article><span>{t('好友总数', 'Total friends')}</span><strong>{friends.length}</strong><small>{t('同步于', 'Synced')} {formatDate(account.lastFriendSyncAt)}</small></article>
         <article><span>{t('当前选中', 'Selected')}</span><strong>{selected.size}</strong><small>{t(`筛选内 ${selectedVisibleCount} 人 · 切换账号自动清空`, `${selectedVisibleCount} in this filter · Cleared on account switch`)}</small></article>
         <article><span>{t('黑名单', 'Blacklist')}</span><strong>{blacklistedCount}</strong><small>{t('本账号不发送留言的好友', 'Excluded from comments for this account')}</small></article>
       </section>
@@ -214,7 +221,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
           </div>
         </div>
         <div className="group-pills">
-          <GroupPill label={t('全部分组', 'All groups')} count={snapshot.friends.length} active={groupFilter === 'all'} onClick={() => setGroupFilter('all')} />
+          <GroupPill label={t('全部分组', 'All groups')} count={friends.length} active={groupFilter === 'all'} onClick={() => setGroupFilter('all')} />
           <GroupPill label={t('未分组', 'Ungrouped')} count={groupCounts.get('ungrouped') ?? 0} active={groupFilter === 'ungrouped'} onClick={() => setGroupFilter('ungrouped')} />
           {snapshot.groups.map((group) => <GroupPill key={group.id} label={group.name} count={groupCounts.get(group.id) ?? 0} color={group.color} active={groupFilter === group.id} onClick={() => setGroupFilter(group.id)} />)}
           {selectedGroup && <span className="group-actions"><button onClick={() => { setRenamingGroup(selectedGroup); setRenamedValue(selectedGroup.name) }}>{t('重命名', 'Rename')}</button><button className="danger-text" onClick={() => void deleteGroup(selectedGroup)}>{t('删除', 'Delete')}</button></span>}
@@ -243,16 +250,17 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
           {scan.status === 'paused' && <small className="scan-background-note">{t('暂停时可修改间隔；单独保存会保持暂停，点击继续会先保存新间隔。', 'Edit the interval while paused. Saving keeps it paused; Resume saves the interval first.')}</small>}
           {scanActive && <small className="scan-background-note">{t('任务在后台运行，可以继续操作。暂停或取消不会撤销已完成的检查。', 'Runs in the background. Pausing or cancelling keeps completed results.')}</small>}
         </div>}
-        <p className="scan-help">{t('检查后可筛选“页面不可留言” → 全选筛选结果 → 加入黑名单。检查结果和黑名单仅属于当前账号。', 'After checking: filter Comments unavailable → Select filtered → Add to blacklist. Results and the blacklist belong only to this account.')}</p>
+        <p className="scan-help">{t('Steam 明确不允许留言的好友会归入“无法留言”。网络错误仍属暂无法判断，不会据此归类；可在该分类内重新检查，确认可留言后会移出。分类与黑名单仅属于当前账号，不改变自定义分组。', 'Friends with an explicit Steam comment restriction appear in Comments unavailable. Network errors stay unknown and do not establish a restriction. Recheck this category to remove friends once availability is confirmed. This account-scoped category does not change custom groups or the blacklist.')}</p>
       </section>}
 
       <section className="card friends-card">
         <div className="friend-view-tabs" role="tablist" aria-label={t('好友名单', 'Friend lists')}>
-          <button role="tab" aria-selected={listView === 'normal'} className={listView === 'normal' ? 'active' : ''} onClick={() => switchView('normal')}>{t('正常好友', 'Regular friends')} <b>{snapshot.friends.length - blacklistedCount}</b></button>
+          <button role="tab" aria-selected={listView === 'normal'} className={listView === 'normal' ? 'active' : ''} onClick={() => switchView('normal')}>{t('正常好友', 'Regular friends')} <b>{regularCount}</b></button>
           <button role="tab" aria-selected={listView === 'blacklist'} className={listView === 'blacklist' ? 'active' : ''} onClick={() => switchView('blacklist')}>{t('黑名单', 'Blacklist')} <b>{blacklistedCount}</b></button>
+          <button role="tab" aria-selected={listView === 'unavailable'} className={listView === 'unavailable' ? 'active' : ''} onClick={() => switchView('unavailable')}>{t('无法留言', 'Comments unavailable')} <b>{unavailableCount}</b></button>
           <button role="tab" aria-selected={listView === 'removed'} className={listView === 'removed' ? 'active' : ''} onClick={() => switchView('removed')}>{t('已解除好友', 'Removed friends')} <b>{removedCount}</b></button>
           <button role="tab" aria-selected={listView === 'nameChanges'} className={listView === 'nameChanges' ? 'active' : ''} onClick={() => switchView('nameChanges')}>{t('昵称变化', 'Name changes')} <b>{friendNameChanges.length}</b></button>
-          <span>{listView === 'nameChanges' ? t('仅展示本账号发现的昵称变化，不可选择发送留言。', 'Read-only name changes detected by this account. Not selectable for comments.') : listView === 'removed' ? t('仅展示关系变化记录，不计入当前好友数，也不能选择发送留言。', 'Read-only relationship history. Not counted as current friends or selectable for comments.') : listView === 'blacklist' ? t('黑名单不删除 Steam 好友，也不改变分组；移出后才能发送留言。', 'Does not unfriend or change groups. Remove from blacklist to send comments.') : t('默认排除黑名单好友，避免误选发送。', 'Blacklisted friends are excluded by default.')}</span>
+          <span>{listView === 'nameChanges' ? t('仅展示本账号发现的昵称变化，不可选择发送留言。', 'Read-only name changes detected by this account. Not selectable for comments.') : listView === 'removed' ? t('仅展示关系变化记录，不计入当前好友数，也不能选择发送留言。', 'Read-only relationship history. Not counted as current friends or selectable for comments.') : listView === 'unavailable' ? t('已归入无法留言，包含黑名单中的同类对象；复查通过后返回正常好友，不改动原分组。', 'Moved to Comments unavailable, including blacklisted friends. A successful recheck returns eligible friends to the regular list without changing groups.') : listView === 'blacklist' ? t('黑名单不删除 Steam 好友，也不改变分组；移出后才能发送留言。', 'Does not unfriend or change groups. Remove from blacklist to send comments.') : t('默认排除黑名单及已归入“无法留言”的好友；网络问题不归入该类。', 'Blacklisted and confirmed unavailable friends are excluded by default. Network errors do not place friends in that category.')}</span>
         </div>
         {listView === 'nameChanges' ? <FriendNameChangesPanel key={account.id} accountId={account.id} changes={friendNameChanges} canSync={account.sessionState === 'authenticated'} onSync={() => void runAction(t('正在同步好友资料', 'Syncing friend profiles'), async () => unwrap(await window.steamCommenter.syncFriends(account.id)))} /> : listView === 'removed' ? <FriendRemovalsPanel key={account.id} removals={friendRemovals} canSync={account.sessionState === 'authenticated'} onSync={() => void runAction(t('正在同步好友资料', 'Syncing friend profiles'), async () => unwrap(await window.steamCommenter.syncFriends(account.id)))} /> : <><div className="friend-toolbar">
           <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('搜索昵称或 SteamID', 'Search name or SteamID')} /></label>
@@ -269,10 +277,11 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
         <div className="selection-tools friend-selected-tools">
           <select disabled={selected.size === 0} aria-label={t('批量设置分组', 'Assign selected friends to group')} value={assignment} onChange={(event) => setAssignment(event.target.value)}><option value="">{t('未分组', 'Ungrouped')}</option>{snapshot.groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select>
           <button disabled={selected.size === 0} onClick={() => void assignSelected()}>{t(`应用分组 · ${selected.size} 人`, `Apply group · ${selected.size}`)}</button>
-          {listView === 'normal' ? <button className="danger-text" disabled={selectedAllowedIds.length === 0} onClick={() => void updateBlacklist(true)}>{t(`加入黑名单 · ${selectedAllowedIds.length} 人`, `Add to blacklist · ${selectedAllowedIds.length}`)}</button> : <button disabled={selectedBlacklistedCount === 0} onClick={() => void updateBlacklist(false)}>{t(`移出黑名单 · ${selectedBlacklistedCount} 人`, `Remove from blacklist · ${selectedBlacklistedCount}`)}</button>}
+          {listView !== 'blacklist' && <button className="danger-text" disabled={selectedAllowedIds.length === 0} onClick={() => void updateBlacklist(true)}>{t(`加入黑名单 · ${selectedAllowedIds.length} 人`, `Add to blacklist · ${selectedAllowedIds.length}`)}</button>}
+          {listView !== 'normal' && <button disabled={selectedBlacklistedCount === 0} onClick={() => void updateBlacklist(false)}>{t(`移出黑名单 · ${selectedBlacklistedCount} 人`, `Remove from blacklist · ${selectedBlacklistedCount}`)}</button>}
           <button className="primary" disabled={selectedAllowedIds.length === 0} onClick={() => { onSelectedChange(new Set(selectedAllowedIds)); onCompose() }}>{t(`去留言 · ${selectedAllowedIds.length} 人 →`, `Compose · ${selectedAllowedIds.length} →`)}</button>
         </div>
-        {snapshot.friends.length === 0 ? <div className="empty-state"><div>◎</div><h3>{t('还没有好友缓存', 'No cached friends yet')}</h3><p>{t('登录成功后会自动同步，也可以点击上方“同步好友”。', 'Friends sync after login. You can also click Sync friends above.')}</p></div> : <div className={`friend-table-wrap friend-drag-surface ${selection.dragging ? 'is-dragging' : ''}`} ref={selection.containerRef} onPointerDown={selection.beginDrag} onPointerMove={selection.moveDrag} onPointerUp={selection.finishDrag} onPointerCancel={selection.stopDrag} onLostPointerCapture={selection.stopDrag}>
+        {friends.length === 0 ? <div className="empty-state"><div>◎</div><h3>{t('还没有好友缓存', 'No cached friends yet')}</h3><p>{t('登录成功后会自动同步，也可以点击上方“同步好友”。', 'Friends sync after login. You can also click Sync friends above.')}</p></div> : <div className={`friend-table-wrap friend-drag-surface ${selection.dragging ? 'is-dragging' : ''}`} ref={selection.containerRef} onPointerDown={selection.beginDrag} onPointerMove={selection.moveDrag} onPointerUp={selection.finishDrag} onPointerCancel={selection.stopDrag} onLostPointerCapture={selection.stopDrag}>
           <table className="friend-table"><thead><tr><th><input ref={headerCheckbox} type="checkbox" checked={allVisibleSelected} onChange={toggleVisible} aria-label={t('选择或取消当前筛选的所有好友', 'Toggle all filtered friends')} /></th><th>{t('好友', 'Friend')}</th><th>{t('在线状态', 'Presence')}</th><th>{t('留言检查', 'Comment check')}</th><th>{t('本地分组', 'Local groups')}</th><th>SteamID</th><th /></tr></thead><tbody>
             {visibleFriends.map((friend) => <FriendRow key={friend.steamId} friend={friend} groups={snapshot.groups} policy={policies.get(friend.steamId)} selected={selected.has(friend.steamId)} onToggle={selection.toggle} />)}
           </tbody></table>
@@ -288,14 +297,14 @@ function GroupPill({ label, count, color, active, onClick }: { label: string; co
 }
 
 const FriendRow = memo(function FriendRow({ friend, groups, policy, selected, onToggle }: { friend: FriendRecord; groups: FriendGroup[]; policy?: FriendPolicy; selected: boolean; onToggle(id: string, shift?: boolean): void }): React.JSX.Element {
-  const { t } = useI18n()
+  const { language, t } = useI18n()
   const friendGroups = groups.filter((group) => friend.groupIds.includes(group.id))
   const status = policy?.commentStatus ?? 'unchecked'
   return <tr className={`${selected ? 'selected' : ''} ${policy?.blacklisted ? 'is-blacklisted' : ''}`} data-friend-id={friend.steamId} aria-selected={selected}>
     <td><input type="checkbox" checked={selected} readOnly onClick={(event) => onToggle(friend.steamId, event.shiftKey)} onKeyDown={(event) => { if (event.key === ' ' && event.shiftKey) { event.preventDefault(); onToggle(friend.steamId, true) } }} aria-label={t(`选择 ${friend.displayName}`, `Select ${friend.displayName}`)} /></td>
-    <td><div className="friend-identity">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" loading="lazy" referrerPolicy="no-referrer" draggable={false} /> : <span>{avatarFallback(friend.displayName)}</span>}<div className="friend-name"><strong title={friend.displayName}>{friend.displayName}</strong>{policy?.blacklisted && <small className="blacklist-badge">{t('黑名单 · 不发送', 'Blacklisted · No comments')}</small>}</div></div></td>
+    <td><div className="friend-identity">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" loading="lazy" referrerPolicy="no-referrer" draggable={false} /> : <span>{avatarFallback(friend.displayName)}</span>}<div className="friend-name"><strong title={friend.displayName}>{friend.displayName}</strong>{policy?.blacklisted && <small className="blacklist-badge">{t('黑名单 · 不发送', 'Blacklisted · No comments')}</small>}{status === 'blocked' && <small className="comment-unavailable-badge">{t('当前无法留言', 'Comments currently unavailable')}</small>}</div></div></td>
     <td><span className={`presence ${friend.onlineState}`}>{t(...presenceLabels[friend.onlineState])}</span></td>
-    <td><div className="friend-comment-check"><span className={`comment-status ${status}`}>{t(...eligibilityLabels[status])}</span>{policy?.commentReason && <small className="check-reason" title={policy.commentReason}>{policy.commentReason}</small>}{policy?.commentCheckedAt && <time dateTime={policy.commentCheckedAt} title={t(`检查于 ${formatDate(policy.commentCheckedAt)}`, `Checked ${formatDate(policy.commentCheckedAt)}`)}>{formatDate(policy.commentCheckedAt)}</time>}</div></td>
+    <td><div className="friend-comment-check"><span className={`comment-status ${status}`}>{t(...eligibilityLabels[status])}</span>{policy?.commentReason && <small className="check-reason" title={localizeMessage(policy.commentReason, language)}>{localizeMessage(policy.commentReason, language)}</small>}{policy?.commentCheckedAt && <time dateTime={policy.commentCheckedAt} title={t(`检查于 ${formatDate(policy.commentCheckedAt)}`, `Checked ${formatDate(policy.commentCheckedAt)}`)}>{formatDate(policy.commentCheckedAt)}</time>}</div></td>
     <td><div className="mini-groups">{friendGroups.length ? friendGroups.map((group) => <span key={group.id}><i style={{ backgroundColor: group.color }} /> {group.name}</span>) : <em>{t('未分组', 'Ungrouped')}</em>}</div></td>
     <td><code>{friend.steamId}</code></td>
     <td><a href={friend.profileUrl} target="_blank" rel="noreferrer" title={t('打开 Steam 资料页', 'Open Steam profile')} aria-label={t(`打开 ${friend.displayName} 的 Steam 资料页`, `Open Steam profile for ${friend.displayName}`)}>↗</a></td>

@@ -2,7 +2,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { GameStatusApi, GameStatusAppInfo, GameStatusLiveLock, GameStatusLiveSnapshot } from '../src/shared/game-status'
-import { GameStatusIdentity, GameStatusLockStatus, GameStatusPanel, GameStatusTemplateEditor, gameStatusPresenceResult, isGameStatusFieldEditable } from '../src/renderer/src/components/GameStatusPanel'
+import { GameStatusConnectionNotice, GameStatusIdentity, GameStatusLockStatus, GameStatusPanel, GameStatusTemplateEditor, gameStatusPresenceResult, isGameStatusFieldEditable } from '../src/renderer/src/components/GameStatusPanel'
 import { I18nProvider } from '../src/renderer/src/i18n'
 
 vi.stubGlobal('React', React)
@@ -52,7 +52,7 @@ describe('game status identity and published-template UI', () => {
   it('renders only the game-published template and named supported variables', () => {
     const html = render(<GameStatusTemplateEditor id="fixture" info={info} presence={{ displayToken: '#Playing', values: { map: 'Fixture Map' } }} onChange={() => undefined} />)
     expect(html).toContain('Playing Fixture Map'); expect(html).toContain('本机模板预览（不是好友端确认）')
-    expect(html).toContain('id="fixture-template"'); expect(html).toContain('map<input')
+    expect(html).toContain('id="fixture-template"'); expect(html).toContain('id="fixture-parameter-0"')
     expect(html).toContain('仅显示游戏，不设置子状态')
     expect(html).not.toContain('status<input')
   })
@@ -75,6 +75,35 @@ describe('game status identity and published-template UI', () => {
     expect(empty).toContain('Steam returned the template result'); expect(empty).not.toContain('Retry the lookup')
   })
 
+  it.each(['zh-CN', 'en'] as const)('shows bounded catalog diagnostics and a read-only retry in %s', language => {
+    const diagnosed: GameStatusAppInfo = { ...info, templates: [], templateStatus: 'unavailable', templateDiagnostics: {
+      reason: 'lookup-unavailable', requestedLanguage: 'schinese', sourceLanguage: null,
+      rawTokenCount: null, usedEnglishFallback: false, lookupCode: 'timeout', steamResult: 25
+    } }
+    const html = render(<GameStatusTemplateEditor id="diagnostic" info={diagnosed} onRetry={() => undefined} onChange={() => undefined} />, language)
+    expect(html).toContain(language === 'en' ? 'Template lookup details' : '模板读取详情')
+    expect(html).toContain(language === 'en' ? 'catalog request timed out' : '模板响应超时')
+    expect(html).toContain('Steam EResult 25')
+    expect(html).toContain(language === 'en' ? 'Retry templates (no status changes)' : '重试读取模板（不修改状态）')
+  })
+
+  it('identifies English dependency fallback without claiming a friend-client confirmation', () => {
+    const diagnosed: GameStatusAppInfo = { ...info, templateDiagnostics: { reason: 'available', requestedLanguage: 'schinese',
+      sourceLanguage: 'mixed', rawTokenCount: 300, usedEnglishFallback: true } }
+    const html = render(<GameStatusTemplateEditor id="fallback" info={diagnosed} onChange={() => undefined} />, 'en')
+    expect(html).toContain('Simplified Chinese + English fallback')
+    expect(html).toContain('Catalog entries: 300'); expect(html).toContain('Usable templates: 2')
+    expect(html).toContain('missing templates or dependencies')
+  })
+
+  it('does not reflect unknown diagnostic keys, error payloads or invalid counters into the page', () => {
+    const diagnosed = { ...info, templateDiagnostics: { reason: '__proto__', sourceLanguage: 'private language',
+      rawTokenCount: -1, lookupCode: '<script>private</script>', steamResult: 999, message: 'private SDK error' } } as unknown as GameStatusAppInfo
+    const html = render(<GameStatusTemplateEditor id="untrusted" info={diagnosed} onChange={() => undefined} />, 'en')
+    expect(html).toContain('catalog lookup did not complete')
+    expect(html).not.toContain('private'); expect(html).not.toContain('999'); expect(html).not.toContain('__proto__')
+  })
+
   it('escapes metadata, published text and user-entered values rather than injecting HTML', () => {
     const malicious = { ...info, name: '<script>bad()</script>', templates: [{ token: '#Fixed', text: '<img src=x onerror=bad()>', parameters: [] }] }
     const html = render(<><GameStatusIdentity game={malicious} /><GameStatusTemplateEditor id="x" info={malicious} presence={{ displayToken: '#Fixed', values: {} }} onChange={() => undefined} /></>)
@@ -83,6 +112,33 @@ describe('game status identity and published-template UI', () => {
 })
 
 describe('live substatus lock presentation', () => {
+  it.each(['zh-CN', 'en'] as const)('names the correct local connection action for a disconnected session in %s', language => {
+    const html = render(<GameStatusConnectionNotice snapshot={{ status: 'logged_out', error: null, failure: { code: 'GAME_STATUS_NOT_CONNECTED', stage: 'session', submitted: 'no' } }} />, language)
+    expect(html).toContain(language === 'en' ? 'Connect local Steam (no new sign-in)' : '连接本机 Steam（不重新登录）')
+    expect(html).toContain(language === 'en' ? 'simulation page' : '自定义模拟')
+    expect(html).toContain(language === 'en' ? 'does not mean toolbox sign-in has expired' : '不代表工具箱登录已失效')
+    expect(html).not.toContain('使用工具箱当前账号连接')
+    expect(html).not.toContain('Connect with current toolbox account')
+  })
+
+  it.each(['zh-CN', 'en'] as const)('labels local cached lock matches without claiming server confirmation in %s', language => {
+    const html = render(<GameStatusLockStatus lock={lock} verificationSource="local-cache" disabled={false} onUnlock={() => undefined} onRestore={() => undefined} />, language)
+    expect(html).toContain(language === 'en' ? 'Local cached fields match' : '本机缓存字段匹配')
+    expect(html).toContain(language === 'en' ? 'Maintaining local fields (display unverified)' : '本机字段维持中（显示待核实）')
+    expect(html).toContain(language === 'en' ? 'not independent server confirmation' : '非独立服务端确认')
+    expect(html).toContain(language === 'en' ? 'not independent server or friend-client confirmation' : '不是独立服务端或好友端确认')
+    expect(html).not.toContain('Steam server substatus readback')
+  })
+
+  it('does not continue showing a current cached match when the latest read failed', () => {
+    const html = render(<GameStatusLockStatus lock={lock} verificationSource="local-cache" readUnconfirmed disabled={false} onUnlock={() => undefined} onRestore={() => undefined} />, 'en')
+    expect(html).toContain('Maintaining local fields (display unverified)')
+    expect(html).toContain('The latest read or context verification did not complete')
+    expect(html).toContain('Not confirmed')
+    expect(html).not.toContain('Local cached fields match')
+    expect(html).not.toContain('disabled=""')
+  })
+
   it.each([['checking', '正在核对'], ['locked', '持续锁定中'], ['retrying', '等待重试'], ['paused', '锁定已暂停'], ['stopped', '锁定已停止']] as const)('shows %s without claiming an uninterruptible game override', (status, label) => {
     const html = render(<GameStatusLockStatus lock={{ ...lock, status }} disabled={false} onUnlock={() => undefined} onRestore={() => undefined} />)
     expect(html).toContain(label); expect(html).toContain('只定期重申这些字段，不阻止游戏瞬间覆写')

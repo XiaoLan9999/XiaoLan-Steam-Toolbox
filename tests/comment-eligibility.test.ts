@@ -127,6 +127,52 @@ describe('read-only profile comment eligibility parser', () => {
   it('ignores enabled controls in a nested non-target comment thread', () => {
     expect(parseCommentEligibility(profile(profile(controls(), otherId)), friendId).status).toBe('unknown')
   })
+
+  it('recognizes the target-bound official private profile layout without relying on translated text', () => {
+    expect(parseCommentEligibility(privateProfile(), friendId)).toEqual({
+      status: 'blocked', reason: '资料页明确提示为私密，当前无法留言'
+    })
+  })
+
+  it.each([
+    ['wrong owner', privateProfile({ owner: otherId })],
+    ['missing owner', privateProfile({ script: '' })],
+    ['malformed owner', privateProfile({ script: 'g_rgProfileData = {steamid: "' + friendId + '"};' })],
+    ['non-string owner', privateProfile({ script: 'g_rgProfileData = {"steamid": 76561198000000002};' })],
+    ['duplicate owner keys', privateProfile({ script: `g_rgProfileData = {"steamid":"${otherId}","steamid":"${friendId}"};` })],
+    ['escaped duplicate owner keys', privateProfile({ script: `g_rgProfileData = {"steamid":"${otherId}","\\u0073teamid":"${friendId}"};` })],
+    ['duplicate owner assignments', privateProfile({ script: ownerBootstrap() + ownerBootstrap() })],
+    ['conflicting owner assignments', privateProfile({ script: ownerBootstrap() + ownerBootstrap(otherId) })],
+    ['a dynamic owner', privateProfile({ script: 'g_rgProfileData = JSON.parse(\'{"steamid":"' + friendId + '"}\');' })],
+    ['an expression after owner JSON', privateProfile({ script: ownerBootstrap().replace('};', '} || {};') })],
+    ['a quoted owner assignment', privateProfile({ script: `const text = ${JSON.stringify(ownerBootstrap())};` })],
+    ['a template-string owner assignment', privateProfile({ script: '`\n' + ownerBootstrap() + '`;' })],
+    ['a commented owner assignment', privateProfile({ script: '/* ' + ownerBootstrap() + ' */' })],
+    ['a conditional owner assignment', privateProfile({ script: 'if (true) { ' + ownerBootstrap() + ' }' })],
+    ['a callback owner assignment', privateProfile({ script: '(() => { ' + ownerBootstrap() + ' })();' })],
+    ['a nested owner script', privateProfile({ scriptContainer: 'div' })],
+    ['a non-executable owner script', privateProfile({ scriptType: 'application/json' })],
+    ['an external owner script', privateProfile({ scriptSrc: 'https://example.invalid/owner.js' })],
+    ['a normal body', privateProfile({ bodyClass: 'profile_page responsive_page' })],
+    ['a normal profile', privateProfile({ profileClass: 'no_header profile_page' })],
+    ['a duplicate profile', privateProfile({ extraProfile: '<div class="profile_page private_profile"></div>' })],
+    ['a duplicate template', privateProfile() + '<div id="responsive_page_template_content"></div>'],
+    ['a hidden profile', privateProfile({ profileAttributes: 'hidden' })],
+    ['a hidden template', privateProfile({ templateAttributes: 'style="display: none"' })],
+    ['a user biography container', privateProfile({ profileContainer: 'profile_summary' })],
+    ['a user comment container', privateProfile({ profileContainer: 'commentthread_comment_text' })],
+    ['a conflicting target comment area', privateProfile({ extraProfile: profile(controls()) })],
+    ['a conflicting foreign comment area', privateProfile({ extraProfile: profile(controls(otherId), otherId) })]
+  ])('keeps private profile inference unknown for %s', (_label, html) => {
+    expect(parseCommentEligibility(html, friendId).status).toBe('unknown')
+  })
+
+  it('does not infer a private profile from user content or a class/text marker alone', () => {
+    const fake = '<div class="profile_page private_profile"><div class="profile_private_info">This profile is private.</div></div>'
+    expect(parseCommentEligibility(fake + ownerBootstrap(), friendId).status).toBe('unknown')
+    expect(parseCommentEligibility(profile(`<div class="commentthread_comment_text">${fake}</div>` + controls()), friendId).status)
+      .toBe('allowed')
+  })
 })
 
 describe('read-only profile comment eligibility requests', () => {
@@ -259,6 +305,38 @@ describe('SteamService comment eligibility account boundary', () => {
 function controls(id = friendId): string {
   return `<textarea id="commentthread_Profile_${id}_textarea"></textarea>` +
     `<a id="commentthread_Profile_${id}_submit">Post Comment</a>`
+}
+
+function ownerBootstrap(owner = friendId): string {
+  return `g_rgProfileData = ${JSON.stringify({ steamid: owner, personaname: 'Synthetic target' })};`
+}
+
+function privateProfile(options: {
+  owner?: string
+  script?: string
+  scriptContainer?: string
+  scriptType?: string
+  scriptSrc?: string
+  bodyClass?: string
+  profileClass?: string
+  profileAttributes?: string
+  templateAttributes?: string
+  profileContainer?: string
+  extraProfile?: string
+} = {}): string {
+  let script = `<script${options.scriptType ? ` type="${options.scriptType}"` : ''}${options.scriptSrc ? ` src="${options.scriptSrc}"` : ''}>` +
+    (options.script ?? ownerBootstrap(options.owner)) + '</script>'
+  if (options.scriptContainer) script = `<${options.scriptContainer}>${script}</${options.scriptContainer}>`
+  let content = `<div class="${options.profileClass ?? 'no_header profile_page private_profile'}" ${options.profileAttributes ?? ''}>` +
+    '<div class="profile_header_bg"><div class="profile_header_bg_texture"><div class="profile_header">' +
+    '<div class="profile_header_content"><div class="profile_header_summary mobile"><div class="profile_private_info"></div></div>' +
+    '<div class="profile_header_centered_col"><div class="profile_header_summary desktop"><div class="profile_private_info"></div></div></div>' +
+    '</div></div></div></div></div>'
+  if (options.profileContainer) content = `<div class="${options.profileContainer}">${content}</div>`
+  return `<html><body class="${options.bodyClass ?? 'flat_page profile_page private_profile responsive_page'}">` +
+    '<div class="responsive_page_frame with_header"><div class="responsive_page_content">' +
+    `<div id="responsive_page_template_content" class="responsive_page_template_content" ${options.templateAttributes ?? ''}>` +
+    script + content + (options.extraProfile ?? '') + '</div></div></div></body></html>'
 }
 
 function profile(content: string, id = friendId): string {

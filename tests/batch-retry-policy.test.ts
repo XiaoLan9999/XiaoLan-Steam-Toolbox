@@ -1,8 +1,46 @@
 import { describe, expect, it } from 'vitest'
 import { DomainError } from '../src/shared/domain'
-import { batchInterruption, batchRetryDelay, MAX_BATCH_RETRIES } from '../src/shared/batch-retry-policy'
+import { batchInterruption, batchRetryDelay, isNetworkRequestError, MAX_BATCH_RETRIES } from '../src/shared/batch-retry-policy'
 
 describe('bounded batch recovery policy', () => {
+  it.each(['ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH',
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ERR_TLS_HANDSHAKE_TIMEOUT'])
+  ('recognizes native network code %s without relying on the public message', code => {
+    expect(batchInterruption(Object.assign(new Error('Synthetic transport failure'), { code })))
+      .toMatchObject({ code: 'NETWORK_ERROR', rejectedBeforeAcceptance: false })
+  })
+
+  it('follows only a bounded, cycle-safe native error cause chain', () => {
+    const dns = Object.assign(new Error('Synthetic resolver failure'), { code: 'ENOTFOUND' })
+    expect(batchInterruption(new Error('Opaque outer failure', { cause: new Error('Opaque inner failure', { cause: dns }) })).code)
+      .toBe('NETWORK_ERROR')
+    expect(batchInterruption(new Error('Opaque root', { cause: new Error('Opaque next', {
+      cause: new Error('Opaque third', { cause: dns }) }) })).code).toBe('QUEUE_ERROR')
+    const cycle = new Error('Opaque cycle')
+    cycle.cause = cycle
+    expect(isNetworkRequestError(cycle)).toBe(false)
+    const hostile = new Error('Opaque getter')
+    Object.defineProperty(hostile, 'cause', { get() { throw new Error('private getter error') } })
+    expect(isNetworkRequestError(hostile)).toBe(false)
+  })
+
+  it.each([{ code: 'ENOTFOUND' }, { message: 'fetch failed' }, 'ECONNRESET', new Error('A user chose code ENOTFOUND')])
+  ('does not turn arbitrary input or an unrecognized code into a network failure: %j', value => {
+    expect(batchInterruption(value).code).toBe('QUEUE_ERROR')
+  })
+
+  it.each(['RATE_LIMITED', 'COMMUNITY_ACCESS_DENIED', 'SESSION_EXPIRED', 'WRONG_ACCOUNT', 'CHECK_CANCELLED'])
+  ('keeps explicit domain classification %s ahead of nested network symptoms', code => {
+    const error = new DomainError(code, 'Synthetic classified restriction')
+    error.cause = Object.assign(new Error('Synthetic resolver failure'), { code: 'ENOTFOUND' })
+    expect(batchInterruption(error).code).not.toBe('NETWORK_ERROR')
+  })
+
+  it('keeps a server HTTP status ahead of a nested socket failure', () => {
+    expect(batchInterruption(new Error('Steam HTTP error 503', {
+      cause: Object.assign(new Error('Synthetic transport failure'), { code: 'ECONNRESET' }) })).code).toBe('SERVER_ERROR')
+  })
+
   it('uses a conservative cooldown for access denials and respects server retry hints', () => {
     expect(batchRetryDelay('ACCESS_DENIED', 1)).toBe(300_000)
     expect(batchRetryDelay('ACCESS_DENIED', 5)).toBe(300_000)

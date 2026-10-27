@@ -81,7 +81,8 @@ export class BatchRecoveryController {
       this.pause(batchId, 'LOGIN_REQUIRED', loginMessage, batch.retryCount)
       return
     }
-    if (reason.code === 'ACCESS_DENIED_PERSISTENT' || (batch.accessDeniedCount ?? 0) > MAX_ACCESS_DENIED_RETRIES) {
+    if (reason.code === 'ACCESS_DENIED_PERSISTENT' ||
+      (reason.code === 'ACCESS_DENIED' && (batch.accessDeniedCount ?? 0) > MAX_ACCESS_DENIED_RETRIES)) {
       this.pause(batchId, 'ACCESS_DENIED_PERSISTENT',
         `留言请求持续被拒绝（HTTP 403），已停止自动重试。当前对象和剩余好友保留待发；尚不能确定是好友权限、账号限制或网络拦截，请处理原因后再手动继续。${message}`,
         batch.retryCount)

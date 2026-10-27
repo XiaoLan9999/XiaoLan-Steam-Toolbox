@@ -117,6 +117,18 @@ describe('async native writes remain narrow and independently verified', () => {
     safe([state, f.changes, f.writer.calls])
   })
 
+  it('does not apply the native-cache readable-field restriction to a server-backed template lock', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    vi.spyOn(f.client, 'getAppRichPresenceLocalization').mockResolvedValue({ tokens: { '#Minutes': '%minutes% minutes' } })
+    const observed = await observe(f)
+    const state = await f.service.setLiveDisplay({ ...f.action(), snapshotId: observed.snapshotId, lock: true, presence: { displayToken: '#Minutes', values: { minutes: '5' } } })
+    expect(f.writer.calls.map(call => call.changes)).toEqual([{ steam_display: '#Minutes', minutes: '5' }])
+    expect(state.liveLock).toMatchObject({ status: 'locked', matched: true, desired: { steam_display: '#Minutes', minutes: '5' } })
+    expect(state.lastOperation).toMatchObject({ kind: 'lock', outcome: 'matched', verificationSource: 'server' })
+    expect(f.client.cmWrites).toEqual([])
+  })
+
   it('restores an originally absent template parameter with null, not a full clear or an omitted delete', async () => {
     const f = fixture(); const observed = await observe(f)
     await f.service.setLiveDisplay({ ...f.action(), snapshotId: observed.snapshotId, lock: false, presence: { displayToken: '#NativeMode', values: { mode: 'Temporary room' } } })
@@ -324,18 +336,18 @@ describe('native writes cannot revive retired account, game or lock state', () =
     expect(f.client.rp.desc).toBe('Fresh game update'); expect(f.client.cmWrites).toEqual([])
   })
 
-  it('rejects a restoration whose ledger exceeded its safety lifetime even when the lock remained matched', async () => {
+  it('refreshes safe restoration while the same lock keeps returning matched fields', async () => {
     vi.useFakeTimers()
     const f = fixture(); const observed = await observe(f)
     await f.service.lockLive({ ...f.action(), snapshotId: observed.snapshotId, changes: { desc: 'Long-running synthetic lock' } })
     await vi.advanceTimersByTimeAsync(LIVE_RESTORE_TTL_MS + 1)
     expect(f.service.state().liveLock?.matched).toBe(true)
     const writes = f.writer.calls.length
-    await expect(f.service.unlockLive({ ...f.action(), restore: true })).rejects.toThrow('恢复记录已过期')
-    expect(f.writer.calls).toHaveLength(writes)
+    const state = await f.service.unlockLive({ ...f.action(), restore: true })
+    expect(f.writer.calls).toHaveLength(writes + 1)
     expect(f.service.state().liveLock?.status).toBe('stopped')
-    expect(f.service.state().lastOperation?.kind).not.toBe('restore')
-    expect(f.client.rp.desc).toBe('Long-running synthetic lock')
+    expect(state.lastOperation).toMatchObject({ kind: 'restore', outcome: 'matched' })
+    expect(f.client.rp.desc).toBe('Original description')
   })
 })
 

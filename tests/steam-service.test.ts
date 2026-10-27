@@ -289,6 +289,198 @@ describe('SteamService web-session lifecycle', () => {
     expect(mocks.webCookies).toHaveBeenCalledTimes(beforeRetry + 1)
   })
 
+  it('automatically restores a saved token after startup TLS failures with one controlled notice and a visible retry plan', async () => {
+    vi.useFakeTimers()
+    const diagnostic = vi.fn()
+    const { service, store, events } = await createService(false, { keepAliveMs: 60_000, onDiagnostic: diagnostic })
+    const tls = Object.assign(new Error('Client network socket disconnected before secure TLS connection was established'), { code: 'ECONNRESET' })
+    mocks.webCookies.mockRejectedValue(tls)
+    await service.activateAccount(accountB)
+    expect(service.getAccountViews().find(account => account.id === accountB)).toMatchObject({
+      sessionState: 'restoring', sessionRetryAt: new Date(Date.now() + 5000).toISOString(), sessionRetryAttempt: 1 })
+    expect(service.getAccountViews().find(account => account.id === accountB)?.sessionRetryBlocked).not.toBe(true)
+    expect(store.getRefreshToken(accountB)).toBe('test-token-b')
+    expect(notices(events)).toEqual([expect.objectContaining({ message: 'Steam 登录连接暂时中断，已保留登录信息，正在自动重连；无需重新扫码' })])
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(3)
+    expect(service.getAccountViews().find(account => account.id === accountB)).toMatchObject({
+      sessionState: 'restoring', sessionRetryAt: new Date(Date.now() + 15000).toISOString(), sessionRetryAttempt: 2 })
+    expect(notices(events)).toHaveLength(1)
+    expect(diagnostic).toHaveBeenCalledWith({ phase: 'restore', outcome: 'transient', reason: 'network' })
+    expect(JSON.stringify(events)).not.toContain('secure TLS')
+    mocks.webCookies.mockResolvedValue(['sessionid=recovered'])
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(service.isAuthenticated(accountB)).toBe(true)
+    expect(service.getAccountViews().find(account => account.id === accountB)).not.toHaveProperty('sessionRetryAt')
+    expect(store.getRefreshToken(accountB)).toBe('test-token-b')
+  })
+
+  it('coalesces an in-flight same-account activation without destroying its login transport', async () => {
+    const { service } = await createService()
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const first = service.activateAccount(accountB)
+    const agent = mocks.sessionOptions.at(-1)!.options.agent!
+    const destroyed = vi.spyOn(agent, 'destroy')
+    const second = service.activateAccount(accountB)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(2)
+    expect(destroyed).not.toHaveBeenCalled()
+    pending.resolve(['sessionid=shared-restore'])
+    await Promise.all([first, second])
+    expect(service.isAuthenticated(accountB)).toBe(true)
+    expect(destroyed).not.toHaveBeenCalled()
+  })
+
+  it('allows an explicit status refresh during network retry waiting without interrupting an in-flight connection', async () => {
+    vi.useFakeTimers()
+    const { service, store } = await createService(false, { keepAliveMs: 60_000 })
+    mocks.webCookies.mockRejectedValueOnce(new Error('network failed'))
+    await service.activateAccount(accountB)
+    expect(service.getAccountViews().find(account => account.id === accountB)?.sessionRetryAt).toBeTruthy()
+    await expect(service.refreshAccountStatus(accountB)).resolves.toMatchObject({ sessionState: 'authenticated', statusCheckState: 'verified' })
+    expect(store.getRefreshToken(accountB)).toBe('test-token-b')
+    const calls = mocks.webCookies.mock.calls.length
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(calls)
+
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const restore = service.activateAccount(accountA)
+    const beforeCheck = mocks.webCookies.mock.calls.length
+    await expect(service.refreshAccountStatus(accountA)).resolves.toMatchObject({ sessionState: 'restoring', statusCheckState: 'unverified',
+      statusCheckMessage: '账号正在登录或恢复，请稍后检查' })
+    expect(mocks.webCookies).toHaveBeenCalledTimes(beforeCheck)
+    pending.resolve(['sessionid=connected'])
+    await restore
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
+
+  it('bounds the entire startup cookie stage, destroys its dedicated agent and ignores late cookies before retrying', async () => {
+    vi.useFakeTimers()
+    const diagnostic = vi.fn()
+    const { service, store } = await createService(false, { keepAliveMs: 60_000, retryDelaysMs: [200], loginAttemptTimeoutMs: 100, onDiagnostic: diagnostic })
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const restore = service.activateAccount(accountB)
+    const oldAgent = mocks.sessionOptions.at(-1)!.options.agent!
+    const destroyed = vi.spyOn(oldAgent, 'destroy')
+    await vi.advanceTimersByTimeAsync(99)
+    expect(destroyed).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    await restore
+    expect(destroyed).toHaveBeenCalledTimes(1)
+    expect(store.getRefreshToken(accountB)).toBe('test-token-b')
+    expect(service.getAccountViews().find(account => account.id === accountB)).toMatchObject({ sessionState: 'restoring', sessionRetryAttempt: 1 })
+    expect(diagnostic).toHaveBeenCalledWith({ phase: 'restore', outcome: 'transient', reason: 'timeout' })
+    pending.resolve(['sessionid=late-expired-attempt'])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mocks.verify).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(200)
+    expect(mocks.sessionOptions.at(-1)!.options.agent).not.toBe(oldAgent)
+    expect(service.isAuthenticated(accountB)).toBe(true)
+    expect(mocks.verify).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['switch', 'dispose', 'manual-login'] as const)('cancels a hanging startup attempt immediately on %s', async action => {
+    vi.useFakeTimers()
+    const { service, events } = await createService(false, { keepAliveMs: 60_000, loginAttemptTimeoutMs: 100 })
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    const restore = service.activateAccount(accountB)
+    if (action === 'switch') await service.activateAccount(accountA)
+    if (action === 'dispose') service.dispose()
+    if (action === 'manual-login') await service.startQrLogin()
+    await restore
+    const before = mocks.webCookies.mock.calls.length
+    pending.resolve(['sessionid=cancelled-startup'])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(before)
+    expect(service.isAuthenticated(accountB)).toBe(false)
+    expect(notices(events)).toHaveLength(0)
+  })
+
+  it.each(['RATE_LIMITED', 'COMMUNITY_ACCESS_DENIED'])('honors startup %s cooldowns even when asked to reconnect immediately', async code => {
+    vi.useFakeTimers()
+    const { service } = await createService(false, { keepAliveMs: 300_000 })
+    mocks.verify.mockRejectedValueOnce(new DomainError(code, 'Synthetic endpoint restriction', true, 90_000))
+    await service.activateAccount(accountB)
+    const calls = mocks.webCookies.mock.calls.length
+    expect(service.getAccountViews().find(account => account.id === accountB)).toMatchObject({ sessionState: 'restoring',
+      sessionRetryAt: new Date(Date.now() + 90_000).toISOString(), sessionRetryBlocked: true })
+    await service.refreshAccountStatus(accountB)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(calls)
+    await vi.advanceTimersByTimeAsync(89_999)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(calls)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(calls + 1)
+    expect(service.isAuthenticated(accountB)).toBe(true)
+    expect(service.getAccountViews().find(account => account.id === accountB)?.sessionRetryBlocked).not.toBe(true)
+  })
+
+  it.each(['RATE_LIMITED', 'COMMUNITY_ACCESS_DENIED'])('keeps the normal lower retry bound for %s without a server hint', async code => {
+    vi.useFakeTimers()
+    const { service } = await createService(false, { keepAliveMs: 300_000, retryDelaysMs: [1] })
+    mocks.verify.mockRejectedValueOnce(new DomainError(code, 'Synthetic endpoint restriction', true))
+    await service.activateAccount(accountB)
+    const calls = mocks.webCookies.mock.calls.length
+    expect(service.getAccountViews().find(account => account.id === accountB)).toMatchObject({
+      sessionRetryAt: new Date(Date.now() + 60_000).toISOString(), sessionRetryBlocked: true })
+    await vi.advanceTimersByTimeAsync(59_999)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(calls)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(service.isAuthenticated(accountB)).toBe(true)
+  })
+
+  it.each([Number.MAX_SAFE_INTEGER, Infinity])('blocks unbounded server retry hints (%s) without a timer or an early manual request', async retryAfterMs => {
+    vi.useFakeTimers()
+    const { service } = await createService(false, { keepAliveMs: 300_000 })
+    mocks.verify.mockRejectedValueOnce(new DomainError('RATE_LIMITED', 'Synthetic long server wait', true, retryAfterMs))
+    await service.activateAccount(accountB)
+    const calls = mocks.webCookies.mock.calls.length
+    expect(vi.getTimerCount()).toBe(0)
+    expect(service.getAccountViews().find(account => account.id === accountB)).toMatchObject({ sessionState: 'error',
+      sessionMessage: 'Steam 登录服务要求的等待时间超出可自动处理范围，已停止本次重连；登录信息仍保留', sessionRetryBlocked: true })
+    await service.activateAccount(accountB)
+    await service.refreshAccountStatus(accountB)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(calls)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(service.getAccountViews().find(account => account.id === accountB)).not.toHaveProperty('sessionRetryAt')
+  })
+
+  it('clears a cancelled automatic retry countdown when switching to manual sign-in', async () => {
+    vi.useFakeTimers()
+    const { service, store } = await createService(false, { keepAliveMs: 60_000 })
+    mocks.webCookies.mockRejectedValueOnce(new Error('network failed'))
+    await service.activateAccount(accountB)
+    expect(service.getAccountViews().find(account => account.id === accountB)?.sessionRetryAt).toBeTruthy()
+    const login = await service.startQrLogin()
+    expect(service.getAccountViews().find(account => account.id === accountB)).toMatchObject({ sessionState: 'offline',
+      sessionMessage: '已切换为手动登录，自动重连已停止；保存的登录信息未删除' })
+    expect(service.getAccountViews().find(account => account.id === accountB)).not.toHaveProperty('sessionRetryAt')
+    service.cancelLogin(login.loginId)
+    const calls = mocks.webCookies.mock.calls.length
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(calls)
+    expect(store.getRefreshToken(accountB)).toBe('test-token-b')
+  })
+
+  it('clears the long-wait block only after a newly confirmed manual sign-in', async () => {
+    vi.useFakeTimers()
+    const { service } = await createService(false, { keepAliveMs: 300_000 })
+    mocks.verify.mockRejectedValueOnce(new DomainError('RATE_LIMITED', 'Synthetic long wait', true, Number.MAX_SAFE_INTEGER))
+    await service.activateAccount(accountB)
+    await service.activateAccount(accountA)
+    await service.activateAccount(accountB)
+    expect(service.getAccountViews().find(account => account.id === accountB)?.sessionRetryBlocked).toBe(true)
+    await service.startQrLogin()
+    const manual = mocks.sessions.at(-1)! as typeof mocks.sessions[number] & { steamID: { getSteamID64(): string } }
+    manual.steamID = { getSteamID64: () => accountB }
+    manual.emit('authenticated')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(service.isAuthenticated(accountB)).toBe(true)
+    expect(service.getAccountViews().find(account => account.id === accountB)?.sessionRetryBlocked).not.toBe(true)
+  })
+
   it.each(['qr', 'credentials'] as const)('keeps a new %s login valid after an automatic restore retry deadline', async mode => {
     vi.useFakeTimers()
     const { service, events } = await createService(false, { keepAliveMs: 10_000, retryDelaysMs: [100] })
@@ -528,7 +720,8 @@ describe('SteamService web-session lifecycle', () => {
     store.replaceFriends(accountA, [friend(accountA, friendA, 'Fixture friend')])
     now = 100
     mocks.webCookies.mockRejectedValueOnce(new Error('network failed'))
-    await expect(service.postProfileComment(accountA, friendA, 'Unsent')).rejects.toMatchObject({ code: 'SESSION_PREPARATION_FAILED' })
+    await expect(service.postProfileComment(accountA, friendA, 'Unsent')).rejects.toMatchObject({ code: 'COMMENT_PREFLIGHT_FAILED',
+      interruption: { code: 'NETWORK_ERROR', rejectedBeforeAcceptance: true } })
     expect(mocks.post).not.toHaveBeenCalled()
   })
 })

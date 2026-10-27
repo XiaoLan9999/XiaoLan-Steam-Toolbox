@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AccountView, AppEvent, AppSnapshot } from '../../shared/types'
 import { APP_NAME_EN, APP_NAME_ZH, AUTHOR_NAME, AUTHOR_WEBSITE_URL } from '../../shared/branding'
+import { AppLogo } from './components/AppLogo'
 import { ComposerPanel } from './components/ComposerPanel'
 import { FriendsPanel } from './components/FriendsPanel'
 import { HistoryPanel } from './components/HistoryPanel'
@@ -12,16 +13,21 @@ import { UpdateNotice } from './components/UpdateNotice'
 import ScreenshotToolsPanel from './components/ScreenshotToolsPanel'
 import { GameStatusPanel } from './components/GameStatusPanel'
 import { WelcomePanel } from './components/WelcomePanel'
+import { SessionRecoveryNotice } from './components/SessionRecoveryNotice'
 import type { GameStatusApi } from '../../shared/game-status'
+import type { LocalAppSimulationApi } from '../../shared/local-app-simulation'
+import type { StatusCopyApi } from '../../shared/status-copy'
 import { I18nProvider, type Translate } from './i18n'
 import { avatarFallback, unwrap } from './ui'
 import { applyBatchProgress, applyProgressUpdates, createSnapshotRefresh, type BatchProgressUpdate } from './snapshot-refresh'
+import { applyFriendPolicy, applyFriendPolicyUpdates, type FriendPolicyUpdate } from './friend-policy-updates'
 import './task-list.css'
 
 type Tab = 'home' | 'friends' | 'compose' | 'history' | 'tools' | 'screenshots' | 'game-status'
 
 const gameStatusApi: GameStatusApi = {
   state: async () => unwrap(await window.steamCommenter.gameStatus.state()),
+  connectLocal: async input => unwrap(await window.steamCommenter.gameStatus.connectLocal(input)),
   connectWithToolbox: async input => unwrap(await window.steamCommenter.gameStatus.connectWithToolbox(input)),
   play: async input => unwrap(await window.steamCommenter.gameStatus.play(input)),
   stop: async input => unwrap(await window.steamCommenter.gameStatus.stop(input)),
@@ -37,6 +43,21 @@ const gameStatusApi: GameStatusApi = {
   saveDraft: async input => unwrap(await window.steamCommenter.gameStatus.saveDraft(input)),
   onChange: callback => window.steamCommenter.onEvent(event => { if (event.type === 'gameStatusChanged') callback(event.state) })
 }
+const localAppSimulationApi: LocalAppSimulationApi | undefined = window.steamCommenter.localAppSimulation ? {
+  state: async () => unwrap(await window.steamCommenter.localAppSimulation!.state()),
+  inspect: async input => unwrap(await window.steamCommenter.localAppSimulation!.inspect(input)),
+  start: async input => unwrap(await window.steamCommenter.localAppSimulation!.start(input)),
+  stop: async input => unwrap(await window.steamCommenter.localAppSimulation!.stop(input)),
+  onChange: callback => window.steamCommenter.onEvent(event => { if (event.type === 'localAppSimulationChanged') callback(event.state) })
+} : undefined
+const statusCopyApi: StatusCopyApi | undefined = window.steamCommenter.statusCopy ? {
+  state: async () => unwrap(await window.steamCommenter.statusCopy!.state()),
+  save: async input => unwrap(await window.steamCommenter.statusCopy!.save(input)),
+  preview: async input => unwrap(await window.steamCommenter.statusCopy!.preview(input)),
+  start: async input => unwrap(await window.steamCommenter.statusCopy!.start(input)),
+  stop: async input => unwrap(await window.steamCommenter.statusCopy!.stop(input)),
+  onChange: callback => window.steamCommenter.onEvent(event => { if (event.type === 'statusCopyChanged') callback(event.state) })
+} : undefined
 
 interface Toast {
   id: number
@@ -58,6 +79,9 @@ export default function App(): React.JSX.Element {
   const refreshController = useRef<ReturnType<typeof createSnapshotRefresh<RefreshValue>> | null>(null)
   const batchRevision = useRef(0)
   const progressUpdates = useRef(new Map<string, BatchProgressUpdate>())
+  const friendPolicyUpdates = useRef(new Map<string, FriendPolicyUpdate>())
+  const selectedAccountId = useRef(snapshot?.activeAccountId ?? null)
+  selectedAccountId.current = snapshot?.activeAccountId ?? null
   const language = snapshot?.language ?? 'zh-CN'
   const t: Translate = (zh, en) => language === 'en' ? en : zh
 
@@ -78,7 +102,11 @@ export default function App(): React.JSX.Element {
     }, ({ snapshot: next, batchRevision: revision }) => {
       document.documentElement.lang = next.language
       document.title = next.language === 'en' ? APP_NAME_EN : APP_NAME_ZH
-      setSnapshot(() => applyProgressUpdates(next, progressUpdates.current.values(), revision))
+      for (const [id, update] of friendPolicyUpdates.current) {
+        if (update.revision <= revision || update.policy.accountId !== next.activeAccountId) friendPolicyUpdates.current.delete(id)
+      }
+      setSnapshot(() => applyFriendPolicyUpdates(applyProgressUpdates(next, progressUpdates.current.values(), revision),
+        friendPolicyUpdates.current.values(), revision))
       setFatalError(null)
     }, error => {
       setFatalError(error instanceof Error ? error.message : String(error))
@@ -87,6 +115,11 @@ export default function App(): React.JSX.Element {
     void controller.refresh()
     const unsubscribe = window.steamCommenter.onEvent((event: AppEvent) => {
       if (event.type === 'snapshotChanged') void controller.refresh()
+      if (event.type === 'friendPolicyChanged' && event.policy.accountId === selectedAccountId.current) {
+        batchRevision.current += 1
+        friendPolicyUpdates.current.set(event.policy.steamId, { policy: event.policy, revision: batchRevision.current })
+        setSnapshot(current => current ? applyFriendPolicy(current, event.policy) : current)
+      }
       if (event.type === 'batchProgress') {
         if (event.summary !== undefined) {
           batchRevision.current += 1
@@ -141,8 +174,8 @@ export default function App(): React.JSX.Element {
   }
 
   const removeAccount = async (account: AccountView): Promise<void> => {
-    if (!window.confirm(t(`确定忘记账号“${account.displayName}”吗？本地分组、黑名单、好友历史、检查任务、缓存和发送记录会一并删除。`,
-      `Forget "${account.displayName}"? Its local groups, blacklist, friend history, checks, cache and delivery history will also be deleted.`))) {
+    if (!window.confirm(t(`确定忘记账号“${account.displayName}”吗？本地分组、黑名单、好友历史、检查任务、缓存、发送记录和复制状态配置会一并删除。`,
+      `Forget "${account.displayName}"? Its local groups, blacklist, friend history, checks, cache, delivery history and status-copy settings will also be deleted.`))) {
       return
     }
     await runAction(
@@ -155,7 +188,7 @@ export default function App(): React.JSX.Element {
   if (!snapshot) {
     return (
       <main className="loading-screen">
-        <div className="steam-mark">S</div>
+        <AppLogo className="steam-mark" size={56} />
         <h1>{t(APP_NAME_ZH, APP_NAME_EN)}</h1>
         <p>{fatalError ?? t('正在读取本地数据...', 'Loading local data...')}</p>
         {fatalError && <button onClick={() => void refresh()}>{t('重试', 'Retry')}</button>}
@@ -167,7 +200,7 @@ export default function App(): React.JSX.Element {
     <I18nProvider language={language}><div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">S</div>
+          <AppLogo className="brand-mark" size={38} />
           <div>
             <strong>{t(APP_NAME_ZH, APP_NAME_EN)}</strong>
             <span>{t('好友管理 · 艺术作品 · 截图工具', 'Friends · Artwork · Screenshots')}</span>
@@ -260,13 +293,16 @@ export default function App(): React.JSX.Element {
       </aside>
 
       <main className="workspace">
-        {tab === 'home' ? <WelcomePanel snapshot={snapshot} onNavigate={setTab} onLogin={() => setLoginOpen(true)} onSettings={() => setSettingsOpen(true)} /> : tab === 'game-status' ? (
+        {tab === 'home' ? <WelcomePanel snapshot={snapshot} onNavigate={setTab} onLogin={() => setLoginOpen(true)} onSettings={() => setSettingsOpen(true)}
+          connectionNotice={activeAccount && <SessionRecoveryNotice account={activeAccount} busy={Boolean(busy)}
+            onRetry={() => void runAction(t('正在重新连接保存的账号', 'Reconnecting the saved account'), async () => unwrap(await window.steamCommenter.refreshAccountStatus(activeAccount.id)))}
+            onSignIn={() => setLoginOpen(true)} />} /> : tab === 'game-status' ? (
           <>
             <header className="topbar tools-topbar">
               <div><h1>{t('游戏状态与自定义', 'Game status & presence')}</h1><p>{t('自定义游戏显示 · 实际游玩参数实验性修改', 'Custom game presence · Experimental live-game status editing')}</p></div>
               <button className="ghost" onClick={() => setTab('home')}>{t('返回首页', 'Back home')}</button>
             </header>
-            <section className="content"><GameStatusPanel activeAccount={activeAccount} api={gameStatusApi} /></section>
+            <section className="content"><GameStatusPanel activeAccount={activeAccount} api={gameStatusApi} localSimulationApi={localAppSimulationApi} statusCopyApi={statusCopyApi} /></section>
           </>
         ) : tab === 'screenshots' ? (
           <>
@@ -309,19 +345,9 @@ export default function App(): React.JSX.Element {
             </header>
 
             <section className="content">
-              {activeAccount.sessionState !== 'authenticated' && (
-                <div className="session-banner">
-                  <div>
-                    <strong>{activeAccount.sessionState === 'restoring'
-                      ? t('正在自动恢复会话', 'Restoring the session automatically')
-                      : activeAccount.sessionState === 'expired' ? t('需要重新登录', 'Sign-in required')
-                        : t('当前账号未连接', 'Account is disconnected')}</strong>
-                    <span>{activeAccount.sessionMessage ?? t('重新登录后才可同步或留言', 'Sign in again to sync or post comments')}</span>
-                  </div>
-                  <button onClick={() => setLoginOpen(true)}>{activeAccount.sessionState === 'restoring'
-                    ? t('改为扫码登录', 'Use QR sign-in instead') : t('重新登录', 'Sign in again')}</button>
-                </div>
-              )}
+              <SessionRecoveryNotice account={activeAccount} busy={Boolean(busy)}
+                onRetry={() => void runAction(t('正在重新连接保存的账号', 'Reconnecting the saved account'), async () => unwrap(await window.steamCommenter.refreshAccountStatus(activeAccount.id)))}
+                onSignIn={() => setLoginOpen(true)} />
               {tab === 'friends' && (
                 <FriendsPanel
                   snapshot={snapshot}

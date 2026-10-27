@@ -224,7 +224,7 @@ export interface DeliverySeed {
 const now = (): string => new Date().toISOString()
 const batchStatuses: readonly BatchStatus[] = ['queued', 'running', 'paused', 'completed', 'cancelled']
 const batchStopCodes: readonly BatchStopCode[] = [
-  'MANUAL_PAUSE', 'RATE_LIMITED', 'ACCESS_DENIED', 'ACCESS_DENIED_PERSISTENT', 'SESSION_EXPIRED', 'SESSION_PREPARATION',
+  'MANUAL_PAUSE', 'RATE_LIMITED', 'ACCESS_DENIED', 'ACCESS_DENIED_PERSISTENT', 'SESSION_EXPIRED', 'SESSION_PREPARATION', 'COMMENT_BASELINE',
   'LOGIN_REQUIRED', 'NETWORK_ERROR', 'SERVER_ERROR', 'UNCERTAIN_RESULT', 'SESSION_CHANGED',
   'ACCOUNT_CHANGED', 'APP_RESTARTED', 'APP_SHUTDOWN', 'RETRY_EXHAUSTED', 'QUEUE_ERROR',
   'LEGACY_PAUSED', 'CANCELLED', 'DELIVERY_FAILED'
@@ -599,6 +599,30 @@ export class SqliteStore {
     }))
   }
 
+  recordFriendCommentAvailability(accountId: string, steamId: string, result: CommentCheckResult): FriendPolicy {
+    if (!result || !['allowed', 'blocked', 'unknown'].includes(result.status) || typeof result.reason !== 'string') {
+      throw new DomainError('INVALID_CHECK_RESULT', '检查结果无效')
+    }
+    if (!this.getAccount(accountId)) throw new DomainError('ACCOUNT_NOT_FOUND', '账号不存在')
+    if (typeof steamId !== 'string' || !/^7656119\d{10}$/.test(steamId)) throw new DomainError('INVALID_FRIEND', '好友 Steam ID 无效')
+    if (!this.hasActiveFriend(accountId, steamId)) throw new DomainError('INVALID_FRIEND', '只能处理当前账号已同步的好友')
+    // An inconclusive network result cannot revoke an existing explicit restriction.
+    this.db.prepare(
+      `INSERT INTO friend_policies
+         (account_id, steam_id, comment_status, comment_reason, comment_checked_at)
+       VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, steam_id) DO UPDATE SET
+         comment_status = excluded.comment_status, comment_reason = excluded.comment_reason,
+         comment_checked_at = excluded.comment_checked_at
+       WHERE excluded.comment_status != 'unknown' OR friend_policies.comment_status != 'blocked'`
+    ).run(accountId, steamId, result.status, result.reason.slice(0, 1000), now())
+    const row = this.db.prepare(
+      `SELECT account_id, steam_id, blacklisted, comment_status, comment_reason, comment_checked_at
+       FROM friend_policies WHERE account_id = ? AND steam_id = ?`
+    ).get(accountId, steamId) as unknown as FriendPolicyRow
+    return { accountId: row.account_id, steamId: row.steam_id, blacklisted: row.blacklisted === 1,
+      commentStatus: row.comment_status, commentReason: row.comment_reason, commentCheckedAt: row.comment_checked_at }
+  }
+
   setBlacklist(accountId: string, friendSteamIds: string[], blacklisted: boolean): void {
     if (typeof blacklisted !== 'boolean') {
       throw new DomainError('INVALID_BLACKLIST', '黑名单状态无效')
@@ -772,13 +796,14 @@ export class SqliteStore {
          WHERE job_id = ? AND friend_steam_id = ? AND status = 'checking' AND attempt_id = ?`
       ).run(result.status, reason, timestamp, jobId, item.steamId, item.attemptId)
       if (!changed.changes) return
-      // Preserve the independent blacklist flag when refreshing eligibility.
+      // Preserve blacklist and known restrictions when this check is inconclusive.
       this.db.prepare(
         `INSERT INTO friend_policies
          (account_id, steam_id, comment_status, comment_reason, comment_checked_at)
          VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, steam_id) DO UPDATE SET
          comment_status = excluded.comment_status, comment_reason = excluded.comment_reason,
-         comment_checked_at = excluded.comment_checked_at`
+         comment_checked_at = excluded.comment_checked_at
+       WHERE excluded.comment_status != 'unknown' OR friend_policies.comment_status != 'blocked'`
       ).run(job.accountId, item.steamId, result.status, reason, timestamp)
       this.db.prepare(
         `UPDATE comment_scan_jobs SET completed = completed + 1,

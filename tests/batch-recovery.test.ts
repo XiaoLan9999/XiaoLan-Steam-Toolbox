@@ -17,6 +17,22 @@ afterEach(() => {
 })
 
 describe('bounded batch automatic recovery', () => {
+  it.each(['COMMENT_BASELINE', 'NETWORK_ERROR', 'RATE_LIMITED', 'SESSION_PREPARATION'] as BatchStopCode[])
+  ('does not replace the current %s cause with an old POST denial count', code => {
+    const f = fixture({ accessDeniedCount: 6, autoRetryEnabled: false })
+    f.controller.interrupt(batchId, { code, message: 'Current pre-send failure', allowAuto: true })
+    expect(f.read()).toMatchObject({ status: 'paused', stopCode: code, stopMessage: 'Current pre-send failure',
+      nextRetryAt: null, retryCount: 0, accessDeniedCount: 6 })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retains the independent denial circuit for a current access-denied response', () => {
+    const f = fixture({ accessDeniedCount: 2 })
+    f.controller.interrupt(batchId, { code: 'ACCESS_DENIED', message: 'Current HTTP 403', allowAuto: true })
+    expect(f.read()).toMatchObject({ status: 'paused', stopCode: 'ACCESS_DENIED_PERSISTENT', nextRetryAt: null })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('invalidates a recovery refresh already in flight after an unresolved POST requires manual review', async () => {
     const f = fixture()
     const refresh = deferred()

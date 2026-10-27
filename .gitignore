@@ -23,5 +23,8 @@ backups/
 *.zip
 *.7z
 .release-keys/
+integrations/asf-status-copy/**/bin/
+integrations/asf-status-copy/**/obj/
+integrations/asf-status-copy/plugin/
 *.pem
 *.key

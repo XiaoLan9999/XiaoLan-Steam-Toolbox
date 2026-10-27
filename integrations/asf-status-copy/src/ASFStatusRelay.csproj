@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>ASFStatusRelay</AssemblyName>
+    <Version>0.3.0</Version>
+    <EnableDefaultItems>true</EnableDefaultItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="ArchiSteamFarm"><HintPath>$(ASFDirectory)/ArchiSteamFarm.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SteamKit2"><HintPath>$(ASFDirectory)/SteamKit2.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="protobuf-net"><HintPath>$(ASFDirectory)/protobuf-net.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="protobuf-net.Core"><HintPath>$(ASFDirectory)/protobuf-net.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="System.Composition.AttributedModel"><HintPath>$(ASFDirectory)/System.Composition.AttributedModel.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <Target Name="RequireASFDirectory" BeforeTargets="ResolveReferences" Condition="'$(ASFDirectory)' == ''">
+    <Error Text="Pass ASFDirectory pointing to an extracted matching ASF-generic distribution." />
+  </Target>
+</Project>

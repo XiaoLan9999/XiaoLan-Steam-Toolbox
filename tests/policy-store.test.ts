@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AccountRecord, FriendRecord } from '../src/shared/types'
 import { SecretCipher, SqliteStore } from '../src/main/store'
 
@@ -25,6 +25,70 @@ afterEach(() => {
 })
 
 describe('friend policies', () => {
+  it('persists explicit sending restrictions without changing blacklist or custom groups', () => {
+    const fixture = setup()
+    const group = fixture.store.createGroup(accountA, 'Keep this group', '#66c0f4')
+    fixture.store.setFriendGroups(accountA, [friendA], [group.id])
+    fixture.store.setBlacklist(accountA, [friendA], true)
+    fixture.store.recordFriendCommentAvailability(accountA, friendA, { status: 'blocked', reason: 'Explicit recipient comment restriction' })
+    expect(fixture.store.getFriendPolicies(accountA)[0]).toMatchObject({ blacklisted: true, commentStatus: 'blocked',
+      commentReason: 'Explicit recipient comment restriction', commentCheckedAt: expect.any(String) })
+    const recovered = fixture.reopen()
+    expect(recovered.getFriend(accountA, friendA)?.groupIds).toEqual([group.id])
+    expect(recovered.getFriendPolicies(accountA)[0]).toMatchObject({ blacklisted: true, commentStatus: 'blocked' })
+    recovered.recordFriendCommentAvailability(accountA, friendA, { status: 'allowed', reason: 'Successful delivery' })
+    expect(recovered.getFriendPolicies(accountA)[0]).toMatchObject({ blacklisted: true, commentStatus: 'allowed', commentReason: 'Successful delivery' })
+    expect(recovered.getFriend(accountA, friendA)?.groupIds).toEqual([group.id])
+  })
+
+  it('keeps a network result unknown and does not erase an earlier explicit restriction', () => {
+    const { store } = setup()
+    store.recordFriendCommentAvailability(accountA, friendA, { status: 'unknown', reason: 'Network failed for this attempt' })
+    expect(store.getFriendPolicies(accountA)[0]).toMatchObject({ commentStatus: 'unknown' })
+    store.recordFriendCommentAvailability(accountA, friendA, { status: 'blocked', reason: 'Comments disabled' })
+    const known = store.getFriendPolicies(accountA)[0]
+    const fullSnapshot = vi.spyOn(store, 'getFriendPolicies')
+    const effective = store.recordFriendCommentAvailability(accountA, friendA, { status: 'unknown', reason: 'Later network error' })
+    expect(fullSnapshot).not.toHaveBeenCalled()
+    expect(effective).toEqual(known)
+    expect(store.getFriendPolicies(accountA)[0]).toEqual(known)
+  })
+
+  it('isolates observed availability by account and rejects inactive or malformed targets', () => {
+    const { store } = setup()
+    store.upsertAccount(account(accountB))
+    store.replaceFriends(accountB, [friend(accountB, friendA)])
+    store.recordFriendCommentAvailability(accountA, friendA, { status: 'blocked', reason: 'Restricted on A' })
+    expect(store.getFriendPolicies(accountB)[0]?.commentStatus).toBe('unchecked')
+    store.replaceFriends(accountA, [friend(accountA, friendB)])
+    expect(() => store.recordFriendCommentAvailability(accountA, friendA, { status: 'allowed', reason: 'Stale response' })).toThrow(/已同步/)
+    expect(() => store.recordFriendCommentAvailability(accountA, 'bad', { status: 'blocked', reason: 'Bad ID' })).toThrow(/Steam ID/)
+    expect(() => store.recordFriendCommentAvailability(accountA, friendB, { status: 'unchecked', reason: '' } as never)).toThrow(/结果/)
+    expect(() => store.recordFriendCommentAvailability(accountA, friendB, { status: 'blocked', reason: null } as never)).toThrow(/结果/)
+    store.replaceFriends(accountA, [friend(accountA, friendA), friend(accountA, friendB)])
+    expect(store.getFriendPolicies(accountA)[0]).toMatchObject({ commentStatus: 'blocked', commentReason: 'Restricted on A' })
+  })
+
+  it('bounds the stored reason and preserves independent scan counters', () => {
+    const { store } = setup()
+    const scan = store.createCommentScan(accountA, [friendA, friendB], 100)
+    store.recordFriendCommentAvailability(accountA, friendA, { status: 'blocked', reason: 'r'.repeat(5000) })
+    expect(store.getFriendPolicies(accountA)[0]?.commentReason).toHaveLength(1000)
+    expect(store.getCommentScan(scan.id)).toMatchObject({ completed: 0, blocked: 0, unknown: 0, allowed: 0, status: 'running' })
+  })
+
+  it('uses only single-target SQL instead of loading the entire friend policy or identifier list', () => {
+    const { store } = setup()
+    const database = (store as unknown as { db: DatabaseSync }).db
+    const statements = vi.spyOn(database, 'prepare')
+    expect(store.recordFriendCommentAvailability(accountA, friendA, { status: 'blocked', reason: 'Explicit restriction' }))
+      .toMatchObject({ accountId: accountA, steamId: friendA, blacklisted: false, commentStatus: 'blocked' })
+    const queries = statements.mock.calls.map(([query]) => String(query))
+    expect(queries).toHaveLength(4)
+    expect(queries.some(query => /SELECT steam_id FROM friends WHERE account_id = \? AND is_active = 1/.test(query))).toBe(false)
+    expect(queries.some(query => /SELECT 1 FROM friends WHERE account_id = \? AND steam_id = \? AND is_active = 1/.test(query))).toBe(true)
+  })
+
   it('returns unchecked defaults for every active friend without modifying groups', () => {
     const { store } = setup()
     const group = store.createGroup(accountA, 'friends', '#66c0f4')
@@ -92,6 +156,20 @@ describe('friend policies', () => {
 })
 
 describe('persistent comment scans', () => {
+  it('records an inconclusive recheck as unknown without removing a confirmed restriction until an allowed result', () => {
+    const { store } = setup()
+    store.recordFriendCommentAvailability(accountA, friendA, { status: 'blocked', reason: 'Steam explicitly disabled comments' })
+    const previous = store.getFriendPolicies(accountA)[0]
+    const scan = store.createCommentScan(accountA, [friendA], 100)
+    store.completeCommentScanItem(scan.id, store.takeNextCommentScanItem(scan.id)!, { status: 'unknown', reason: 'Network failed during recheck' })
+    expect(store.getCommentScan(scan.id)).toMatchObject({ status: 'completed', completed: 1, unknown: 1, blocked: 0, allowed: 0 })
+    expect(store.getFriendPolicies(accountA)[0]).toEqual(previous)
+    const check = store.createCommentScan(accountA, [friendA], 100)
+    store.completeCommentScanItem(check.id, store.takeNextCommentScanItem(check.id)!, { status: 'allowed', reason: 'Enabled comment form confirmed' })
+    expect(store.getCommentScan(check.id)).toMatchObject({ status: 'completed', completed: 1, unknown: 0, blocked: 0, allowed: 1 })
+    expect(store.getFriendPolicies(accountA)[0]).toMatchObject({ commentStatus: 'allowed', commentReason: 'Enabled comment form confirmed' })
+  })
+
   it('persists all 5001 distinct check recipients and blacklist entries without an artificial ceiling', () => {
     const fixture = setup()
     const ids = Array.from({ length: 5001 }, (_, index) => String(76561198001000000n + BigInt(index)))

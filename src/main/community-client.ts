@@ -6,6 +6,9 @@ import { parseCommentEligibility } from './comment-eligibility-parser'
 import { extractCommunityPageIdentity, extractProfileWebApiToken, getProfileBackgroundCatalog } from './profile-backgrounds'
 import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
+import { CommentPreflightError } from '../shared/comment-preflight'
+import { CommentPermissionDeniedError } from '../shared/comment-permission'
+import { batchInterruption } from '../shared/batch-retry-policy'
 import { parseCommentSnapshot, reconcileCommentSnapshots, verifyCommentAttempt,
   type CommentAttemptEvidence, type CommentServerWindow, type CommentSnapshot,
   type CommentVerificationResult } from './comment-reconciliation'
@@ -56,9 +59,10 @@ export interface CommunityProfileSummaries {
 }
 
 export interface CommunityDiagnosticEvent {
-  phase: 'community-request' | 'session-probe' | 'comment-reconcile'
+  phase: 'community-request' | 'session-probe' | 'comment-reconcile' | 'comment-preflight'
   outcome: 'success' | 'auth-rejected' | 'access-denied' | 'rate-limited' | 'unverified' | 'request-failed' | 'stale-response'
   reason: 'http-401' | 'login-redirect' | 'not-logged-on' | 'http-403' | 'http-429' | 'identity-match' | 'identity-mismatch' | 'identity-guest' | 'identity-missing' | 'transport-error' | 'comment-reconciled'
+    | 'baseline-missing' | 'baseline-incomplete' | 'baseline-unreadable' | 'target-unavailable'
   httpStatus?: number
   method?: 'GET' | 'POST'
   endpoint?: 'profile-comment' | 'session-verify' | 'other'
@@ -331,12 +335,16 @@ export class SteamCommunityClient {
     let baseline: CommentSnapshot
     let baselineMetadata: CommunityResponseMetadata | null = null
     try {
-      baseline = await this.getCommentSnapshot(friendSteamId, assertCanSubmit, metadata => { baselineMetadata = metadata })
-      if (!baseline.complete || !baseline.threadExists || baseline.comments.length > 1000) throw new Error('Comment baseline is incomplete')
+      baseline = await this.getCommentSnapshot(friendSteamId, assertCanSubmit, metadata => { baselineMetadata = metadata }, true)
+      if (!baseline.threadExists) throw new DomainError('COMMENT_BASELINE_MISSING', '资料页未提供可核验的目标评论区')
+      if (!baseline.complete || baseline.comments.length > 1000) throw new DomainError('COMMENT_BASELINE_INCOMPLETE', '目标评论区内容不完整或结构无法可靠解析')
     } catch (error) {
-      if (error instanceof DomainError && ['FRIEND_NOT_FOUND', 'FRIEND_BLACKLISTED'].includes(error.code)) throw error
-      throw new DomainError('SESSION_PREPARATION_FAILED', '留言前无法可靠读取目标评论基线，尚未提交留言；请稍后继续原任务', true,
-        error instanceof DomainError ? error.retryAfterMs : undefined)
+      if (error instanceof DomainError && ['FRIEND_NOT_FOUND', 'FRIEND_BLACKLISTED', 'COMMENT_TARGET_UNAVAILABLE',
+        'SESSION_PREPARATION_FAILED'].includes(error.code)) throw error
+      const reason = error instanceof DomainError && error.code === 'COMMENT_BASELINE_MISSING' ? 'baseline-missing'
+        : error instanceof DomainError && error.code === 'COMMENT_BASELINE_INCOMPLETE' ? 'baseline-incomplete' : 'baseline-unreadable'
+      this.diagnostic({ phase: 'comment-preflight', outcome: 'unverified', reason, method: 'GET', endpoint: 'profile-comment' })
+      throw commentPreflightFailure(error)
     }
     assertCanSubmit()
     const rawSessionId = this.requireCommentSessionId()
@@ -411,11 +419,26 @@ export class SteamCommunityClient {
           }
         }
       } catch { /* A failed read-back cannot justify another POST or a false success. */ }
-      throw new DomainError('COMMENT_POST_UNCERTAIN', `Steam 拒绝响应，但发送结果待核对；为防重复不会自动重发。${error.message}`, false, error.retryAfterMs)
+      const uncertainMessage = `Steam 拒绝响应，但发送结果待核对；为防重复不会自动重发。${error.message}`
+      if (error instanceof CommentPermissionDeniedError) {
+        throw new CommentPermissionDeniedError('COMMENT_POST_UNCERTAIN', uncertainMessage, error.retryAfterMs)
+      }
+      throw new DomainError('COMMENT_POST_UNCERTAIN', uncertainMessage, false, error.retryAfterMs)
     }
     if (!isRecord(body)) throw new Error('Steam returned a malformed comment response')
     if (body.success !== true && Number(body.success) !== 1) {
-      throw new Error(typeof body.error === 'string' ? body.error : 'Steam rejected the profile comment')
+      const normalized = typeof body.error === 'string' ? normalizeCommentError(body.error) : null
+      const safeError = normalized === null ? null : safeCommentErrorMessage(normalized)
+      const denial = normalized !== null && safeError !== null ? explicitCommentTargetDenial(normalized) : null
+      if (denial) {
+        if (typeof body.comments_html === 'string' && /\bid=["']comment_[1-9]\d{0,19}["']/i.test(body.comments_html)) {
+          throw new DomainError('COMMENT_POST_UNCERTAIN', 'Steam 返回的留言结果与权限提示不一致，保留待核对且不会重复发送')
+        }
+        this.diagnostic({ phase: 'community-request', outcome: 'access-denied', reason: 'target-unavailable',
+          method: 'POST', endpoint: 'profile-comment', httpStatus: 200, commentDenialReason: denial.reason, errorPresent: true })
+        throw new DomainError('COMMENT_TARGET_UNAVAILABLE', denial.message)
+      }
+      throw new Error(safeError ?? 'Steam rejected the profile comment')
     }
     const commentsHtml = typeof body.comments_html === 'string' ? body.comments_html : ''
     const commentId = commentsHtml.match(/\bid=["']comment_(\d+)["']/i)?.[1] ?? null
@@ -452,7 +475,8 @@ export class SteamCommunityClient {
   private async getCommentSnapshot(
     steamId: string,
     assertCurrent: () => void = () => undefined,
-    onResponse: (metadata: CommunityResponseMetadata) => void = () => undefined
+    onResponse: (metadata: CommunityResponseMetadata) => void = () => undefined,
+    checkAvailability = false
   ): Promise<CommentSnapshot> {
     if (!/^7656119\d{10}$/.test(steamId)) throw new DomainError('INVALID_STEAM_ID', '目标 SteamID 无效')
     const html = await this.requestText(`/profiles/${steamId}/?l=english`, {}, 3, assertCurrent, (text, version) => {
@@ -463,6 +487,13 @@ export class SteamCommunityClient {
       }
     }, onResponse)
     assertCurrent()
+    if (checkAvailability) {
+      const eligibility = parseCommentEligibility(html, steamId)
+      if (eligibility.status === 'blocked') {
+        this.diagnostic({ phase: 'comment-preflight', outcome: 'unverified', reason: 'target-unavailable', method: 'GET', endpoint: 'profile-comment' })
+        throw new DomainError('COMMENT_TARGET_UNAVAILABLE', `留言前检查未通过：${eligibility.reason}；尚未提交留言`)
+      }
+    }
     return parseCommentSnapshot(html, steamId)
   }
 
@@ -629,8 +660,11 @@ export class SteamCommunityClient {
                 : shape.responseKind === 'json' ? 'JSON 拒绝'
                   : shape.responseKind === 'html' ? 'HTML 拒绝' : '访问拒绝'
               const explanation = detail.message ? `。Steam 原因：${detail.message}` : ''
-              throw new DomainError('COMMUNITY_ACCESS_DENIED', `Steam 返回${responseDescription}（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试${explanation}`, true,
-                retryAfterMs)
+              const message = `Steam 返回${responseDescription}（HTTP 403）；尚未确认登录失效或具体限制原因，请稍后再试${explanation}`
+              if (communityEndpoint(url.pathname) === 'profile-comment' && detail.permissionDenied) {
+                throw new CommentPermissionDeniedError('COMMUNITY_ACCESS_DENIED', message, retryAfterMs)
+              }
+              throw new DomainError('COMMUNITY_ACCESS_DENIED', message, true, retryAfterMs)
             }
             throw new Error(`Steam HTTP error ${response.status}`)
           }
@@ -740,6 +774,31 @@ async function readLimitedResponse(response: Response, assertCurrent: () => void
   }
 }
 
+function commentPreflightFailure(error: unknown): CommentPreflightError {
+  let interruption = batchInterruption(error)
+  const descriptions: Partial<Record<typeof interruption.code, string>> = {
+    RATE_LIMITED: '读取目标评论区触发 Steam 频率限制（HTTP 429）',
+    ACCESS_DENIED: 'Steam 拒绝读取目标评论区（HTTP 403），尚不能确定具体限制原因',
+    SESSION_EXPIRED: '读取目标评论区时 Steam 网页登录已失效',
+    SESSION_PREPARATION: '读取目标评论区时无法核验当前登录身份',
+    SESSION_CHANGED: '读取目标评论区时登录会话发生变更',
+    LOGIN_REQUIRED: '读取目标评论区前需要登录 Steam',
+    ACCOUNT_CHANGED: '读取目标评论区时账号发生变更',
+    NETWORK_ERROR: '读取目标评论区时网络请求失败',
+    SERVER_ERROR: '读取目标评论区时 Steam 服务暂时异常'
+  }
+  let description = descriptions[interruption.code]
+  if (!description) {
+    interruption = { code: 'COMMENT_BASELINE', canRetry: true, rejectedBeforeAcceptance: true,
+      retryAfterMs: error instanceof DomainError ? error.retryAfterMs : undefined }
+    description = error instanceof DomainError && error.code === 'COMMENT_BASELINE_MISSING'
+      ? '资料页未提供可核验的目标评论区，暂不能确定留言权限'
+      : error instanceof DomainError && error.code === 'COMMENT_BASELINE_INCOMPLETE'
+        ? '目标评论区内容不完整或结构无法可靠解析' : '暂时无法可靠读取目标评论区'
+  }
+  return new CommentPreflightError(`${description}；尚未提交留言，当前好友保留待发`, interruption)
+}
+
 function isNotLoggedOnResponse(value: string): boolean {
   try {
     const parsed = JSON.parse(value) as unknown
@@ -786,6 +845,7 @@ function forbiddenResponseShape(text: string): Pick<CommunityDiagnosticEvent, 'r
 function commentDenialDetail(text: string): {
   message: string | null
   diagnostic: Pick<CommunityDiagnosticEvent, 'commentDenialReason' | 'errorPresent'>
+  permissionDenied?: boolean
 } {
   try {
     const body: unknown = JSON.parse(text)
@@ -794,8 +854,10 @@ function commentDenialDetail(text: string): {
     }
     const errorPresent = body.error.trim().length > 0
     const normalized = normalizeCommentError(body.error)
+    const message = normalized === null ? null : safeCommentErrorMessage(normalized)
     return {
-      message: normalized === null ? null : safeCommentErrorMessage(normalized),
+      message,
+      permissionDenied: normalized !== null && message !== null && explicitCommentTargetDenial(normalized) !== null,
       diagnostic: { errorPresent, commentDenialReason: normalized === null ? 'unknown' : classifyCommentError(normalized) }
     }
   } catch { return { message: null, diagnostic: {} } }
@@ -840,6 +902,9 @@ function safeCommentErrorMessage(value: string): string | null {
 function classifyCommentError(value: string): CommentDenialReason {
   const assertion = value.replace(/^your comment was not posted because /i, '')
     .replace(/^your account does not have permission to post comments\b/i, 'account restriction')
+    .replace(/^(?:your|this) account is not (?:allowed|permitted) to (?:post|leave|add) comments?\b/i, 'account restriction')
+    .replace(/^you are not (?:allowed|permitted) to (?:post|leave|add) comments? on (?:this|the) profile\b/i, 'account restriction')
+    .replace(/^the settings on this account do not allow you to (?:post|leave|add) comments?\b/i, 'account restriction')
   if (/\b(?:example|sample|quotation|quoted|says?|means?)\b|示例|引用|并非|并未|没有|不是|不需要|无需|未(?:被|遭|受)|\b(?:is|are|was|were|has|have|does|do) not\b|\bnot (?:invalid|missing|expired|restricted|limited|banned|blocked|disabled|posting)\b/i.test(assertion)) return 'unknown'
   if (/^(?:(?:invalid|missing|expired|incorrect) (?:csrf )?session\s*id\b|(?:the )?(?:csrf )?session\s*id (?:is|was) (?:invalid|missing|expired|incorrect)\b)/i.test(value)
     || /^(?:(?:您的|你的|当前)?(?:会话标识|会话\s*id|sessionid)(?:无效|已过期|缺失|不匹配))/i.test(value)) return 'csrf-sessionid'
@@ -851,11 +916,25 @@ function classifyCommentError(value: string): CommentDenialReason {
     || /^(?:只有|仅允许|仅限)(?:(?:该|此)用户的)?好友(?:才能|可以|可)?(?:留言|评论|发表|发布)/.test(value)) return 'friends-only'
   if (/^(?:you (?:have been|are) blocked by (?:this user|the (?:profile )?owner)\b|this user has blocked you\b)/i.test(value)
     || /^(?:(?:该|此)用户(?:已)?(?:将您|将你|把您|把你)(?:加入黑名单|屏蔽|拉黑)|(?:您|你)(?:已)?被(?:该|此)用户(?:屏蔽|拉黑))/.test(value)) return 'target-blocked'
-  if (/^(?:your account (?:is|has been) (?:restricted|limited|banned|suspended) from (?:posting|commenting)\b|you (?:are|have been) (?:banned|restricted) from (?:posting|commenting)\b|your account does not have permission to post comments\b)/i.test(value)
-    || /^(?:您的|你的)账号(?:已被|被|已)?(?:限制|禁止|封禁)[^。！？]*(?:留言|评论|发帖)/.test(value)) return 'account-restricted'
+  if (/^(?:your account (?:is|has been) (?:restricted|limited|banned|suspended) from (?:posting|commenting)\b|you (?:are|have been) (?:banned|restricted) from (?:posting|commenting)\b|your account does not have permission to post comments\b|(?:your|this) account is not (?:allowed|permitted) to (?:post|leave|add) comments?\b|you are not (?:allowed|permitted) to (?:post|leave|add) comments? on (?:this|the) profile\b|the settings on this account do not allow you to (?:post|leave|add) comments?\b)/i.test(value)
+    || /^(?:您的|你的)账号(?:已被|被|已)?(?:限制|禁止|封禁)[^。！？]*(?:留言|评论|发帖)/.test(value)
+    || /^(?:该|此|这个)(?:账户|帐户|账号|个人资料)(?:的设置)?不允许(?:您|你|当前账号)?(?:进行|发表|发布|添加)?(?:留言|评论)/.test(value)) return 'account-restricted'
   if (/^(?:(?:please )?(?:complete|solve) (?:the |a )?(?:captcha|human verification)\b|(?:please )?verify (?:that )?you are (?:a )?human\b)/i.test(value)
     || /^(?:请|需要先|请先)(?:完成|通过|进行)(?:人机验证|验证码验证)/.test(value)) return 'challenge'
   return 'unknown'
+}
+
+function explicitCommentTargetDenial(value: string): { reason: CommentDenialReason; message: string } | null {
+  if (/\b(?:posting too frequently|too many requests|rate[ -]?limit(?:ed)?|csrf|session|sessionid|authentication|not logged (?:in|on)|logged out|captcha)\b|频率|限流|频繁|会话|登录|人机验证/i.test(value)) return null
+  const reason = classifyCommentError(value)
+  const messages: Partial<Record<CommentDenialReason, string>> = {
+    'target-comments-disabled': 'Steam 明确提示该资料页已关闭留言',
+    'friends-only': 'Steam 明确提示该资料页仅允许好友留言，当前请求被拒绝',
+    'target-blocked': 'Steam 明确提示该好友已屏蔽当前账号',
+    'account-restricted': 'Steam 明确提示当前账号没有此资料页留言权限'
+  }
+  const message = messages[reason]
+  return message ? { reason, message } : null
 }
 
 function avatarUrlFromValue(value: unknown): string {

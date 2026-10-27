@@ -8,6 +8,91 @@ const candidates = process.argv.includes('--candidates')
 const unknownArguments = process.argv.slice(2).filter((value) => value !== '--candidates')
 const issues = []
 const maxFileBytes = 2 * 1024 * 1024
+const reviewedImageAssets = new Set(['build/icon.png', 'build/icon.ico', 'src/renderer/src/assets/app-logo.png'])
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+const iconSizes = new Set([16, 24, 32, 48, 64, 128, 256])
+const crcTable = Array.from({ length: 256 }, (_, value) => {
+  for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ value >>> 1 : value >>> 1
+  return value >>> 0
+})
+
+function pngDimensions(bytes) {
+  if (bytes.length < 57 || !bytes.subarray(0, 8).equals(pngSignature)) throw new Error('invalid PNG signature')
+  let dimensions
+  let hasPixels = false
+  let ended = false
+  const ancillaryLengths = { sRGB: [1], gAMA: [4], cHRM: [32], pHYs: [9], bKGD: [6], sBIT: [3, 4], tRNS: [6] }
+  for (let offset = 8; offset < bytes.length;) {
+    if (offset + 12 > bytes.length) throw new Error('truncated PNG chunk')
+    const length = bytes.readUInt32BE(offset)
+    const end = offset + length + 12
+    if (end > bytes.length) throw new Error('truncated PNG payload')
+    const type = bytes.toString('ascii', offset + 4, offset + 8)
+    let crc = 0xffffffff
+    for (const byte of bytes.subarray(offset + 4, end - 4)) crc = crcTable[(crc ^ byte) & 255] ^ crc >>> 8
+    if (((crc ^ 0xffffffff) >>> 0) !== bytes.readUInt32BE(end - 4)) throw new Error('invalid PNG checksum')
+    if (type === 'IHDR') {
+      if (offset !== 8 || dimensions || length !== 13) throw new Error('invalid PNG image header')
+      const data = bytes.subarray(offset + 8, end - 4)
+      const width = data.readUInt32BE(0), height = data.readUInt32BE(4)
+      if (!width || width !== height || width > 2048 || data[8] !== 8 || ![2, 6].includes(data[9]) ||
+        data[10] !== 0 || data[11] !== 0 || data[12] !== 0) throw new Error('unsupported PNG image layout')
+      dimensions = { width, height }
+    } else if (!dimensions) throw new Error('missing PNG image header')
+    else if (type === 'IDAT') hasPixels ||= length > 0
+    else if (type === 'IEND') {
+      if (length !== 0 || end !== bytes.length || !hasPixels) throw new Error('invalid PNG end marker')
+      ended = true
+    } else if (!ancillaryLengths[type]?.includes(length)) throw new Error('PNG metadata or unsupported chunk is not allowed')
+    offset = end
+  }
+  if (!dimensions || !ended) throw new Error('incomplete PNG image')
+  return dimensions
+}
+
+function auditImageAsset(file, bytes) {
+  try {
+    if (file.endsWith('.png')) {
+      if (pngDimensions(bytes).width < 256) throw new Error('logo PNG must be at least 256 pixels square')
+      return
+    }
+    if (bytes.length < 22 || bytes.readUInt16LE(0) !== 0 || bytes.readUInt16LE(2) !== 1) throw new Error('invalid ICO header')
+    const count = bytes.readUInt16LE(4)
+    if (count < 1 || count > 8 || bytes.length < 6 + count * 16) throw new Error('invalid ICO image count')
+    const ranges = []
+    const sizes = new Set()
+    for (let index = 0; index < count; index++) {
+      const entry = 6 + index * 16
+      const width = bytes[entry] || 256, height = bytes[entry + 1] || 256
+      const planes = bytes.readUInt16LE(entry + 4), depth = bytes.readUInt16LE(entry + 6)
+      const length = bytes.readUInt32LE(entry + 8), offset = bytes.readUInt32LE(entry + 12)
+      if (!iconSizes.has(width) || width !== height || sizes.has(width) || bytes[entry + 2] || bytes[entry + 3] ||
+        ![0, 1].includes(planes) || ![0, 32].includes(depth) || !length || offset < 6 + count * 16 || offset + length > bytes.length) {
+        throw new Error('invalid ICO directory entry')
+      }
+      sizes.add(width)
+      const image = bytes.subarray(offset, offset + length)
+      if (image.subarray(0, 8).equals(pngSignature)) {
+        if (pngDimensions(image).width !== width) throw new Error('ICO PNG dimensions do not match the directory')
+      } else {
+        const maskBytes = Math.ceil(width / 32) * 4 * height
+        if (image.length !== 40 + width * height * 4 + maskBytes || image.readUInt32LE(0) !== 40 ||
+          image.readInt32LE(4) !== width || image.readInt32LE(8) !== height * 2 || image.readUInt16LE(12) !== 1 ||
+          image.readUInt16LE(14) !== 32 || image.readUInt32LE(16) !== 0 || image.readUInt32LE(32) !== 0 ||
+          ![0, width * height * 4].includes(image.readUInt32LE(20))) throw new Error('unsupported ICO bitmap payload')
+      }
+      ranges.push({ offset, length })
+    }
+    let expected = 6 + count * 16
+    for (const range of ranges.sort((left, right) => left.offset - right.offset)) {
+      if (range.offset !== expected) throw new Error('ICO payload contains gaps or overlaps')
+      expected += range.length
+    }
+    if (expected !== bytes.length) throw new Error('ICO contains trailing data')
+  } catch (error) {
+    report(file, 0, `reviewed logo asset rejected: ${error instanceof Error ? error.message : 'invalid image'}`)
+  }
+}
 
 function git(args) {
   const result = spawnSync('git', args, {
@@ -54,7 +139,8 @@ function auditText(file, content) {
 
     for (const match of line.matchAll(/\b7656119\d{10}\b/g)) {
       // This range is used only by the manually generated test fixtures.
-      const fixture = file.startsWith('tests/') && /^7656119800\d{7}$/.test(match[0])
+      const fixture = (file.startsWith('tests/') || file.startsWith('integrations/asf-status-copy/tests/')) &&
+        /^7656119800\d{7}$/.test(match[0])
       if (!fixture) report(file, index + 1, 'Steam ID outside the reviewed synthetic test range')
     }
   }
@@ -103,6 +189,10 @@ function auditFile(file, mode) {
 
   if (bytes.length > maxFileBytes) {
     report(file, 0, 'source file exceeds 2 MiB review limit')
+    return
+  }
+  if (reviewedImageAssets.has(file)) {
+    auditImageAsset(file, bytes)
     return
   }
   if (bytes.includes(0)) {

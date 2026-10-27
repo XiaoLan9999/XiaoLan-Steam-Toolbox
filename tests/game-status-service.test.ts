@@ -24,7 +24,7 @@ class FakeClient extends EventEmitter implements GameStatusSteamClient {
   localizedString: string | null = 'Localized fixture state'
   onRead: (() => Promise<Record<string, string>>) | null = null
   logOn(value?: Record<string, unknown>): void { this.calls.push({ method: 'logOn', value: value ? structuredClone(value) : undefined }) }
-  logOff(): void { this.calls.push({ method: 'logOff' }); this.steamID = null }
+  logOff(): void { this.calls.push({ method: 'logOff' }); this.steamID = null; this.emit('disconnected') }
   setPersona(value: number): void { this.calls.push({ method: 'setPersona', value }) }
   gamesPlayed(value: string | number[], force?: boolean): void { this.calls.push({ method: 'gamesPlayed', value, force }) }
   uploadRichPresence(app: number, value: Record<string, string>): void { this.calls.push({ method: 'upload', app, value: structuredClone(value) }); if (this.acceptWrites) this.rp = structuredClone(value) }
@@ -53,7 +53,7 @@ function fixture(draftPath?: string, getToolboxLogin?: GameStatusServiceOptions[
   const service = new GameStatusService({ getActiveAccount: () => selected, getToolboxLogin, onChange: state => states.push(state), draftPath, createClient: value => { options.push(value); const client = new FakeClient(); clients.push(client); return client } })
   services.push(service)
   const action = (): GameStatusAction => ({ accountId: selected!.id, sessionId: service.snapshot().sessionId })
-  function login(live = false): FakeClient { service.connect({ ...action(), accountName: 'fake-user', password: PASSWORD }); const client = clients.at(-1)!; client.login(selected!.steamId); if (live) client.external(); return client }
+  function login(live = false): FakeClient { service.connect({ ...action(), accountName: 'fake-user', password: PASSWORD }); const client = clients.at(-1)!; client.login(selected!.steamId); client.external(live, live ? 730 : 0); return client }
   return { service, action, login, clients, options, states, select(value: typeof selected) { selected = value } }
 }
 const mutations = (client: FakeClient) => client.calls.filter(call => ['gamesPlayed', 'setPersona', 'upload'].includes(call.method))
@@ -104,16 +104,15 @@ describe('existing toolbox login yields a fresh server-only web logon nonce', ()
     await Promise.resolve(); f.select(B); f.service.invalidate(); await rejected; available.resolve(credentials()); await Promise.resolve()
     expect(f.clients).toHaveLength(0); expect(f.service.state().accountId).toBeNull()
   })
-  it('repeated current-session reconnect keeps only the latest nonce and rejects duplicate old-session requests', async () => {
-    const first = deferred<ReturnType<typeof credentials>>(); const second = deferred<ReturnType<typeof credentials>>()
-    const getter = vi.fn().mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise)
+  it('repeated current-session preparation is busy without replacing its nonce request', async () => {
+    const first = deferred<ReturnType<typeof credentials>>()
+    const getter = vi.fn().mockImplementationOnce(() => first.promise)
     const f = fixture(undefined, getter); const original = f.action(); const old = f.service.connectWithToolbox(original)
-    const rejected = expect(old).rejects.toThrow('已经变化'); await Promise.resolve()
-    await expect(f.service.connectWithToolbox(original)).rejects.toThrow('会话已经变化'); expect(getter).toHaveBeenCalledTimes(1)
-    const fresh = f.service.connectWithToolbox(f.action()); await rejected; await Promise.resolve()
-    first.resolve(credentials()); second.resolve({ ...credentials(), webLogonToken: 'FAKE-fresh-nonce' }); await fresh
-    expect(f.clients).toHaveLength(1); expect(f.clients[0]!.calls[0]!.value).toEqual({ accountName: 'toolbox-account', steamID: A.steamId, webLogonToken: 'FAKE-fresh-nonce' })
-    expect(getter).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(getter).toHaveBeenCalledTimes(1))
+    await expect(f.service.connectWithToolbox(original)).rejects.toThrow('会话已经变化')
+    await expect(f.service.connectWithToolbox(f.action())).rejects.toMatchObject({ code: 'GAME_STATUS_BUSY' })
+    first.resolve(credentials()); await old
+    expect(f.clients).toHaveLength(1); expect(getter).toHaveBeenCalledTimes(1)
   })
   it('validates account/session before asking the toolbox for any login capability', async () => {
     const getter = vi.fn(async () => credentials()); const f = fixture(undefined, getter); const initial = f.service.state()
@@ -212,13 +211,13 @@ describe('game status CM login is isolated and bound to the selected toolbox acc
 })
 
 describe('simulation remains explicit and never takes over an occupied account', () => {
-  it('merges custom text into a single non-Steam game name and uses force=false', () => {
-    const f = fixture(); const client = f.login(); const result = f.service.play({ ...f.action(), displayKind: 'custom', gameName: '雀魂', details: '正在打牌' })
+  it('merges custom text into a single non-Steam game name and uses force=false', async () => {
+    const f = fixture(); const client = f.login(); const result = await f.service.play({ ...f.action(), displayKind: 'custom', gameName: '雀魂', details: '正在打牌' })
     expect(client.calls.at(-1)).toEqual({ method: 'gamesPlayed', value: '雀魂 · 正在打牌', force: false }); expect(result.limitations.join('')).toContain('合并')
   })
   it('official simulation sends a published display template and clears own RP/game on stop', async () => {
     const f = fixture(); const client = f.login(); await f.service.inspectApp({ ...f.action(), appId: 730 })
-    const state = f.service.play({ ...f.action(), displayKind: 'app', gameName: 'Example', details: 'Fake map', appId: 730, presence: { displayToken: '#Fixture', values: { status: 'Fake map' } } })
+    const state = await f.service.play({ ...f.action(), displayKind: 'app', gameName: 'Example', details: 'Fake map', appId: 730, presence: { displayToken: '#Fixture', values: { status: 'Fake map' } } })
     expect(client.calls.at(-1)).toEqual({ method: 'upload', app: 730, value: { steam_display: '#Fixture', status: 'Fake map' } }); expect(state.playing!.displayName).toBe('Fixture game 730'); expect(state.playing!.preview).toBe('Fake map'); f.service.stop(f.action())
     expect(client.calls.slice(-2)).toEqual([{ method: 'upload', app: 730, value: {} }, { method: 'gamesPlayed', value: [], force: false }])
   })
@@ -400,7 +399,7 @@ describe('published game metadata and localized display', () => {
   })
   it('catalog-only names/icons are not mistaken for a confirmed remote display', async () => {
     const f = fixture(); const client = f.login(); await f.service.inspectApp({ ...f.action(), appId: 730 })
-    const result = f.service.play({ ...f.action(), displayKind: 'app', appId: 730, gameName: 'Wrong local label', details: '' })
+    const result = await f.service.play({ ...f.action(), displayKind: 'app', appId: 730, gameName: 'Wrong local label', details: '' })
     expect(result.playing!.game!.name).toBe('Fixture game 730'); expect(result.playing!.game!.iconUrl).toMatch(/^https:/)
     expect(result.playing!.delivery).toBe('submitted'); expect(result.playing!.preview).toBeNull(); expect(client.calls.filter(call => call.method === 'upload')).toEqual([])
   })
@@ -418,6 +417,19 @@ describe('published game metadata and localized display', () => {
     client.localizedString = null; expect((await f.service.observeLive(f.action())).live!.localizedString).toBeNull()
     client.localizedString = 'bad\ncontrol'; expect((await f.service.observeLive(f.action())).live!.localizedString).toBeNull()
     client.localizedString = `Status contains ${SECRET}`; expect((await f.service.observeLive(f.action())).live!.localizedString).toBeNull()
+  })
+  it('confirms localized text using only the selected branch while preserving other game-owned fields', async () => {
+    const f = fixture(); const client = f.login(true)
+    vi.spyOn(client, 'getAppRichPresenceLocalization').mockResolvedValue({ tokens: { '#Display': '{#Mode_%mode%}', '#Mode_Menu': 'At menu', '#Mode_Match': 'Playing %map%' } })
+    client.rp = { steam_display: '#Display', mode: 'Menu', map: 'Retained match map', connect: SECRET }
+    client.localizedString = 'At menu'
+    const state = await f.service.observeLive(f.action())
+    expect(state.live?.localizedString).toBe('At menu')
+    expect(state.live?.fields).toMatchObject({ mode: 'Menu', map: 'Retained match map' })
+    expect(client.rp.map).toBe('Retained match map'); expect(mutations(client)).toEqual([])
+    const pending = f.service.setLiveDisplay({ ...f.action(), snapshotId: state.live!.snapshotId, lock: false, presence: { displayToken: '#Display', values: { mode: 'Menu', map: 'Still not authorized for Menu' } } })
+    await expect(pending).rejects.toThrow()
+    expect(mutations(client)).toEqual([])
   })
   it('rejects an oversized full-map merge without dropping unknown or joining fields', async () => {
     const f = fixture(); const client = f.login(true)

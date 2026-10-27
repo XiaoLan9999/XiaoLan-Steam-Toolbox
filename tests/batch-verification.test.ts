@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BatchQueue } from '../src/main/batch-queue'
+import { BatchVerificationController } from '../src/main/batch-verification'
 import { SqliteStore, type SecretCipher } from '../src/main/store'
 import type { SteamService } from '../src/main/steam-service'
 import type { CommentAttemptEvidence, CommentVerificationResult } from '../src/main/comment-reconciliation'
@@ -34,6 +35,99 @@ afterEach(async () => {
 })
 
 describe('read-only delivery verification and pending continuation', () => {
+  it.each([
+    ['network', new TypeError('fetch failed')],
+    ['server', new Error('Steam HTTP error 503')],
+    ['resolver', new Error('Opaque transport failure', { cause: Object.assign(new Error('Resolver failure'), { code: 'EAI_AGAIN' }) })]
+  ])('skips an automatic read-only %s failure even when unconfirmed results normally pause', async (_label, error) => {
+    const f = fixture()
+    const batchId = seedUncertain(f, true)
+    f.queue.setFailurePolicy(batchId, { definiteFailure: 'pause', uncertainResult: 'verify_then_pause' })
+    f.verify.mockRejectedValueOnce(error)
+    f.queue.verify(batchId)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(f.verify).toHaveBeenCalledOnce()
+    expect(f.post).toHaveBeenCalledOnce()
+    const unresolved = f.store.getBatch(batchId)!.deliveries.find(delivery => delivery.status === 'uncertain')!
+    expect(f.post.mock.calls.some(call => call[1] === unresolved.friendSteamId)).toBe(false)
+    expect(f.store.getBatchSummary(batchId)).toMatchObject({ status: 'completed', uncertain: 1, sentVerified: 1,
+      pending: 0, verification: { state: 'unresolved', attempt: 1, nextCheckAt: null,
+        message: expect.stringContaining('网络或服务请求失败') } })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(f.verify).toHaveBeenCalledOnce()
+    expect(f.post).toHaveBeenCalledOnce()
+  })
+
+  it('records a POST request failure skip without performing another GET or POST', () => {
+    const f = fixture()
+    const batchId = seedUncertain(f, true)
+    const delivery = f.store.getNextUncertainDelivery(batchId)!
+    const wait = vi.fn(async () => undefined)
+    const controller = new BatchVerificationController(f.store, f.steam as unknown as SteamService, () => undefined, wait)
+    expect(controller.skipAfterRequestFailure(delivery, () => true)).toBe(true)
+    expect(f.store.getBatchSummary(batchId)).toMatchObject({ uncertain: 1, pending: 1,
+      verification: { state: 'unresolved', attempt: 0, maxAttempts: 3, nextCheckAt: null,
+        message: '网络或服务请求失败，本条保留待核对并跳过；不会重复发送，将继续其余待发' } })
+    expect(f.verify).not.toHaveBeenCalled()
+    expect(f.post).not.toHaveBeenCalled()
+    expect(wait).not.toHaveBeenCalled()
+    expect(f.store.getDeliveryCommentEvidence(delivery.id)).toEqual(evidence())
+  })
+
+  it('does not record a stale request skip after its intent was revoked', () => {
+    const f = fixture()
+    const batchId = seedUncertain(f, true)
+    const delivery = f.store.getNextUncertainDelivery(batchId)!
+    const record = vi.spyOn(f.store, 'recordDeliveryVerification')
+    const controller = new BatchVerificationController(f.store, f.steam as unknown as SteamService, () => undefined, async () => undefined)
+    expect(controller.skipAfterRequestFailure(delivery, () => false)).toBe(false)
+    expect(record).not.toHaveBeenCalled()
+    expect(f.verify).not.toHaveBeenCalled()
+    expect(f.post).not.toHaveBeenCalled()
+  })
+
+  it('ignores a late network failure after read-only verification was cancelled', async () => {
+    const f = fixture()
+    const batchId = seedUncertain(f, true)
+    const delivery = f.store.getNextUncertainDelivery(batchId)!
+    let reject!: (error: Error) => void
+    f.verify.mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail }))
+    let current = true
+    const record = vi.spyOn(f.store, 'recordDeliveryVerification')
+    const controller = new BatchVerificationController(f.store, f.steam as unknown as SteamService, () => undefined, async () => undefined)
+    const pending = controller.verifyDelivery(delivery, () => current)
+    expect(record).toHaveBeenCalledOnce()
+    current = false
+    reject(new TypeError('fetch failed'))
+    expect(await pending).toBe(false)
+    expect(record).toHaveBeenCalledOnce()
+    expect(f.post).not.toHaveBeenCalled()
+  })
+
+  it('does not swallow a network-shaped local confirmation failure as a failed GET', async () => {
+    const f = fixture()
+    const batchId = seedUncertain(f, true)
+    const delivery = f.store.getNextUncertainDelivery(batchId)!
+    vi.spyOn(f.store, 'confirmUncertainDelivery').mockImplementation(() => { throw new Error('Synthetic network storage failure') })
+    const controller = new BatchVerificationController(f.store, f.steam as unknown as SteamService, () => undefined, async () => undefined)
+    await expect(controller.verifyDelivery(delivery, () => true)).rejects.toThrow('Synthetic network storage failure')
+    expect(f.store.getBatchSummary(batchId)?.verification?.message).not.toContain('网络或服务请求失败')
+    expect(f.post).not.toHaveBeenCalled()
+  })
+
+  it('skips a completed task read failure without starting pending work or another POST', async () => {
+    const f = fixture(1)
+    const batchId = seedUncertain(f, true)
+    f.store.finishBatchIfDone(batchId)
+    f.verify.mockRejectedValueOnce(new Error('Steam HTTP error 503'))
+    f.queue.verify(batchId)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.store.getBatchSummary(batchId)).toMatchObject({ status: 'completed', uncertain: 1, pending: 0,
+      verification: { state: 'unresolved', attempt: 1 } })
+    expect(f.verify).toHaveBeenCalledOnce()
+    expect(f.post).not.toHaveBeenCalled()
+  })
+
   it('saves attempt evidence, confirms a refused POST by GET, and sends only the next recipient', async () => {
     const f = fixture()
     f.post.mockImplementationOnce(async (_account, _friend, _message, _canSubmit, onEvidence) => {

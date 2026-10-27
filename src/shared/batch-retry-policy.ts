@@ -10,6 +10,29 @@ export const LEGACY_COMMENT_POST_REVIEW_MESSAGE = '旧版 HTTP 403 可能已经�
 
 const standardDelays = [60_000, 120_000, 300_000, 600_000, 900_000]
 const sessionDelays = [30_000, 60_000, 120_000, 300_000, 600_000]
+const networkErrorCodes = new Set([
+  'ECONNRESET', 'ECONNABORTED', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
+  'ENETDOWN', 'ENETRESET', 'ENETUNREACH', 'EHOSTDOWN', 'EHOSTUNREACH', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+  'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_TLS_HANDSHAKE_TIMEOUT', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+])
+
+export function isNetworkRequestError(error: unknown): boolean {
+  const visited = new Set<Error>()
+  let current = error
+  for (let depth = 0; depth < 3 && current instanceof Error && !visited.has(current); depth++) {
+    visited.add(current)
+    try {
+      const code = 'code' in current && typeof current.code === 'string' ? current.code : ''
+      if (networkErrorCodes.has(code) ||
+        /^ERR_SSL_[A-Z_]+$/.test(code) ||
+        /timeout|timed out|socket|econn|network|hang up|connection|fetch failed|abort|网络|连接|^getaddrinfo (?:ENOTFOUND|EAI_AGAIN)\b/i.test(current.message)) return true
+      current = current.cause
+    } catch { return false }
+  }
+  return false
+}
 
 export interface BatchInterruption {
   code: BatchStopCode
@@ -38,7 +61,7 @@ export function batchInterruption(error: unknown): BatchInterruption {
   if (/http error 5\d\d|service unavailable|busy/.test(message)) {
     return { code: 'SERVER_ERROR', canRetry: true, rejectedBeforeAcceptance: false }
   }
-  if (/timeout|timed out|socket|econn|network|hang up|connection|fetch failed|abort|网络|连接/.test(message)) {
+  if (isNetworkRequestError(error)) {
     return { code: 'NETWORK_ERROR', canRetry: true, rejectedBeforeAcceptance: false }
   }
   if (/invalid json|malformed comment response|response interrupted|response exceeded the size limit/.test(message)) {

@@ -54,6 +54,19 @@ function snapshot(task: BatchSummary | null): AppSnapshot {
 }
 
 describe('persistent batch stop reasons and recovery UI', () => {
+  it.each(['zh-CN', 'en'] as const)('shows a pre-send baseline failure without claiming a session problem in %s', language => {
+    const html = render(batch({ stopCode: 'COMMENT_BASELINE', stopMessage: 'Fixture recipient (SteamID: 76561198000000101): no POST',
+      autoRetryEnabled: false, accessDeniedCount: 6 }), language)
+    const visible = visibleRecovery(html)
+    expect(visible).toContain(language === 'en' ? 'Comment baseline could not be read; not sent' : '评论基线读取失败，尚未发送')
+    expect(visible).toContain(language === 'en' ? 'Read-only pre-send check' : '发送前只读检查')
+    expect(visible).toContain('Fixture recipient (SteamID: 76561198000000101): no POST')
+    expect(visible).not.toContain(language === 'en' ? 'Steam session is not ready' : 'Steam 会话尚未准备完成')
+    expect(visible).not.toContain(language === 'en' ? 'Steam repeatedly denied access' : 'Steam 持续拒绝访问')
+    expect(visible).toContain(language === 'en' ? 'Automatic retries are off' : '自动重试已关闭')
+    expect(visible).not.toContain(language === 'en' ? 'Automatic resume in' : '距离自动继续')
+  })
+
   it.each(['zh-CN', 'en'] as const)
   ('prioritizes unresolved POST safety over stale 403 counters and deadlines in %s', language => {
     const html = render(batch({ autoRetryEnabled: true, stopCode: 'UNCERTAIN_RESULT', uncertain: 1,

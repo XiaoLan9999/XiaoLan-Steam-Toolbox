@@ -3,6 +3,18 @@ import { localizeMessage } from '../src/shared/localization'
 
 describe('localizeMessage', () => {
   it.each([
+    '资料页未提供可核验的目标评论区，暂不能确定留言权限',
+    '目标评论区内容不完整或结构无法可靠解析'
+  ])('translates a skipped unsent baseline without falsely promising a pending retry: %s', reason => {
+    const message = `已跳过（未发送）：${reason}`
+    const translated = localizeMessage(message, 'en')
+    expect(translated).toContain('Skipped (not sent):')
+    expect(translated).not.toMatch(/\p{Script=Han}/u)
+    expect(translated).not.toContain('stays pending')
+    expect(localizeMessage(message, 'zh-CN')).toBe(message)
+  })
+
+  it.each([
     '用户手动暂停任务', '用户取消任务', '任务暂停原因或重试计划无效',
     '账号或会话已变更，本次留言恢复核验已取消',
     'HTTP 403 冷却尚未结束，未提交新留言；当前对象和剩余好友保留待发',
@@ -29,6 +41,10 @@ describe('localizeMessage', () => {
 
   it.each([
     '自动登录令牌无效', 'Steam 账号或会话已变更', 'Steam 服务已关闭',
+    'Steam 登录连接暂时中断，已保留登录信息，正在自动重连；无需重新扫码',
+    'Steam 登录服务暂时拒绝或限流，已保留登录信息；等待后会自动重连',
+    'Steam 登录服务要求的等待时间超出可自动处理范围，已停止本次重连；登录信息仍保留',
+    '已切换为手动登录，自动重连已停止；保存的登录信息未删除',
     '自动登录令牌已失效，请重新登录', 'Steam 自动登录暂时失败，将稍后重试；无需反复扫码',
     'Steam 网页会话已失效，正在自动恢复；任务保持暂停',
     'Steam 会话已自动恢复；请手动继续暂停的任务',

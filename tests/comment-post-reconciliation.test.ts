@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SteamCommunityClient } from '../src/main/community-client'
+import { CommentPermissionDeniedError } from '../src/shared/comment-permission'
 
 const account = '76561198000000001'
 const friend = '76561198000000002'
@@ -35,6 +36,25 @@ function setup(after = page(old + comment('1002')), response = () => json({ succ
 }
 
 describe('profile comment POST outcome reconciliation', () => {
+  it('lets independent delivery confirmation override an explicit 403 permission refusal', async () => {
+    const { client, fetch, expired } = setup(undefined, () => json({ success: 2,
+      error: 'The settings on this account do not allow you to add comments.' }))
+    await expect(client.postProfileComment(friend, message)).resolves.toEqual({ commentId: '1002' })
+    expect(fetch.mock.calls.map(([, init]) => init.method ?? 'GET')).toEqual(['GET', 'POST', 'GET'])
+    expect(fetch.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1)
+    expect(expired).not.toHaveBeenCalled()
+  })
+
+  it('retains permission evidence if a 403 read-back cannot confirm delivery without replaying', async () => {
+    const { client, fetch } = setup(page(old), () => json({ success: 2,
+      error: 'The settings on this account do not allow you to add comments.' }))
+    const error = await client.postProfileComment(friend, message).catch(error => error)
+    expect(error).toBeInstanceOf(CommentPermissionDeniedError)
+    expect(error).toMatchObject({ code: 'COMMENT_POST_UNCERTAIN', retryable: false, commentPermissionDenied: true })
+    expect(fetch.mock.calls.map(([, init]) => init.method ?? 'GET')).toEqual(['GET', 'POST', 'GET'])
+    expect(fetch.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1)
+  })
+
   it('confirms a new matching comment despite HTTP 403/success:2, using server rather than local time', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(serverNow + 7000)
@@ -77,7 +97,8 @@ describe('profile comment POST outcome reconciliation', () => {
     const fetch = vi.fn(async (_url: URL, _init: RequestInit) => new Response('<script>g_steamID="' + account + '";</script>'))
     vi.stubGlobal('fetch', fetch)
     const client = new SteamCommunityClient(account, cookies, vi.fn())
-    await expect(client.postProfileComment(friend, message)).rejects.toMatchObject({ code: 'SESSION_PREPARATION_FAILED', retryable: true })
+    await expect(client.postProfileComment(friend, message)).rejects.toMatchObject({ code: 'COMMENT_PREFLIGHT_FAILED', retryable: true,
+      interruption: { code: 'COMMENT_BASELINE', rejectedBeforeAcceptance: true } })
     expect(fetch).toHaveBeenCalledOnce()
     expect(fetch.mock.calls.every(([, init]) => !init || init.method !== 'POST')).toBe(true)
   })

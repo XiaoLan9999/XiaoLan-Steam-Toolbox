@@ -8,6 +8,7 @@ import { SqliteStore, type SecretCipher } from '../src/main/store'
 import type { SteamService } from '../src/main/steam-service'
 import type { CommentVerificationResult } from '../src/main/comment-reconciliation'
 import { DomainError } from '../src/shared/domain'
+import { CommentPermissionDeniedError } from '../src/shared/comment-permission'
 import { DEFAULT_BATCH_FAILURE_POLICY, type BatchFailurePolicy } from '../src/shared/batch-failure-policy'
 
 const A = '76561198000000001'
@@ -145,6 +146,41 @@ describe('durable batch failure policy snapshots', () => {
 })
 
 describe('explicit friend failure behavior', () => {
+  it.each(['skip', 'verify_then_skip', 'verify_then_pause'] as const)
+  ('keeps a permission-denied POST uncertain, categorizes the friend, and skips it under %s', async uncertainResult => {
+    const f = fixture()
+    f.post.mockRejectedValueOnce(new CommentPermissionDeniedError('COMMENT_POST_UNCERTAIN', 'Synthetic explicit permission refusal'))
+    const batch = f.queue.start({ ...f.input, failurePolicy: policy(uncertainResult, 'pause') })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(f.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed', uncertain: 1,
+      failedCount: 0, sentVerified: 1, pending: 0, nextRetryAt: null, accessDeniedCount: 0,
+      verification: { state: 'unresolved', attempt: 0 } })
+    const unavailable = f.post.mock.calls[0]![1]
+    expect(f.store.getBatch(batch.id)!.deliveries.find(item => item.friendSteamId === unavailable))
+      .toMatchObject({ status: 'uncertain', remoteCommentId: null })
+    expect(f.store.getFriendPolicies(A).find(item => item.steamId === unavailable)?.commentStatus).toBe('blocked')
+    expect(f.store.getBatchSummary(batch.id)?.verification?.message).toContain('Steam 明确提示无法留言')
+    expect(f.store.getBatchSummary(batch.id)?.verification?.message).not.toContain('网络或服务请求失败')
+    expect(f.post.mock.calls.filter(call => call[1] === unavailable)).toHaveLength(1)
+    expect(f.verify).not.toHaveBeenCalled()
+  })
+
+  it.each(['skip', 'pause'] as const)('always skips a proven unavailable target with the selected %s policy without retrying it', async definiteFailure => {
+    const f = fixture()
+    f.post.mockRejectedValueOnce(new DomainError('COMMENT_TARGET_UNAVAILABLE', 'Target profile is private; no comment submitted'))
+    const batch = f.queue.start({ ...f.input, failurePolicy: policy('verify_then_skip', definiteFailure) })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(f.store.getBatchSummary(batch.id)).toMatchObject({ status: 'completed',
+      failedCount: 1, uncertain: 0, pending: 0, sentVerified: 1, nextRetryAt: null, accessDeniedCount: 0 })
+    const unavailable = f.post.mock.calls[0]![1]
+    expect(f.store.getBatch(batch.id)!.deliveries.find(delivery => delivery.friendSteamId === unavailable))
+      .toMatchObject({ status: 'failed', error: 'Target profile is private; no comment submitted' })
+    expect(f.store.getFriendPolicies(A).find(item => item.steamId === unavailable)?.commentStatus).toBe('blocked')
+    expect(f.post).toHaveBeenCalledTimes(2)
+    expect(f.post.mock.calls.filter(call => call[1] === unavailable)).toHaveLength(1)
+    expect(f.verify).not.toHaveBeenCalled()
+  })
+
   it('defaults to recording a definite rejection and continuing without retrying that recipient', async () => {
     const f = fixture(); f.post.mockRejectedValueOnce(new Error('Comments disabled for this profile'))
     const batch = f.queue.start(f.input); await vi.advanceTimersByTimeAsync(100)

@@ -8,6 +8,8 @@ import {
   LoginSession
 } from 'steam-session'
 import { DomainError } from '../shared/domain'
+import { batchInterruption } from '../shared/batch-retry-policy'
+import { CommentPreflightError } from '../shared/comment-preflight'
 import {
   AccountRecord,
   AccountView,
@@ -39,6 +41,7 @@ interface RuntimeSession {
 export interface SteamServiceOptions {
   keepAliveMs?: number
   retryDelaysMs?: readonly number[]
+  loginAttemptTimeoutMs?: number
   now?: () => number
   onDiagnostic?: (event: CommunityDiagnosticEvent | {
     phase: 'restore' | 'refresh' | 'recover'
@@ -49,11 +52,17 @@ export interface SteamServiceOptions {
 
 const KEEP_ALIVE_MS = 10 * 60 * 1000
 const RETRY_DELAYS_MS = [60_000, 120_000, 300_000]
+const NETWORK_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000]
 const LOGIN_REQUEST_TIMEOUT_MS = 30_000
+const LOGIN_ATTEMPT_TIMEOUT_MS = 60_000
+const MAX_RETRY_AFTER_MS = 7 * 24 * 60 * 60 * 1000
+const LONG_LOGIN_WAIT_MESSAGE = 'Steam 登录服务要求的等待时间超出可自动处理范围，已停止本次重连；登录信息仍保留'
 
 interface SessionStatus {
   state: SessionState
   message: string | null
+  retryAt?: string | null
+  retryAttempt?: number
 }
 
 interface ProfileSummary {
@@ -79,6 +88,10 @@ export class SteamService {
   private keepAliveTimer: ReturnType<typeof setTimeout> | null = null
   private readonly loginAgents = new Map<LoginSession, Agent>()
   private readonly restorationFailures = new Map<string, number>()
+  private restoration: { accountId: string; generation: number; promise: Promise<void> } | null = null
+  private readonly startupAttempts = new Map<LoginSession, () => void>()
+  private readonly restorationCooldowns = new Map<string, number>()
+  private readonly restorationBlocks = new Set<string>()
   private readonly friendSyncs = new Map<
     string,
     { community: SteamCommunityClient; promise: Promise<number> }
@@ -98,12 +111,12 @@ export class SteamService {
     this.clearKeepAliveTimer()
     this.runtime = null
     for (const loginId of [...this.pendingLogins.keys()]) this.cancelLogin(loginId)
-    for (const [session, agent] of this.loginAgents) {
-      session.cancelLoginAttempt?.()
-      agent.destroy()
-    }
+    for (const session of [...this.loginAgents.keys()]) this.releaseLoginSession(session)
     this.loginAgents.clear()
     this.restorationFailures.clear()
+    this.restorationCooldowns.clear()
+    this.restorationBlocks.clear()
+    this.restoration = null
     this.statusChecks.clear()
   }
 
@@ -116,6 +129,9 @@ export class SteamService {
       }
       const check = this.statusChecks.get(account.id)
       return { ...account, sessionState: status.state, sessionMessage: status.message,
+        ...(status.retryAt ? { sessionRetryAt: status.retryAt, sessionRetryAttempt: status.retryAttempt ?? 0 } : {}),
+        ...(this.restorationBlocks.has(account.id) || (this.restorationCooldowns.get(account.id) ?? 0) > this.now()
+          ? { sessionRetryBlocked: true } : {}),
         ...(check?.generation === this.generation ? { statusCheckState: check.state,
           statusCheckedAt: check.checkedAt, statusCheckMessage: check.message } : {}) }
     })
@@ -135,7 +151,9 @@ export class SteamService {
     entry.promise = (async () => {
       try {
         if (!this.runtime) {
-          if (this.pendingLogins.size || this.statuses.get(accountId)?.state === 'restoring') {
+          const status = this.statuses.get(accountId)
+          const waitingRetry = Boolean(status?.retryAt && Number.isFinite(Date.parse(status.retryAt)))
+          if (this.pendingLogins.size || (status?.state === 'restoring' && !waitingRetry)) {
             throw new DomainError('STATUS_CHECK_BUSY', '账号正在登录或恢复，请稍后检查')
           }
           await this.activateAccount(accountId, false)
@@ -182,6 +200,10 @@ export class SteamService {
       if (this.runtime.recovering) await this.refreshWebSession(this.runtime)
       return
     }
+    if (this.restoration?.accountId === accountId &&
+      this.isCurrentTransition(this.restoration.generation, accountId)) return this.restoration.promise
+    if (this.store.getActiveAccountId() === accountId && this.statuses.get(accountId)?.retryAt &&
+      (this.restorationCooldowns.get(accountId) ?? 0) > this.now() && this.keepAliveTimer) return
 
     const generation = this.beginSessionTransition()
     for (const knownAccount of this.store.getAccounts()) {
@@ -189,6 +211,25 @@ export class SteamService {
     }
     if (persistSelection) this.store.setActiveAccountId(accountId)
     this.setStatus(accountId, 'restoring', '正在恢复 Steam 会话')
+
+    const operation = this.restoreAccount(account, generation)
+    this.restoration = { accountId, generation, promise: operation }
+    try { await operation }
+    finally { if (this.restoration?.promise === operation) this.restoration = null }
+  }
+
+  private async restoreAccount(account: AccountRecord, generation: number): Promise<void> {
+    const accountId = account.id
+    if (this.restorationBlocks.has(accountId)) {
+      this.setStatus(accountId, 'error', LONG_LOGIN_WAIT_MESSAGE)
+      return
+    }
+    const cooldown = this.restorationCooldowns.get(accountId) ?? 0
+    if (cooldown > this.now()) {
+      this.scheduleRestorationRetry(accountId, generation, cooldown - this.now(),
+        this.restorationFailures.get(accountId) ?? 1, 'Steam 登录服务暂时拒绝或限流，已保留登录信息；等待后会自动重连')
+      return
+    }
 
     let refreshToken: string | null
     try {
@@ -202,16 +243,19 @@ export class SteamService {
       return
     }
 
-    const session = this.createLoginSession()
+    let session: LoginSession | undefined
     try {
+      session = this.createLoginSession()
       session.refreshToken = refreshToken
-      const cookies = await session.getWebCookies()
+      const cookies = await this.startupWebCookies(session)
       if (!this.isCurrentTransition(generation, accountId)) return
       const community = this.createCommunity(accountId, cookies)
       await community.verifySession()
       if (!this.isCurrentTransition(generation, accountId)) return
       this.persistChangedToken(accountId, session)
       this.restorationFailures.delete(accountId)
+      this.restorationCooldowns.delete(accountId)
+      this.restorationBlocks.delete(accountId)
       const runtime = this.makeRuntime(accountId, session, community, community.getCookies())
       this.runtime = runtime
       const profile = await this.tryGetProfile(community, accountId)
@@ -233,18 +277,32 @@ export class SteamService {
       if (isDefinitiveAuthenticationError(error)) {
         this.setStatus(accountId, 'expired', '自动登录令牌已失效，请重新登录')
         this.diagnostic('restore', 'expired', 'credentials_rejected')
+        this.emit({ type: 'notice', level: 'warning', message: '自动登录令牌已失效，请重新登录' })
       } else {
-        this.setStatus(accountId, 'error', 'Steam 自动登录暂时失败，将稍后重试；无需反复扫码')
         const failures = this.restorationFailures.get(accountId) ?? 0
         this.restorationFailures.set(accountId, failures + 1)
-        this.keepAliveTimer = setTimeout(() => {
-          this.keepAliveTimer = null
-          if (this.isCurrentTransition(generation, accountId)) void this.activateAccount(accountId, false)
-        }, this.retryDelay(failures))
-        this.keepAliveTimer.unref?.()
-        this.diagnostic('restore', 'transient', error instanceof DomainError ? safeDiagnosticReason(error.code) : 'network_or_service')
+        const reason = loginFailureReason(error)
+        let message = reason === 'network' || reason === 'timeout'
+          ? 'Steam 登录连接暂时中断，已保留登录信息，正在自动重连；无需重新扫码'
+          : isLoginEndpointRestricted(error)
+            ? 'Steam 登录服务暂时拒绝或限流，已保留登录信息；等待后会自动重连'
+            : 'Steam 自动登录暂时失败，将稍后重试；无需反复扫码'
+        const retryAfter = error instanceof DomainError ? error.retryAfterMs : undefined
+        if (retryAfter !== undefined && (!Number.isFinite(retryAfter) || retryAfter > MAX_RETRY_AFTER_MS)) {
+          message = LONG_LOGIN_WAIT_MESSAGE
+          this.restorationBlocks.add(accountId)
+          this.setStatus(accountId, 'error', message)
+        } else {
+          const restricted = isLoginEndpointRestricted(error)
+          const delay = Math.max(this.retryDelay(failures, reason === 'network' || reason === 'timeout'),
+            restricted ? RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)]! : 0,
+            Math.max(0, retryAfter ?? 0))
+          if (isLoginEndpointRestricted(error) || (retryAfter ?? 0) > 0) this.restorationCooldowns.set(accountId, this.now() + delay)
+          this.scheduleRestorationRetry(accountId, generation, delay, failures + 1, message)
+        }
+        this.diagnostic('restore', 'transient', reason)
+        if (failures === 0) this.emit({ type: 'notice', level: 'warning', message })
       }
-      this.emit({ type: 'notice', level: 'warning', message: publicErrorMessage(error) })
     } finally {
       if (this.runtime?.loginSession !== session) this.releaseLoginSession(session)
     }
@@ -325,6 +383,8 @@ export class SteamService {
     } else this.cancelPendingLogins()
     this.statuses.delete(accountId)
     this.restorationFailures.delete(accountId)
+    this.restorationCooldowns.delete(accountId)
+    this.restorationBlocks.delete(accountId)
     this.store.deleteAccount(accountId)
     this.emit({ type: 'snapshotChanged' })
   }
@@ -440,6 +500,10 @@ export class SteamService {
       await this.ensureSessionFresh(accountId)
       community = this.requireActiveCommunity(accountId)
     } catch (error) {
+      const detail = batchInterruption(error)
+      if (detail.code === 'NETWORK_ERROR' || detail.code === 'SERVER_ERROR') {
+        throw new CommentPreflightError('留言前网络或服务请求失败，尚未提交留言', detail)
+      }
       throw new DomainError('SESSION_PREPARATION_FAILED',
         `Steam 会话准备失败，尚未提交留言。原因：${publicErrorMessage(error)}`,
         true, error instanceof DomainError ? error.retryAfterMs : undefined)
@@ -602,6 +666,40 @@ export class SteamService {
     return session
   }
 
+  private startupWebCookies(session: LoginSession): Promise<string[]> {
+    const configured = this.options.loginAttemptTimeoutMs ?? LOGIN_ATTEMPT_TIMEOUT_MS
+    const timeoutMs = Number.isFinite(configured) && configured > 0 && configured <= 2_147_483_647 ? configured : LOGIN_ATTEMPT_TIMEOUT_MS
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (action: () => void): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.startupAttempts.delete(session)
+        action()
+      }
+      const timer = setTimeout(() => {
+        finish(() => reject(new DomainError('LOGIN_ATTEMPT_TIMEOUT', 'Steam 登录连接暂时中断，已保留登录信息，正在自动重连；无需重新扫码', true)))
+        this.releaseLoginSession(session)
+      }, timeoutMs)
+      timer.unref?.()
+      this.startupAttempts.set(session, () => finish(() => reject(new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更'))))
+      try {
+        void session.getWebCookies().then(cookies => finish(() => resolve(cookies)), error => finish(() => reject(error)))
+      } catch (error) { finish(() => reject(error)) }
+    })
+  }
+
+  private scheduleRestorationRetry(accountId: string, generation: number, delayMs: number, attempt: number, message: string): void {
+    const retryAt = new Date(this.now() + delayMs).toISOString()
+    this.setStatus(accountId, 'restoring', message, true, { at: retryAt, attempt })
+    this.keepAliveTimer = setTimeout(() => {
+      this.keepAliveTimer = null
+      if (this.isCurrentTransition(generation, accountId)) void this.activateAccount(accountId, false).catch(() => undefined)
+    }, delayMs)
+    this.keepAliveTimer.unref?.()
+  }
+
   private attachPendingLogin(loginId: string, session: LoginSession): void {
     this.pendingLogins.set(loginId, session)
     session.on('authenticated', () => {
@@ -648,6 +746,8 @@ export class SteamService {
       const canPersist = this.store.getSecretStorageInfo().available
       this.store.upsertAccount(account, canPersist ? session.refreshToken : undefined)
       this.restorationFailures.delete(accountId)
+      this.restorationCooldowns.delete(accountId)
+      this.restorationBlocks.delete(accountId)
       this.clearKeepAliveTimer()
       if (this.runtime?.loginSession !== session && this.runtime) this.releaseLoginSession(this.runtime.loginSession)
       this.generation += 1
@@ -793,6 +893,7 @@ export class SteamService {
 
   private beginSessionTransition(): number {
     this.generation += 1
+    this.restoration = null
     this.clearKeepAliveTimer()
     if (this.runtime) this.releaseLoginSession(this.runtime.loginSession)
     this.runtime = null
@@ -810,13 +911,17 @@ export class SteamService {
     // A delayed automatic restore must never cancel or overwrite a new manual login.
     if (!this.runtime) {
       this.generation += 1
+      this.restoration = null
       this.clearKeepAliveTimer()
       for (const session of [...this.loginAgents.keys()]) this.releaseLoginSession(session)
+      const accountId = this.store.getActiveAccountId()
+      if (accountId) this.setStatus(accountId, 'offline', '已切换为手动登录，自动重连已停止；保存的登录信息未删除')
     }
   }
 
   private releaseLoginSession(session: LoginSession | undefined): void {
     if (!session) return
+    this.startupAttempts.get(session)?.()
     session.cancelLoginAttempt?.()
     this.loginAgents.get(session)?.destroy()
     this.loginAgents.delete(session)
@@ -836,8 +941,8 @@ export class SteamService {
 
   private now(): number { return (this.options.now ?? Date.now)() }
   private keepAliveMs(): number { return this.options.keepAliveMs ?? KEEP_ALIVE_MS }
-  private retryDelay(failures: number): number {
-    const delays = this.options.retryDelaysMs?.length ? this.options.retryDelaysMs : RETRY_DELAYS_MS
+  private retryDelay(failures: number, network = false): number {
+    const delays = this.options.retryDelaysMs?.length ? this.options.retryDelaysMs : network ? NETWORK_RETRY_DELAYS_MS : RETRY_DELAYS_MS
     return delays[Math.min(failures, delays.length - 1)]!
   }
 
@@ -872,9 +977,10 @@ export class SteamService {
     accountId: string,
     state: SessionState,
     message: string | null,
-    notify = true
+    notify = true,
+    retry?: { at: string; attempt: number }
   ): void {
-    this.statuses.set(accountId, { state, message })
+    this.statuses.set(accountId, { state, message, ...(retry ? { retryAt: retry.at, retryAttempt: retry.attempt } : {}) })
     if (notify) this.emit({ type: 'snapshotChanged' })
   }
 
@@ -942,6 +1048,22 @@ function isDefinitiveAuthenticationError(error: unknown): boolean {
   if (!error || typeof error !== 'object' || !('eresult' in error)) return false
   // AccessDenied alone may be a temporary endpoint denial, not a revoked refresh token.
   return [5, 21, 26, 27, 121, 126].includes(Number(error.eresult))
+}
+
+function isLoginEndpointRestricted(error: unknown): boolean {
+  return error instanceof DomainError && ['RATE_LIMITED', 'COMMUNITY_ACCESS_DENIED'].includes(error.code) ||
+    error instanceof Error && /\bHTTP(?: error)? (?:403|429)\b/i.test(error.message) ||
+    !!error && typeof error === 'object' && 'eresult' in error && Number(error.eresult) === 15
+}
+
+function loginFailureReason(error: unknown): string {
+  if (isLoginEndpointRestricted(error)) return error instanceof DomainError ? safeDiagnosticReason(error.code) : 'network_or_service'
+  const message = error instanceof Error ? error.message : ''
+  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
+  if (error instanceof DomainError && error.code === 'LOGIN_ATTEMPT_TIMEOUT' || /timeout|timed out/i.test(message) || code === 'ETIMEDOUT') return 'timeout'
+  if (/ECONN|ENET|EHOST|ENOTFOUND|EAI_AGAIN|EPIPE|CERT|TLS|SSL/i.test(code) ||
+    /network|fetch failed|socket|connection|\bTLS\b|\bSSL\b|certificate/i.test(message)) return 'network'
+  return error instanceof DomainError ? safeDiagnosticReason(error.code) : 'network_or_service'
 }
 
 function safeDiagnosticReason(code: string): string {

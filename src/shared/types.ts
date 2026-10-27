@@ -4,6 +4,8 @@ import type { ArtworkUploadDraft, ProfileBackgroundCatalog, ProfileBackgroundIma
 import type { UpdatePreferences, UpdateState } from './update-types'
 import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from './steam-screenshots'
 import type { GameStatusApi, GameStatusSnapshot } from './game-status'
+import type { LocalAppSimulationApi, LocalAppSimulationSnapshot } from './local-app-simulation'
+import type { StatusCopyApi, StatusCopySnapshot } from './status-copy'
 import type { BatchFailurePolicy } from './batch-failure-policy'
 
 export type SessionState = 'offline' | 'restoring' | 'authenticated' | 'expired' | 'error'
@@ -23,6 +25,9 @@ export interface AccountRecord {
 export interface AccountView extends AccountRecord {
   sessionState: SessionState
   sessionMessage: string | null
+  sessionRetryAt?: string | null
+  sessionRetryAttempt?: number
+  sessionRetryBlocked?: boolean
   statusCheckState?: 'checking' | 'verified' | 'unverified'
   statusCheckedAt?: string | null
   statusCheckMessage?: string | null
@@ -153,6 +158,7 @@ export type BatchStopCode =
   | 'ACCESS_DENIED_PERSISTENT'
   | 'SESSION_EXPIRED'
   | 'SESSION_PREPARATION'
+  | 'COMMENT_BASELINE'
   | 'LOGIN_REQUIRED'
   | 'NETWORK_ERROR'
   | 'SERVER_ERROR'
@@ -328,10 +334,13 @@ export interface BatchStartInput {
 
 export type AppEvent =
   | { type: 'gameStatusChanged'; state: GameStatusSnapshot }
+  | { type: 'localAppSimulationChanged'; state: LocalAppSimulationSnapshot }
+  | { type: 'statusCopyChanged'; state: StatusCopySnapshot }
   | { type: 'screenshotsChanged'; scope?: 'catalog' | 'images' | 'all' }
   | { type: 'artworkChanged'; state: ArtworkBrowserState }
   | { type: 'updateChanged'; state: UpdateState }
   | { type: 'snapshotChanged' }
+  | { type: 'friendPolicyChanged'; policy: FriendPolicy }
   | { type: 'notice'; level: 'info' | 'success' | 'warning' | 'error'; message: string }
   | { type: 'authRemoteInteraction'; loginId: string }
   | { type: 'authFinished'; loginId: string; accountId: string }
@@ -341,9 +350,17 @@ export type AppEvent =
 export type GameStatusIpcApi = {
   [K in Exclude<keyof GameStatusApi, 'onChange'>]: (...args: Parameters<GameStatusApi[K]>) => Promise<IpcResult<Awaited<ReturnType<GameStatusApi[K]>>>>
 }
+export type LocalAppSimulationIpcApi = {
+  [K in Exclude<keyof LocalAppSimulationApi, 'onChange'>]: (...args: Parameters<LocalAppSimulationApi[K]>) => Promise<IpcResult<Awaited<ReturnType<LocalAppSimulationApi[K]>>>>
+}
+export type StatusCopyIpcApi = {
+  [K in Exclude<keyof StatusCopyApi, 'onChange'>]: (...args: Parameters<StatusCopyApi[K]>) => Promise<IpcResult<Awaited<ReturnType<StatusCopyApi[K]>>>>
+}
 
 export interface SteamFriendCommenterApi {
   gameStatus: GameStatusIpcApi
+  localAppSimulation?: LocalAppSimulationIpcApi
+  statusCopy?: StatusCopyIpcApi
   getScreenshotCatalog(): Promise<IpcResult<ScreenshotCatalog>>
   refreshScreenshotCatalog(): Promise<IpcResult<ScreenshotCatalog>>
   chooseScreenshotSteamDirectory(): Promise<IpcResult<ScreenshotCatalog | null>>

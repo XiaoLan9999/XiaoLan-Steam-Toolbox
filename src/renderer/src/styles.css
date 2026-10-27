@@ -142,15 +142,18 @@ code {
 
 .brand-mark,
 .steam-mark {
-  display: grid;
-  place-items: center;
+  display: block;
+  flex-shrink: 0;
   width: 38px;
   height: 38px;
-  color: #245774;
-  font-weight: 900;
-  border-radius: 50%;
+  border-radius: 10px;
   background: linear-gradient(145deg, #d0edf8, #a9d8eb);
   box-shadow: 0 3px 10px rgba(45, 119, 153, 0.09);
+}
+
+.app-logo {
+  object-fit: cover;
+  aspect-ratio: 1;
 }
 
 .brand strong,
