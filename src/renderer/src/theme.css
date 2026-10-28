@@ -49,5 +49,13 @@
 .settings-import-result { border-left: 3px solid var(--green); padding-left: 12px; color: var(--green); overflow-wrap: anywhere; }
 .settings-import-result code { display: block; margin-top: 6px; }
 .settings-modal > small { display: block; margin-top: 15px; line-height: 1.8; color: var(--muted); }
+.login-error-details { margin-top: 14px; }
+.login-error-details .inline-error { margin-top: 0; }
+.login-error-details button { margin-top: 10px; }
+.login-error-details small { display: block; margin-top: 8px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.diagnostic-export-result { padding-left: 12px; border-left: 3px solid var(--green); overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; }
+.settings-modal p.diagnostic-export-result, .diagnostic-export-result { color: var(--green); }
+.diagnostic-export-result code { display: block; margin-top: 6px; color: var(--text); }
+.settings-modal p.diagnostic-export-error, .diagnostic-export-error { color: var(--red); overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; }
 
 @media (max-width: 720px) { .settings-appearance-grid { grid-template-columns: 1fr; } }

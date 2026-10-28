@@ -11,6 +11,7 @@ import { Agent } from 'node:https'
 import { SecretCipher, SqliteStore } from '../src/main/store'
 import { AccountRecord, AppEvent, FriendRecord } from '../src/shared/types'
 import { STEAM_WEB_USER_AGENT } from '../src/main/steam-user-agent'
+import type { LoginDiagnosticEvent } from '../src/shared/diagnostics'
 
 const mocks = vi.hoisted(() => ({
   relationships: vi.fn(),
@@ -25,7 +26,7 @@ const mocks = vi.hoisted(() => ({
   reconcile: vi.fn(),
   emoticons: vi.fn(),
   sessionOptions: [] as Array<{ platform: number; options: { userAgent?: string; agent?: Agent } }>,
-  sessions: [] as Array<{refreshToken: string; emit: (event: string) => void}>,
+  sessions: [] as Array<{refreshToken: string; emit: (event: string, ...args: unknown[]) => void}>,
   instances: [] as Array<{ accountId: string; expire: () => void }>
 }))
 
@@ -807,7 +808,199 @@ describe('read-only comment recovery identity checks', () => {
   })
 })
 
+describe('Steam login diagnostics', () => {
+  it.each(['qr', 'credentials'] as const)('records the %s lifecycle with local attempt IDs and no login data', async mode => {
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service, events } = await createService(false, { onLoginDiagnostic: event => diagnostics.push(event) })
+    expect(diagnostics.filter(event => event.attempt === 1).map(event => [event.mode, event.stage, event.outcome]))
+      .toEqual([
+        ['restore', 'requested', 'started'], ['restore', 'web-cookies', 'started'], ['restore', 'web-cookies', 'success'],
+        ['restore', 'session-verify', 'started'], ['restore', 'session-verify', 'success'], ['restore', 'profile', 'started'],
+        ['restore', 'profile', 'success'], ['restore', 'completed', 'success']
+      ])
+    const login = mode === 'qr' ? await service.startQrLogin()
+      : await service.startCredentialsLogin('private-username', 'private-password')
+    const session = mocks.sessions.at(-1)!
+    session.emit('remoteInteraction')
+    session.emit('authenticated')
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'authFinished', loginId: login.loginId })))
+    const manual = diagnostics.filter(event => event.attempt === 2)
+    expect(manual.every(event => event.mode === mode)).toBe(true)
+    expect(manual.map(event => [event.stage, event.outcome])).toEqual([
+      ['requested', 'started'], ...(mode === 'qr' ? [['qr-ready', 'success']] : []),
+      ['remote-interaction', 'success'], ['authenticated', 'success'], ['web-cookies', 'started'], ['web-cookies', 'success'],
+      ['session-verify', 'started'], ['session-verify', 'success'], ['profile', 'started'], ['profile', 'success'], ['completed', 'success']
+    ])
+    const serialized = JSON.stringify(diagnostics)
+    for (const secret of ['private-username', 'private-password', 'test-token-a', 'test-session', login.loginId,
+      'Fixture account', 'example.invalid', accountA]) expect(serialized).not.toContain(secret)
+    expect(diagnostics.every(event => typeof event.elapsedMs === 'number' && event.elapsedMs >= 0 && event.elapsedMs <= 600_000)).toBe(true)
+  })
+
+  it('records manual failures, timeouts and cancellation once even after stale SDK events', async () => {
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service } = await createService(false, { onLoginDiagnostic: event => diagnostics.push(event) })
+    const failed = await service.startQrLogin()
+    mocks.sessions.at(-1)!.emit('error', Object.assign(new Error('private-username private-token'), { cause: { code: 'CERT_HAS_EXPIRED' } }))
+    service.cancelLogin(failed.loginId)
+    const timedOut = await service.startQrLogin()
+    mocks.sessions.at(-1)!.emit('timeout')
+    service.cancelLogin(timedOut.loginId)
+    const cancelled = await service.startCredentialsLogin('private-username', 'private-password')
+    const oldSession = mocks.sessions.at(-1)!
+    service.cancelLogin(cancelled.loginId)
+    oldSession.emit('authenticated')
+    oldSession.emit('remoteInteraction')
+    expect(diagnostics.filter(event => ['failed', 'timeout', 'cancelled'].includes(event.stage))).toEqual([
+      expect.objectContaining({ attempt: 2, mode: 'qr', stage: 'failed', outcome: 'failed', reason: 'tls', networkCode: 'CERT_HAS_EXPIRED' }),
+      expect.objectContaining({ attempt: 3, mode: 'qr', stage: 'timeout', outcome: 'failed', reason: 'timeout' }),
+      expect.objectContaining({ attempt: 4, mode: 'credentials', stage: 'cancelled', outcome: 'cancelled', reason: 'cancelled' })
+    ])
+    expect(diagnostics.filter(event => event.attempt === 4).map(event => event.stage)).toEqual(['requested', 'cancelled'])
+    expect(JSON.stringify(diagnostics)).not.toMatch(/private-|example\.invalid/)
+  })
+
+  it.each(['qr', 'credentials'] as const)('records a rejected initial %s request as failure rather than cancellation', async mode => {
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service } = await createService(false, { onLoginDiagnostic: event => diagnostics.push(event) })
+    const error = Object.assign(new Error('private-password private-token'), { code: 429 })
+    const method = mode === 'qr' ? 'startWithQR' : 'startWithCredentials'
+    const internal = service as unknown as { createLoginSession(mode: string): Record<string, unknown> }
+    const nativeCreate = internal.createLoginSession.bind(service)
+    const intercept = vi.spyOn(internal, 'createLoginSession')
+      .mockImplementation(loginMode => {
+        const session = nativeCreate(loginMode)
+        vi.mocked(session[method] as ReturnType<typeof vi.fn>).mockRejectedValueOnce(error)
+        return session
+      })
+    try {
+      const attempt = mode === 'qr' ? service.startQrLogin() : service.startCredentialsLogin('private-username', 'private-password')
+      await expect(attempt).rejects.toBe(error)
+      expect(diagnostics.filter(event => event.attempt === 2).map(event => [event.stage, event.outcome, event.reason]))
+        .toEqual([['requested', 'started', undefined], ['failed', 'failed', 'rate-limited']])
+      expect(JSON.stringify(diagnostics)).not.toContain('private-')
+    } finally { intercept.mockRestore() }
+  })
+
+  it.each(['error', 'timeout'] as const)('does not return a QR challenge after the SDK emits %s before resolving its initial request', async terminalEvent => {
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service, events } = await createService(false, { onLoginDiagnostic: event => diagnostics.push(event) })
+    const internal = service as unknown as { createLoginSession(mode: string): Record<string, unknown> }
+    const nativeCreate = internal.createLoginSession.bind(service)
+    const intercept = vi.spyOn(internal, 'createLoginSession').mockImplementation(mode => {
+      const session = nativeCreate(mode)
+      vi.mocked(session.startWithQR as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+        const sdk = session as unknown as { emit(event: string, ...args: unknown[]): void }
+        if (terminalEvent === 'error') sdk.emit('error', Object.assign(new Error('private-token'), { code: 'ECONNRESET' }))
+        else sdk.emit('timeout')
+        return { qrChallengeUrl: 'https://example.invalid/terminated-qr' }
+      })
+      return session
+    })
+    try {
+      await expect(service.startQrLogin()).rejects.toMatchObject({ code: 'LOGIN_NOT_FOUND' })
+      expect(events.filter(event => event.type === 'authFailed')).toHaveLength(1)
+      expect(diagnostics.filter(event => event.attempt === 2).map(event => [event.stage, event.outcome]))
+        .toEqual([['requested', 'started'], [terminalEvent === 'error' ? 'failed' : 'timeout', 'failed']])
+      expect(JSON.stringify(diagnostics)).not.toMatch(/private-token|terminated-qr/)
+    } finally { intercept.mockRestore() }
+  })
+
+  it('classifies numeric SDK endpoint restrictions and keeps the existing restricted-endpoint cooldown', async () => {
+    vi.useFakeTimers()
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service } = await createService(false, { retryDelaysMs: [5], onLoginDiagnostic: event => diagnostics.push(event) })
+    mocks.webCookies.mockRejectedValueOnce(Object.assign(new Error('WebAPI error 403 private-token'), { code: 403 }))
+    await service.activateAccount(accountB)
+    expect(diagnostics).toContainEqual(expect.objectContaining({ attempt: 2, mode: 'restore', stage: 'failed',
+      outcome: 'failed', reason: 'access-denied', httpStatus: 403 }))
+    const calls = mocks.webCookies.mock.calls.length
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(mocks.webCookies).toHaveBeenCalledTimes(calls)
+    expect(JSON.stringify(diagnostics)).not.toContain('private-token')
+  })
+
+  it('records restoration timeout rather than mislabelling transport teardown as cancellation', async () => {
+    vi.useFakeTimers()
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service } = await createService(false, { loginAttemptTimeoutMs: 100,
+      onLoginDiagnostic: event => diagnostics.push(event) })
+    mocks.webCookies.mockReturnValueOnce(deferred<string[]>().promise)
+    const restoring = service.activateAccount(accountB)
+    await vi.advanceTimersByTimeAsync(100)
+    await restoring
+    expect(diagnostics.filter(event => event.attempt === 2 && ['failed', 'timeout', 'cancelled'].includes(event.stage)))
+      .toEqual([expect.objectContaining({ stage: 'timeout', outcome: 'failed', reason: 'timeout', elapsedMs: 100 })])
+  })
+
+  it('does not let diagnostic callback failures change login success', async () => {
+    const { service, events } = await createService(false, { onLoginDiagnostic: () => { throw new Error('observer failure') } })
+    const login = await service.startQrLogin()
+    mocks.sessions.at(-1)!.emit('authenticated')
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'authFinished', loginId: login.loginId })))
+    expect(service.isAuthenticated(accountA)).toBe(true)
+  })
+})
+
 describe('Steam login request timeout', () => {
+  it('observes only fixed request endpoints and safe response, error and timeout fields', async () => {
+    vi.useFakeTimers()
+    const prototype = Agent.prototype as Agent & { addRequest(request: ClientRequest, options: RequestOptions): void }
+    const native = vi.spyOn(prototype, 'addRequest').mockImplementation(() => undefined)
+    const diagnostics: unknown[] = []
+    const agent = new BoundedLoginAgent(100, event => diagnostics.push(event))
+    try {
+      const response = Object.assign(new EventEmitter(), { destroy: vi.fn() })
+      agent.addRequest(response as unknown as ClientRequest, { host: 'api.steampowered.com',
+        path: '/IAuthenticationService/BeginAuthSessionViaQR/v1/?private-token',
+        headers: { cookie: 'private-cookie' }, auth: 'private-username:private-password' })
+      response.emit('response', { statusCode: 429, headers: { 'set-cookie': 'private-cookie' }, body: 'private-token' })
+      response.emit('close')
+      const error = Object.assign(new EventEmitter(), { destroy: vi.fn() })
+      agent.addRequest(error as unknown as ClientRequest, { host: 'private-host.invalid', path: '/private-path' })
+      error.emit('error', Object.assign(new Error('private-token'), { cause: { code: 'ENOTFOUND', message: 'private-host.invalid' } }))
+      error.emit('close')
+      const timeout = Object.assign(new EventEmitter(), { destroy: vi.fn() })
+      agent.addRequest(timeout as unknown as ClientRequest, { host: 'login.steampowered.com', path: '/jwt/finalizelogin' })
+      await vi.advanceTimersByTimeAsync(100)
+      timeout.emit('close')
+      expect(diagnostics).toEqual([
+        { outcome: 'started', endpoint: 'qr-begin', elapsedMs: 0 },
+        { outcome: 'response', endpoint: 'qr-begin', httpStatus: 429, reason: 'rate-limited', elapsedMs: 0 },
+        { outcome: 'started', endpoint: 'other', elapsedMs: 0 },
+        { outcome: 'failed', endpoint: 'other', reason: 'dns', networkCode: 'ENOTFOUND', elapsedMs: 0 },
+        { outcome: 'started', endpoint: 'finalize', elapsedMs: 0 },
+        { outcome: 'failed', endpoint: 'finalize', reason: 'timeout', elapsedMs: 100 }
+      ])
+      expect(JSON.stringify(diagnostics)).not.toContain('private-')
+      expect(vi.getTimerCount()).toBe(0)
+      expect(native).toHaveBeenCalledTimes(3)
+    } finally {
+      native.mockRestore()
+      agent.destroy()
+    }
+  })
+
+  it('keeps observing the original options and timeout behavior when its observer throws', async () => {
+    vi.useFakeTimers()
+    const prototype = Agent.prototype as Agent & { addRequest(request: ClientRequest, options: RequestOptions): void }
+    const native = vi.spyOn(prototype, 'addRequest').mockImplementation(() => undefined)
+    const agent = new BoundedLoginAgent(100, () => { throw new Error('observer failure') })
+    const request = Object.assign(new EventEmitter(), { destroy: vi.fn() })
+    const options: RequestOptions = { host: 'api.steampowered.com', path: '/private-path', headers: { cookie: 'private-cookie' } }
+    try {
+      agent.addRequest(request as unknown as ClientRequest, options)
+      expect(native).toHaveBeenCalledExactlyOnceWith(request, options)
+      expect(options).toEqual({ host: 'api.steampowered.com', path: '/private-path', headers: { cookie: 'private-cookie' } })
+      await vi.advanceTimersByTimeAsync(100)
+      expect(request.destroy).toHaveBeenCalledOnce()
+      request.emit('close')
+    } finally {
+      native.mockRestore()
+      agent.destroy()
+    }
+  })
+
   it('destroys a stalled request at its wall deadline and clears completed request timers', async () => {
     vi.useFakeTimers()
     const prototype = Agent.prototype as Agent & { addRequest(request: ClientRequest, options: RequestOptions): void }

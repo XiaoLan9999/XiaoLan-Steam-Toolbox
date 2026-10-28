@@ -21,42 +21,75 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [exportingLogs, setExportingLogs] = useState(false)
+  const [logExport, setLogExport] = useState<{ path: string; records: number } | null>(null)
+  const [logExportError, setLogExportError] = useState<string | null>(null)
   const loginIdRef = useRef<string | null>(null)
+  const generationRef = useRef(0)
+  const openRef = useRef(false)
+  const modeRef = useRef(mode)
+  const logExportRef = useRef(false)
 
-  const cancelCurrent = async (): Promise<void> => {
+  const cancelLogin = async (loginId: string | null): Promise<void> => {
+    if (loginId) {
+      try { await window.steamCommenter.cancelLogin(loginId) } catch { /* A stale attempt must not block closing or switching modes. */ }
+    }
+  }
+
+  const cancelCurrent = (): Promise<void> => {
+    generationRef.current++
     const loginId = loginIdRef.current
     loginIdRef.current = null
-    if (loginId) await window.steamCommenter.cancelLogin(loginId)
+    return cancelLogin(loginId)
   }
 
   const startQr = async (): Promise<void> => {
+    if (!openRef.current || modeRef.current !== 'qr') return
+    const cancellation = cancelCurrent()
+    const generation = generationRef.current
+    const current = (): boolean => openRef.current && modeRef.current === 'qr' && generationRef.current === generation
     setBusy(true)
     setError(null)
     setStatus(t('正在向 Steam 请求二维码...', 'Requesting a Steam QR code...'))
     setQrImage(null)
-    await cancelCurrent()
+    setAuth(null)
     try {
+      await cancellation
+      if (!current()) return
       const result = unwrap(await window.steamCommenter.startQrLogin())
+      if (!current()) { await cancelLogin(result.loginId); return }
       loginIdRef.current = result.loginId
       setAuth(result)
-      setQrImage(await QRCode.toDataURL(result.qrChallengeUrl!, { width: 260, margin: 2 }))
+      const image = await QRCode.toDataURL(result.qrChallengeUrl!, { width: 260, margin: 2 })
+      if (!current()) return
+      setQrImage(image)
       setStatus(t('打开 Steam 手机应用，扫描并确认登录', 'Scan and confirm with the Steam mobile app'))
     } catch (caught) {
+      if (!current()) return
+      void cancelCurrent()
+      setAuth(null)
+      setQrImage(null)
       setError(caught instanceof Error ? caught.message : String(caught))
-      setStatus('')
-    } finally {
+      setStatus(t('二维码未生成或已失效，请刷新二维码', 'The QR code is unavailable or expired; refresh to continue'))
       setBusy(false)
+    } finally {
+      if (current()) setBusy(false)
     }
   }
 
   useEffect(() => {
     if (!open) return
+    openRef.current = true
+    modeRef.current = 'qr'
     setMode('qr')
     setAuth(null)
     setError(null)
     setGuardCode('')
+    setLogExport(null)
+    setLogExportError(null)
     void startQr()
     return () => {
+      openRef.current = false
       void cancelCurrent()
     }
     // The modal intentionally creates a fresh login attempt only when it opens.
@@ -66,28 +99,39 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
   useEffect(() => {
     if (!open) return
     return window.steamCommenter.onEvent((event: AppEvent) => {
+      if (!openRef.current) return
       if ('loginId' in event && event.loginId !== loginIdRef.current) return
       if (event.type === 'authRemoteInteraction') {
         setStatus(t('已扫描，请在 Steam 手机应用中点“确认”', 'Scanned. Confirm in the Steam mobile app'))
       }
       if (event.type === 'authFailed') {
+        generationRef.current++
         loginIdRef.current = null
+        setAuth(null)
+        setQrImage(null)
+        setGuardCode('')
         setBusy(false)
         setError(event.message)
-        setStatus('')
+        setStatus(modeRef.current === 'qr'
+          ? t('旧二维码已失效，请刷新二维码后重新扫码', 'The previous QR code is no longer valid; refresh before scanning again') : '')
       }
       if (event.type === 'authFinished') {
+        generationRef.current++
         loginIdRef.current = null
+        setBusy(false)
         setStatus(t('登录成功', 'Signed in'))
-        void onSuccess().then(onClose)
+        const generation = generationRef.current
+        void onSuccess().then(() => { if (openRef.current && generationRef.current === generation) onClose() })
       }
     })
   }, [onClose, onSuccess, open, t])
 
   const switchMode = async (nextMode: 'qr' | 'credentials'): Promise<void> => {
-    if (nextMode === mode) return
-    await cancelCurrent()
+    if (!openRef.current || nextMode === modeRef.current) return
+    void cancelCurrent()
+    modeRef.current = nextMode
     setMode(nextMode)
+    setBusy(false)
     setAuth(null)
     setError(null)
     setStatus('')
@@ -98,6 +142,9 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
 
   const submitCredentials = async (event: FormEvent): Promise<void> => {
     event.preventDefault()
+    if (!openRef.current || modeRef.current !== 'credentials' || busy) return
+    const generation = ++generationRef.current
+    const current = (): boolean => openRef.current && modeRef.current === 'credentials' && generationRef.current === generation
     setBusy(true)
     setError(null)
     setStatus(t('正在登录 Steam...', 'Signing in to Steam...'))
@@ -105,6 +152,7 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
       const result = unwrap(
         await window.steamCommenter.startCredentialsLogin(accountName.trim(), password)
       )
+      if (!current()) { await cancelLogin(result.loginId); return }
       setPassword('')
       loginIdRef.current = result.loginId
       setAuth(result)
@@ -119,31 +167,53 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
         setStatus(t('请输入 Steam Guard 验证码', 'Enter your Steam Guard code'))
       }
     } catch (caught) {
+      if (!current()) return
       setPassword('')
       setError(caught instanceof Error ? caught.message : String(caught))
       setStatus('')
     } finally {
-      setBusy(false)
+      if (current()) setBusy(false)
     }
   }
 
   const submitGuard = async (event: FormEvent): Promise<void> => {
     event.preventDefault()
-    if (!auth) return
+    if (!auth || busy || !openRef.current || modeRef.current !== 'credentials') return
+    const generation = generationRef.current
+    const current = (): boolean => openRef.current && modeRef.current === 'credentials' && generationRef.current === generation
     setBusy(true)
     setError(null)
     try {
       unwrap(await window.steamCommenter.submitSteamGuard(auth.loginId, guardCode))
+      if (!current()) return
       setGuardCode('')
       setStatus(t('验证码已提交，正在建立 Community 会话...', 'Code submitted. Establishing a Community session...'))
     } catch (caught) {
+      if (!current()) return
       setError(caught instanceof Error ? caught.message : String(caught))
     } finally {
-      setBusy(false)
+      if (current()) setBusy(false)
+    }
+  }
+
+  const exportLogs = async (): Promise<void> => {
+    if (logExportRef.current) return
+    logExportRef.current = true
+    setExportingLogs(true)
+    setLogExportError(null)
+    try {
+      const result = unwrap(await window.steamCommenter.exportDiagnosticLogs())
+      if (openRef.current && result) setLogExport(result)
+    } catch (caught) {
+      if (openRef.current) setLogExportError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      logExportRef.current = false
+      setExportingLogs(false)
     }
   }
 
   const close = (): void => {
+    openRef.current = false
     void cancelCurrent()
     setPassword('')
     setGuardCode('')
@@ -179,7 +249,7 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
             <div className="qr-frame">
               {qrImage ? <img src={qrImage} alt={t('Steam 登录二维码', 'Steam sign-in QR code')} /> : <div className="qr-placeholder" />}
             </div>
-            <p>{status || t('二维码加载中...', 'Loading QR code...')}</p>
+            <p>{status || t('二维码尚未生成，请刷新二维码', 'No QR code is active; refresh to continue')}</p>
             <button className="ghost" disabled={busy} onClick={() => void startQr()}>
               {t('刷新二维码', 'Refresh QR code')}
             </button>
@@ -235,7 +305,15 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
             )}
           </div>
         )}
-        {error && <div className="inline-error">{error}</div>}
+        {error && <div className="login-error-details">
+          <div className="inline-error" role="alert">{error}</div>
+          <button className="ghost" disabled={exportingLogs} onClick={() => void exportLogs()}>
+            {exportingLogs ? t('正在导出诊断日志…', 'Exporting diagnostic logs…') : t('导出诊断日志', 'Export diagnostic logs')}
+          </button>
+          <small>{t('仅导出本地脱敏 JSON，不会自动上传；可手动提交给排查人员', 'Exports local sanitized JSON only, with no automatic upload; you can submit it manually for troubleshooting')}</small>
+        </div>}
+        {logExport && <p className="diagnostic-export-result" role="status">{t(`已导出 ${logExport.records} 条诊断记录至：`, `Exported ${logExport.records} diagnostic records to: `)}<code>{logExport.path}</code></p>}
+        {logExportError && <p className="diagnostic-export-error" role="alert">{t('诊断日志导出失败：', 'Diagnostic log export failed: ')}{logExportError}</p>}
       </div>
     </div>
   )

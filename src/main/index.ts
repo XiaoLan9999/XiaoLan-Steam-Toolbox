@@ -36,6 +36,7 @@ import type { ArtworkBounds, ArtworkTool } from '../shared/artwork-browser'
 import { UpdateService } from './update-service'
 import { createUpdateFetch } from './update-fetch'
 import { RuntimeDiagnostics } from './runtime-diagnostics'
+import { DiagnosticReportError, writeDiagnosticReport } from './diagnostic-report'
 import { SteamScreenshotService } from './steam-screenshots'
 import { ScreenshotNameService } from './steam-screenshot-names'
 import { ScreenshotController } from './screenshot-controller'
@@ -74,6 +75,7 @@ let nativePresenceForQuit: NativePresenceBroker | undefined
 let recoveringRenderer = false
 let shuttingDown = false
 let exportInProgress = false
+let diagnosticExportInProgress = false
 let dataImportInProgress = false
 let dataImportQueued = false
 let installInProgress = false
@@ -177,7 +179,7 @@ app.whenReady().then(async () => {
     if (artworkBrowser?.getState().accountId === accountId) void artworkBrowser.close()
     queue?.pauseForSessionExpiry(accountId)
     commentScans?.pauseForAccount(accountId)
-  }, { onDiagnostic: (event) => diagnostics?.sessionEvent(event) })
+  }, { onDiagnostic: (event) => diagnostics?.sessionEvent(event), onLoginDiagnostic: event => diagnostics?.loginEvent(event) })
   queue = new BatchQueue(store, steam, emit)
   const nativePresence = new NativePresenceBroker({
     workerDirectory: app.isPackaged ? join(process.resourcesPath, 'native-presence') : join(app.getAppPath(), 'resources', 'native-presence'),
@@ -685,6 +687,35 @@ function registerIpcHandlers(): void {
     const error = await shell.openPath(app.getPath('userData'))
     if (error) throw new DomainError('OPEN_DIRECTORY_FAILED', '无法打开数据目录，请根据界面路径手动打开')
   })
+  handle('diagnostics:openDirectory', async () => {
+    const directory = join(app.getPath('userData'), 'diagnostics')
+    mkdirSync(directory, { recursive: true })
+    const metadata = await lstat(directory)
+    if (!metadata.isDirectory() || metadata.isSymbolicLink() ||
+        (await realpath(directory)).toLowerCase() !== resolve(directory).toLowerCase()) {
+      throw new DomainError('DIAGNOSTICS_UNSAFE_PATH', '日志目录不是普通本地目录，已停止打开')
+    }
+    if (await shell.openPath(directory)) throw new DomainError('DIAGNOSTICS_OPEN_FAILED', '无法打开日志目录')
+  })
+  handle('diagnostics:export', async () => {
+    if (!mainWindow || diagnosticExportInProgress) throw new DomainError('DIAGNOSTICS_BUSY', '诊断日志正在导出，请稍候')
+    diagnosticExportInProgress = true
+    try {
+      const en = store.getLanguage() === 'en'
+      const selected = await dialog.showSaveDialog(mainWindow, {
+        title: en ? 'Export sanitized diagnostic log' : '导出脱敏诊断日志',
+        defaultPath: `XiaoLan-Steam-Toolbox-Diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
+        filters: [{ name: en ? 'Diagnostic JSON' : '诊断 JSON', extensions: ['json'] }]
+      })
+      if (selected.canceled || !selected.filePath || !mainWindow || mainWindow.isDestroyed()) return null
+      diagnostics?.sample('memory')
+      return await writeDiagnosticReport(selected.filePath, {
+        userDataDirectory: app.getPath('userData'), diagnosticsDirectory: join(app.getPath('userData'), 'diagnostics'),
+        appVersion: app.getVersion(), electronVersion: process.versions.electron,
+        nodeVersion: process.versions.node, chromiumVersion: process.versions.chrome
+      })
+    } finally { diagnosticExportInProgress = false }
+  })
   handle('settings:language', (language: 'zh-CN' | 'en') => {
     store.setLanguage(language)
     mainWindow?.webContents.send('app:event', { type: 'snapshotChanged' })
@@ -948,7 +979,24 @@ function handle<TArgs extends unknown[], TResult>(
 
 function toAppError(error: unknown): AppError {
   const language = store?.getLanguage() ?? 'zh-CN'
+  if (error instanceof DiagnosticReportError) {
+    const messages = {
+      UNSAFE_PATH: ['请选择数据目录之外的普通本地 JSON 文件位置', 'Choose an ordinary local JSON file outside the toolbox data directory'],
+      DESTINATION_EXISTS: ['该文件已存在，请换一个新文件名；原文件未修改', 'This file already exists; choose a new name. The original file was not changed'],
+      READ_FAILED: ['无法安全读取诊断日志，原日志未修改', 'Diagnostic logs could not be read safely; original logs were not changed'],
+      WRITE_FAILED: ['无法保存诊断日志，请检查可用空间和写入权限', 'Diagnostic logs could not be saved; check free space and write permissions']
+    }
+    return { code: `DIAGNOSTICS_${error.code}`, message: messages[error.code][language === 'en' ? 1 : 0]!, retryable: false }
+  }
   if (error instanceof DomainError) {
+    if (language === 'en' && error.code.startsWith('DIAGNOSTICS_')) {
+      const messages: Record<string, string> = {
+        DIAGNOSTICS_BUSY: 'Diagnostic export is already in progress; wait for it to finish',
+        DIAGNOSTICS_UNSAFE_PATH: 'The diagnostic folder is not an ordinary local directory',
+        DIAGNOSTICS_OPEN_FAILED: 'The diagnostic folder could not be opened'
+      }
+      return { code: error.code, message: messages[error.code] ?? 'Diagnostics could not be accessed safely', retryable: false }
+    }
     if (language === 'en' && error.code.startsWith('DATA_IMPORT_')) {
       const messages: Record<string, string> = {
         DATA_IMPORT_BUSY: 'Pause sending and checking tasks, disable scheduled retries, and stop presence, screenshots, artwork, exports and downloads before importing',

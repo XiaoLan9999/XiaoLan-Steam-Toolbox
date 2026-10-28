@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
+import { sanitizeDiagnosticRecord, type LoginDiagnosticEvent } from '../shared/diagnostics'
 
 interface Metric {
   pid: number
@@ -130,6 +131,11 @@ export class RuntimeDiagnostics {
       ...(Number.isSafeInteger(event.generation) && event.generation! >= 0 && event.generation! <= 0xffffffff ? { generation: event.generation } : {}) })
   }
 
+  loginEvent(event: LoginDiagnosticEvent): void {
+    if (this.stopped) return
+    this.write({ ...event, event: 'login' })
+  }
+
   shutdown(): void {
     if (this.stopped) return
     clearInterval(this.timer)
@@ -140,7 +146,9 @@ export class RuntimeDiagnostics {
 
   private write(fields: Record<string, unknown>): void {
     try {
-      const line = JSON.stringify({ at: new Date().toISOString(), version: this.options.version, ...fields }) + '\n'
+      const record = sanitizeDiagnosticRecord({ ...fields, at: new Date().toISOString(), version: this.options.version })
+      if (!record) return
+      const line = JSON.stringify(record) + '\n'
       if (Buffer.byteLength(line) > 16_384) return
       const current = join(this.options.directory, 'runtime-current.jsonl')
       const previous = join(this.options.directory, 'runtime-previous.jsonl')

@@ -15,6 +15,10 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
   const [importBackup, setImportBackup] = useState('')
   const [theme, setTheme] = useState<Theme>(() => normalizeTheme(snapshot.theme))
   const [changingTheme, setChangingTheme] = useState(false)
+  const [diagnosticOperation, setDiagnosticOperation] = useState<'export' | 'open' | null>(null)
+  const [diagnosticExport, setDiagnosticExport] = useState<{ path: string; records: number } | null>(null)
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null)
+  const diagnosticBusy = useRef(false)
   const transfer = useRef(false)
   const busy = operation !== null || importBackup !== ''
   const exportData = async (): Promise<void> => {
@@ -45,6 +49,23 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
       const result = await runAction(t('保存主题', 'Saving theme'), async () => { unwrap(await window.steamCommenter.setTheme(next)); return true })
       if (result === null) { setTheme(previous); applyTheme(previous) }
     } finally { setChangingTheme(false) }
+  }
+  const diagnostics = async (action: 'export' | 'open'): Promise<void> => {
+    if (diagnosticBusy.current || busy) return
+    diagnosticBusy.current = true
+    setDiagnosticOperation(action)
+    setDiagnosticError(null)
+    try {
+      if (action === 'export') {
+        const result = unwrap(await window.steamCommenter.exportDiagnosticLogs())
+        if (result) setDiagnosticExport(result)
+      } else unwrap(await window.steamCommenter.openDiagnosticsDirectory())
+    } catch (caught) {
+      setDiagnosticError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      diagnosticBusy.current = false
+      setDiagnosticOperation(null)
+    }
   }
   return <div className="modal-backdrop" onMouseDown={() => { if (!busy) onClose() }}>
     <section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-heading" onMouseDown={event => event.stopPropagation()}>
@@ -89,8 +110,16 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
       <small>{t('备份包含个人数据，请妥善保管。截图导入记录及 Steam 截图文件需单独迁移；不要混用旧的数据库 -wal / -shm 文件',
         'Backups contain personal data; keep them private. Screenshot import records and Steam screenshot files must be migrated separately; do not mix old database -wal / -shm files')}</small>
       <h3>{t('运行诊断', 'Runtime diagnostics')}</h3>
-      <p>{t('数据目录中的 diagnostics 文件夹记录工具箱内存、任务数量、界面异常、会话续期和 HTTP 错误分类。日志轮换保存，不含账号、好友、留言正文、URL、Cookie 或登录令牌，也不会上传',
-        'The diagnostics folder records toolbox memory, task counts, interface failures, session renewal and HTTP error categories. Rotating logs contain no account, friend, message, URL, cookie or login-token content and are not uploaded')}</p>
+      <p>{t('诊断日志自动保存在本机 diagnostics 目录并轮转，记录工具箱内存、任务数量、界面异常、登录阶段、会话续期、网络错误代码和 HTTP 错误分类',
+        'Diagnostic logs rotate automatically in the local diagnostics folder, recording toolbox memory, task counts, interface failures, sign-in stages, session renewal, network error codes and HTTP error categories')}</p>
+      <p>{t('不记录密码、验证码、令牌、Cookie、二维码、账号、好友、留言正文或 URL，不会自动上传。遇到问题可导出脱敏 JSON 并手动提交给排查人员；数据备份包含个人资料，不要当作日志分享',
+        'No passwords, verification codes, tokens, cookies, QR codes, accounts, friends, message text or URLs are recorded, and logs are not automatically uploaded. Export sanitized JSON and submit it manually for troubleshooting; data backups contain personal information and must not be shared as logs')}</p>
+      <div className="settings-transfer-actions">
+        <button className="primary" disabled={busy || diagnosticOperation !== null} onClick={() => void diagnostics('export')}>{diagnosticOperation === 'export' ? t('正在导出诊断日志…', 'Exporting diagnostic logs…') : t('导出诊断日志', 'Export diagnostic logs')}</button>
+        <button disabled={busy || diagnosticOperation !== null} onClick={() => void diagnostics('open')}>{diagnosticOperation === 'open' ? t('正在打开…', 'Opening…') : t('打开日志目录', 'Open log directory')}</button>
+      </div>
+      {diagnosticExport && <p className="diagnostic-export-result" role="status">{t(`已导出 ${diagnosticExport.records} 条诊断记录至：`, `Exported ${diagnosticExport.records} diagnostic records to: `)}<code>{diagnosticExport.path}</code></p>}
+      {diagnosticError && <p className="diagnostic-export-error" role="alert">{diagnosticError}</p>}
     </section>
   </div>
 }

@@ -409,6 +409,8 @@ export interface SteamFriendCommenterApi {
   resumeCommentScan(jobId: string): Promise<IpcResult<void>>
   cancelCommentScan(jobId: string): Promise<IpcResult<void>>
   openDataDirectory(): Promise<IpcResult<void>>
+  exportDiagnosticLogs(): Promise<IpcResult<{ path: string; records: number } | null>>
+  openDiagnosticsDirectory(): Promise<IpcResult<void>>
   setLanguage(language: 'zh-CN' | 'en'): Promise<IpcResult<void>>
   setTheme(theme: 'light' | 'dark'): Promise<IpcResult<void>>
   exportData(): Promise<IpcResult<{ path: string } | null>>

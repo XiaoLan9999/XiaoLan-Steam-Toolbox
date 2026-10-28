@@ -26,6 +26,8 @@ import type { CommunityDiagnosticEvent } from './community-client'
 import type { CommentAttemptEvidence, CommentVerificationResult } from './comment-reconciliation'
 import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
+import type { LoginDiagnosticEvent } from '../shared/diagnostics'
+import { loginDiagnosticElapsed, loginDiagnosticEndpoint, loginDiagnosticFailure } from './login-diagnostic'
 
 interface RuntimeSession {
   accountId: string
@@ -43,6 +45,7 @@ export interface SteamServiceOptions {
   retryDelaysMs?: readonly number[]
   loginAttemptTimeoutMs?: number
   now?: () => number
+  onLoginDiagnostic?: (event: LoginDiagnosticEvent) => void
   onDiagnostic?: (event: CommunityDiagnosticEvent | {
     phase: 'restore' | 'refresh' | 'recover'
     outcome: 'success' | 'transient' | 'expired'
@@ -87,6 +90,10 @@ export class SteamService {
   private disposed = false
   private keepAliveTimer: ReturnType<typeof setTimeout> | null = null
   private readonly loginAgents = new Map<LoginSession, Agent>()
+  private loginAttemptSequence = 0
+  private readonly loginDiagnostics = new WeakMap<LoginSession, {
+    attempt: number; mode: LoginDiagnosticEvent['mode']; startedAt: number; terminal: boolean
+  }>()
   private readonly restorationFailures = new Map<string, number>()
   private restoration: { accountId: string; generation: number; promise: Promise<void> } | null = null
   private readonly startupAttempts = new Map<LoginSession, () => void>()
@@ -245,20 +252,24 @@ export class SteamService {
 
     let session: LoginSession | undefined
     try {
-      session = this.createLoginSession()
+      session = this.createLoginSession('restore')
       session.refreshToken = refreshToken
+      this.loginDiagnostic(session, 'web-cookies', 'started')
       const cookies = await this.startupWebCookies(session)
       if (!this.isCurrentTransition(generation, accountId)) return
+      this.loginDiagnostic(session, 'web-cookies', 'success')
       const community = this.createCommunity(accountId, cookies)
+      this.loginDiagnostic(session, 'session-verify', 'started')
       await community.verifySession()
       if (!this.isCurrentTransition(generation, accountId)) return
+      this.loginDiagnostic(session, 'session-verify', 'success')
       this.persistChangedToken(accountId, session)
       this.restorationFailures.delete(accountId)
       this.restorationCooldowns.delete(accountId)
       this.restorationBlocks.delete(accountId)
       const runtime = this.makeRuntime(accountId, session, community, community.getCookies())
       this.runtime = runtime
-      const profile = await this.tryGetProfile(community, accountId)
+      const profile = await this.tryGetProfile(community, accountId, false, session)
       if (this.runtime !== runtime || !this.isCurrentTransition(generation, accountId)) return
       this.store.updateAccountProfile(accountId, {
         accountName: account.accountName,
@@ -268,11 +279,13 @@ export class SteamService {
       if (!runtime.recovering) {
         this.setStatus(accountId, 'authenticated', '已自动登录')
         this.diagnostic('restore', 'success', 'verified')
+        this.loginDiagnostic(session, 'completed', 'success')
         this.scheduleKeepAlive(runtime)
       }
       void this.refreshStaleAccountData(accountId)
     } catch (error) {
       if (!this.isCurrentTransition(generation, accountId)) return
+      if (session) this.loginFailure(session, error)
       this.runtime = null
       if (isDefinitiveAuthenticationError(error)) {
         this.setStatus(accountId, 'expired', '自动登录令牌已失效，请重新登录')
@@ -312,13 +325,17 @@ export class SteamService {
     this.requireOpen()
     this.prepareManualLogin()
     const loginId = randomUUID()
-    const session = this.createLoginSession()
+    const session = this.createLoginSession('qr')
     this.attachPendingLogin(loginId, session)
     try {
       const response = await session.startWithQR()
+      if (this.pendingLogins.get(loginId) !== session) {
+        throw new DomainError('LOGIN_NOT_FOUND', '登录请求已失效，请重新开始')
+      }
       if (!response.qrChallengeUrl) {
         throw new DomainError('QR_UNAVAILABLE', 'Steam 未返回二维码登录地址')
       }
+      this.loginDiagnostic(session, 'qr-ready', 'success')
       return {
         loginId,
         mode: 'qr',
@@ -327,6 +344,7 @@ export class SteamService {
         guardTypes: mapGuardTypes(response.validActions?.map((item) => item.type) ?? [])
       }
     } catch (error) {
+      this.loginFailure(session, error)
       this.cancelLogin(loginId)
       throw error
     }
@@ -340,7 +358,7 @@ export class SteamService {
     }
     this.prepareManualLogin()
     const loginId = randomUUID()
-    const session = this.createLoginSession()
+    const session = this.createLoginSession('credentials')
     this.attachPendingLogin(loginId, session)
     try {
       const response = await session.startWithCredentials({
@@ -357,6 +375,7 @@ export class SteamService {
         guardDetail: actions.find((item) => item.detail)?.detail
       }
     } catch (error) {
+      this.loginFailure(session, error)
       this.cancelLogin(loginId)
       throw error
     }
@@ -658,11 +677,17 @@ export class SteamService {
     return catalog
   }
 
-  private createLoginSession(): LoginSession {
-    const agent = new BoundedLoginAgent(LOGIN_REQUEST_TIMEOUT_MS)
-    const session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent, userAgent: STEAM_WEB_USER_AGENT })
+  private createLoginSession(mode: LoginDiagnosticEvent['mode']): LoginSession {
+    let session: LoginSession | undefined
+    const agent = new BoundedLoginAgent(LOGIN_REQUEST_TIMEOUT_MS, event => {
+      if (session) this.loginDiagnostic(session, 'request', event.outcome, event)
+    }, () => this.now())
+    session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent, userAgent: STEAM_WEB_USER_AGENT })
     session.loginTimeout = 5 * 60 * 1000
     this.loginAgents.set(session, agent)
+    this.loginAttemptSequence = this.loginAttemptSequence % 0xffff_ffff + 1
+    this.loginDiagnostics.set(session, { attempt: this.loginAttemptSequence, mode, startedAt: this.now(), terminal: false })
+    this.loginDiagnostic(session, 'requested', 'started')
     return session
   }
 
@@ -679,6 +704,7 @@ export class SteamService {
         action()
       }
       const timer = setTimeout(() => {
+        this.loginFailure(session, new DomainError('LOGIN_ATTEMPT_TIMEOUT', 'Login timeout'))
         finish(() => reject(new DomainError('LOGIN_ATTEMPT_TIMEOUT', 'Steam 登录连接暂时中断，已保留登录信息，正在自动重连；无需重新扫码', true)))
         this.releaseLoginSession(session)
       }, timeoutMs)
@@ -706,13 +732,15 @@ export class SteamService {
       void this.finishPendingLogin(loginId, session)
     })
     session.on('remoteInteraction', () => {
+      if (this.pendingLogins.get(loginId) !== session) return
+      this.loginDiagnostic(session, 'remote-interaction', 'success')
       this.emit({ type: 'authRemoteInteraction', loginId })
     })
     session.on('timeout', () => {
-      this.failPendingLogin(loginId, 'Steam 登录确认超时，请重新生成二维码')
+      this.failPendingLogin(loginId, 'Steam 登录确认超时，请重新生成二维码', new DomainError('LOGIN_ATTEMPT_TIMEOUT', 'Login timeout'))
     })
     session.on('error', (error: Error) => {
-      this.failPendingLogin(loginId, publicErrorMessage(error))
+      this.failPendingLogin(loginId, publicErrorMessage(error), error)
     })
   }
 
@@ -722,14 +750,19 @@ export class SteamService {
     const generation = this.generation
     const current = (): boolean => !this.disposed && this.generation === generation && this.pendingLogins.get(loginId) === session
     try {
+      this.loginDiagnostic(session, 'authenticated', 'success')
       const accountId = session.steamID.getSteamID64()
+      this.loginDiagnostic(session, 'web-cookies', 'started')
       const cookies = await session.getWebCookies()
       if (!current()) return
+      this.loginDiagnostic(session, 'web-cookies', 'success')
       const community = this.createCommunity(accountId, cookies)
+      this.loginDiagnostic(session, 'session-verify', 'started')
       await community.verifySession()
       if (!current()) return
+      this.loginDiagnostic(session, 'session-verify', 'success')
       const existing = this.store.getAccount(accountId)
-      const profile = await this.tryGetProfile(community, accountId, true)
+      const profile = await this.tryGetProfile(community, accountId, true, session)
       if (!current()) return
       const timestamp = new Date().toISOString()
       const account: AccountRecord = {
@@ -756,6 +789,7 @@ export class SteamService {
         this.setStatus(knownAccount.id, knownAccount.id === accountId ? 'authenticated' : 'offline', null, false)
       }
       this.pendingLogins.delete(loginId)
+      this.loginDiagnostic(session, 'completed', 'success')
       this.emit({ type: 'authFinished', loginId, accountId })
       this.emit({ type: 'snapshotChanged' })
       this.scheduleKeepAlive(this.runtime)
@@ -768,16 +802,17 @@ export class SteamService {
       }
       void this.refreshStaleAccountData(accountId, true)
     } catch (error) {
-      this.failPendingLogin(loginId, publicErrorMessage(error))
+      this.failPendingLogin(loginId, publicErrorMessage(error), error)
     } finally {
       this.completingLogins.delete(loginId)
       if (this.runtime?.loginSession !== session) this.releaseLoginSession(session)
     }
   }
 
-  private failPendingLogin(loginId: string, message: string): void {
+  private failPendingLogin(loginId: string, message: string, error?: unknown): void {
     const session = this.pendingLogins.get(loginId)
     if (!session) return
+    this.loginFailure(session, error)
     this.pendingLogins.delete(loginId)
     this.completingLogins.delete(loginId)
     this.releaseLoginSession(session)
@@ -921,6 +956,7 @@ export class SteamService {
 
   private releaseLoginSession(session: LoginSession | undefined): void {
     if (!session) return
+    this.loginDiagnostic(session, 'cancelled', 'cancelled', { reason: 'cancelled' })
     this.startupAttempts.get(session)?.()
     session.cancelLoginAttempt?.()
     this.loginAgents.get(session)?.destroy()
@@ -950,6 +986,27 @@ export class SteamService {
     this.options.onDiagnostic?.({ phase, outcome, reason })
   }
 
+  private loginFailure(session: LoginSession, error: unknown): void {
+    const failure = loginDiagnosticFailure(error)
+    const stage = failure.reason === 'timeout' ? 'timeout' : failure.reason === 'cancelled' ? 'cancelled' : 'failed'
+    this.loginDiagnostic(session, stage, stage === 'cancelled' ? 'cancelled' : 'failed', failure)
+  }
+
+  private loginDiagnostic(
+    session: LoginSession,
+    stage: LoginDiagnosticEvent['stage'],
+    outcome: LoginDiagnosticEvent['outcome'],
+    detail: Partial<Pick<LoginDiagnosticEvent, 'endpoint' | 'reason' | 'networkCode' | 'httpStatus' | 'eresult' | 'elapsedMs'>> = {}
+  ): void {
+    const context = this.loginDiagnostics.get(session)
+    if (!context || context.terminal) return
+    if (['completed', 'failed', 'cancelled', 'timeout'].includes(stage)) context.terminal = true
+    try {
+      this.options.onLoginDiagnostic?.({ attempt: context.attempt, mode: context.mode, stage, outcome,
+        elapsedMs: loginDiagnosticElapsed(context.startedAt, this.now()), ...detail })
+    } catch { /* Diagnostics must not affect Steam authentication. */ }
+  }
+
   private requireActiveCommunity(accountId: string): SteamCommunityClient {
     if (this.store.getActiveAccountId() !== accountId) {
       throw new DomainError('WRONG_ACCOUNT', '请先切换到这个 Steam 账号')
@@ -963,11 +1020,16 @@ export class SteamService {
   private async tryGetProfile(
     community: SteamCommunityClient,
     steamId: string,
-    rejectExpired = false
+    rejectExpired = false,
+    loginSession?: LoginSession
   ): Promise<ProfileSummary | null> {
+    if (loginSession) this.loginDiagnostic(loginSession, 'profile', 'started')
     try {
-      return await community.getProfileSummary(steamId)
+      const profile = await community.getProfileSummary(steamId)
+      if (loginSession) this.loginDiagnostic(loginSession, 'profile', 'success')
+      return profile
     } catch (error) {
+      if (loginSession) this.loginDiagnostic(loginSession, 'profile', 'failed', loginDiagnosticFailure(error))
       if (rejectExpired && error instanceof DomainError && error.code === 'SESSION_EXPIRED') throw error
       return null
     }
@@ -1014,25 +1076,56 @@ export class SteamService {
   }
 }
 
+type LoginRequestDiagnostic = Pick<LoginDiagnosticEvent, 'outcome' | 'endpoint' | 'reason' | 'networkCode' | 'httpStatus' | 'eresult' | 'elapsedMs'>
+
 export class BoundedLoginAgent extends Agent {
   private closed = false
-  constructor(private readonly requestTimeoutMs: number) {
+  constructor(
+    private readonly requestTimeoutMs: number,
+    private readonly onDiagnostic?: (event: LoginRequestDiagnostic) => void,
+    private readonly now: () => number = Date.now
+  ) {
     super({ keepAlive: true })
   }
 
   addRequest(request: ClientRequest, options: RequestOptions): void {
+    const startedAt = this.now()
+    const endpoint = loginDiagnosticEndpoint(options)
+    let settled = false
+    const record = (outcome: LoginDiagnosticEvent['outcome'], detail: Partial<LoginRequestDiagnostic> = {}): void => {
+      if (settled) return
+      if (outcome !== 'started' && outcome !== 'response') settled = true
+      try { this.onDiagnostic?.({ outcome, endpoint, elapsedMs: loginDiagnosticElapsed(startedAt, this.now()), ...detail }) }
+      catch { /* Request observation must not change transport behavior. */ }
+    }
     if (this.closed) {
+      record('cancelled', { reason: 'cancelled' })
       queueMicrotask(() => request.destroy(new Error('Steam login request cancelled')))
       return
     }
-    const timer = setTimeout(() => request.destroy(new Error('Steam login network request timed out')), this.requestTimeoutMs)
+    record('started')
+    const timer = setTimeout(() => {
+      record('failed', { reason: 'timeout' })
+      request.destroy(new Error('Steam login network request timed out'))
+    }, this.requestTimeoutMs)
     timer.unref?.()
-    request.once('close', () => clearTimeout(timer))
+    request.once('close', () => {
+      clearTimeout(timer)
+      if (this.closed) record('cancelled', { reason: 'cancelled' })
+    })
+    request.once('response', response => {
+      const status = response.statusCode
+      const httpStatus = typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined
+      record('response', { ...(httpStatus !== undefined ? { httpStatus } : {}),
+        ...(httpStatus === 429 ? { reason: 'rate-limited' } : httpStatus === 403 ? { reason: 'access-denied' } : {}) })
+    })
+    request.once('error', error => record('failed', loginDiagnosticFailure(error)))
     const parent = Agent.prototype as Agent & { addRequest(request: ClientRequest, options: RequestOptions): void }
     try {
       parent.addRequest.call(this, request, options)
     } catch (error) {
       clearTimeout(timer)
+      record('failed', loginDiagnosticFailure(error))
       throw error
     }
   }
@@ -1051,9 +1144,8 @@ function isDefinitiveAuthenticationError(error: unknown): boolean {
 }
 
 function isLoginEndpointRestricted(error: unknown): boolean {
-  return error instanceof DomainError && ['RATE_LIMITED', 'COMMUNITY_ACCESS_DENIED'].includes(error.code) ||
-    error instanceof Error && /\bHTTP(?: error)? (?:403|429)\b/i.test(error.message) ||
-    !!error && typeof error === 'object' && 'eresult' in error && Number(error.eresult) === 15
+  const failure = loginDiagnosticFailure(error)
+  return failure.reason === 'rate-limited' || failure.reason === 'access-denied'
 }
 
 function loginFailureReason(error: unknown): string {

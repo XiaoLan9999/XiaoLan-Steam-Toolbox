@@ -23,6 +23,31 @@ function fixture(maxBytes?: number) {
 }
 
 describe('bounded local runtime diagnostics', () => {
+  it('records safe login stages and strips request secrets even from malformed diagnostic fields', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.loginEvent({ attempt: 1, mode: 'qr', stage: 'request', outcome: 'failed', endpoint: 'poll',
+      reason: 'network', networkCode: 'ECONNRESET', httpStatus: 502, eresult: 2, elapsedMs: 321,
+      url: 'https://example.invalid/?token=synthetic-private-token', qrChallengeUrl: 'synthetic-private-qr',
+      cookie: 'synthetic-private-cookie', message: 'synthetic-private-message', steamId: '76561198000000001' } as never)
+    diagnostics.loginEvent({ attempt: 2, mode: 'credentials', stage: 'failed', outcome: 'failed',
+      networkCode: 'synthetic-private-code', reason: 'synthetic-private-reason', eresult: 76561198000000001 } as never)
+    diagnostics.loginEvent({ attempt: -1, mode: 'qr', stage: 'failed', outcome: 'failed' })
+    const path = join(directory, 'runtime-current.jsonl')
+    const contents = readFileSync(path, 'utf8')
+    expect(contents).not.toContain('synthetic-private')
+    expect(contents).not.toContain('7656119')
+    const entries = contents.trim().split('\n').map(line => JSON.parse(line))
+    expect(entries).toHaveLength(2)
+    expect(entries[0]).toMatchObject({ event: 'login', attempt: 1, mode: 'qr', stage: 'request', outcome: 'failed',
+      endpoint: 'poll', reason: 'network', networkCode: 'ECONNRESET', httpStatus: 502, eresult: 2, elapsedMs: 321 })
+    expect(entries[1]).toEqual({ event: 'login', at: expect.any(String), version: '0.7.0', attempt: 2,
+      mode: 'credentials', stage: 'failed', outcome: 'failed' })
+    diagnostics.shutdown()
+    const stopped = readFileSync(path, 'utf8')
+    diagnostics.loginEvent({ attempt: 3, mode: 'qr', stage: 'requested', outcome: 'started' })
+    expect(readFileSync(path, 'utf8')).toBe(stopped)
+  })
+
   it('records simulation stages without account, title or login data', () => {
     const { directory, diagnostics } = fixture()
     diagnostics.gameStatusEvent({ stage: 'simulation-submit', connectionKind: 'cm', generation: 3,
