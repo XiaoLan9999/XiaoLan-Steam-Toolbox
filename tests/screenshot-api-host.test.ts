@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { PassThrough } from 'node:stream'
 import * as fs from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { discoverScreenshotApiContext, ScreenshotApiHost, type ScreenshotApiContext, type ScreenshotApiDiscoveryDependencies } from '../src/main/screenshot-api-host'
@@ -19,8 +19,9 @@ const directories: string[] = []
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup()
   vi.useRealTimers()
+  const temporaryDirectory = await fs.realpath(tmpdir())
   for (const directory of directories.splice(0)) {
-    if (dirname(directory) !== resolve(tmpdir()) || !basename(directory).startsWith('screenshot-api-host-')) throw new Error('Unsafe fixture cleanup')
+    if (dirname(directory) !== temporaryDirectory || !basename(directory).startsWith('screenshot-api-host-')) throw new Error('Unsafe fixture cleanup')
     await fs.rm(directory, { recursive: true, force: true })
   }
 })
@@ -133,7 +134,8 @@ class Child extends EventEmitter {
 }
 
 async function fixture() {
-  const root = await fs.realpath(await fs.mkdtemp(join(resolve(tmpdir()), 'screenshot-api-host-')))
+  const temporaryDirectory = await fs.realpath(tmpdir())
+  const root = await fs.realpath(await fs.mkdtemp(join(temporaryDirectory, 'screenshot-api-host-')))
   directories.push(root)
   const stage = join(root, 'stage'); await fs.mkdir(stage)
   const worker = join(root, 'worker.exe'); await fs.writeFile(worker, Buffer.alloc(512))

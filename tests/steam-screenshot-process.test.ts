@@ -8,8 +8,9 @@ import { SteamScreenshotService } from '../src/main/steam-screenshots'
 const csv = (image: string, pid = 1234): string => `"${image}","${pid}","Console","1","1,024 K"`
 const roots: string[] = []
 afterEach(async () => {
+  const temporary = await fs.realpath(os.tmpdir())
   for (const root of roots.splice(0)) {
-    if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('screenshot-process-')) throw new Error('Unexpected process test root')
+    if (path.dirname(root) !== temporary || !path.basename(root).startsWith('screenshot-process-')) throw new Error('Unexpected process test root')
     await fs.rm(root, { recursive: true, force: true })
   }
 })
@@ -65,7 +66,7 @@ describe('screenshot-specific Steam process guard', () => {
   })
 
   it('keeps queued images and the original VDF untouched when only a screenshot webhelper remains', async () => {
-    const root = await fs.mkdtemp(path.join(path.resolve(os.tmpdir()), 'screenshot-process-'))
+    const root = await fs.realpath(await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'screenshot-process-')))
     roots.push(root)
     const base = path.join(root, 'userdata', '123', '760')
     await fs.mkdir(base, { recursive: true })

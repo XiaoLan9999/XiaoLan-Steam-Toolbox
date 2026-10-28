@@ -1,6 +1,6 @@
-import { mkdtemp, mkdir, readFile, writeFile, readdir, lstat, link, symlink, rm, copyFile, truncate } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, readdir, lstat, link, symlink, rm, copyFile, truncate, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -19,14 +19,15 @@ const friend = (id: string, name = 'Friend.'): FriendRecord => ({ accountId: id,
 const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
 
 afterEach(async () => {
+  const temporary = await realpath(tmpdir())
   for (const root of roots.splice(0)) {
-    if (dirname(root) !== resolve(tmpdir()) || !basename(root).startsWith('toolbox-data-import-')) throw new Error('Invalid fixture cleanup boundary')
+    if (dirname(root) !== temporary || !basename(root).startsWith('toolbox-data-import-')) throw new Error('Invalid fixture cleanup boundary')
     await rm(root, { recursive: true, force: true })
   }
 })
 
 async function fixture() {
-  const root = await mkdtemp(join(resolve(tmpdir()), 'toolbox-data-import-')); roots.push(root)
+  const root = await realpath(await mkdtemp(join(await realpath(tmpdir()), 'toolbox-data-import-'))); roots.push(root)
   const userData = join(root, 'user-data'); await mkdir(userData)
   const source = join(root, 'export.sqlite3'), originalSource = join(root, 'original.sqlite3')
   const store = new SqliteStore(originalSource, cipher)

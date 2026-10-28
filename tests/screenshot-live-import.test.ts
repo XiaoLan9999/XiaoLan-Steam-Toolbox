@@ -26,7 +26,8 @@ const adapter = (): ScreenshotImageAdapter => ({
   encode: vi.fn(async (_data, options) => ({ jpeg: jpeg(options.width, options.height), thumbnail: jpeg(options.thumbnailWidth, options.thumbnailHeight) }))
 })
 async function fixture(count = 1) {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'screenshot-live-fixture-')))
+  const temporaryDirectory = await fs.realpath(os.tmpdir())
+  const root = await fs.realpath(await fs.mkdtemp(path.join(temporaryDirectory, 'screenshot-live-fixture-')))
   roots.push(root)
   const steamPath = path.join(root, 'Steam')
   const base = path.join(steamPath, 'userdata', USER, '760')
@@ -65,8 +66,9 @@ async function fixture(count = 1) {
 }
 
 afterEach(async () => {
+  const temporaryDirectory = await fs.realpath(os.tmpdir())
   for (const root of roots.splice(0)) {
-    if (path.dirname(root).toLowerCase() !== path.resolve(os.tmpdir()).toLowerCase() || !path.basename(root).startsWith('screenshot-live-fixture-')) throw new Error('Unsafe fixture cleanup')
+    if (path.dirname(root).toLowerCase() !== temporaryDirectory.toLowerCase() || !path.basename(root).startsWith('screenshot-live-fixture-')) throw new Error('Unsafe fixture cleanup')
     await fs.rm(root, { recursive: true, force: true })
   }
 })
