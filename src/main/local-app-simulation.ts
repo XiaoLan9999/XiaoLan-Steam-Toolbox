@@ -17,7 +17,7 @@ import { readLocalAppSimulationContext, sameLocalAppSteam, validLocalAppContext,
 const messages: Record<LocalAppSimulationErrorCode, string> = {
   LOCAL_APP_CONTEXT_CHANGED: '工具箱账号、本机 Steam 或模拟任务已变化，已停止旧操作。',
   LOCAL_APP_CONTEXT_UNAVAILABLE: '无法核实本机 Steam 与游戏状态，未继续模拟。',
-  LOCAL_APP_GAME_ACTIVE: '本机已有游戏运行，请先退出游戏再启动模拟。',
+  LOCAL_APP_GAME_ACTIVE: 'Steam 已将目标 AppID 标记为运行中，请使用真实游戏状态工具修改，或停止该 AppID 后再启动模拟',
   LOCAL_APP_BUSY: '本机模拟操作尚未结束，请稍候。',
   LOCAL_APP_INVALID_INPUT: '请输入有效的 Steam AppID，并检查官方模板或实验性公开字段。',
   LOCAL_APP_METADATA_UNAVAILABLE: '暂时无法读取官方游戏信息，请重试。',
@@ -326,12 +326,12 @@ export class LocalAppSimulationService {
     return !this.disposed && this.generation === generation && !!account && account.id === this.value.accountId && account.steamId === this.value.steamId
   }
   private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = null }
-  private async checkedContext(steamId: string, ownAppId?: number): Promise<LocalAppSimulationContext> {
+  private async checkedContext(steamId: string, targetAppId: number, ownAppId?: number): Promise<LocalAppSimulationContext> {
     let context: LocalAppSimulationContext
     try { context = await (this.options.readContext ?? readLocalAppSimulationContext)() } catch { throw failure('LOCAL_APP_CONTEXT_UNAVAILABLE') }
     if (!validLocalAppContext(context)) throw failure('LOCAL_APP_CONTEXT_UNAVAILABLE')
     if (context.steamId !== steamId) throw failure('LOCAL_APP_CONTEXT_CHANGED')
-    if ((context.appId !== 0 && context.appId !== ownAppId) || context.activeAppIds.some(app => app !== ownAppId)) throw failure('LOCAL_APP_GAME_ACTIVE')
+    if (targetAppId !== ownAppId && (context.appId === targetAppId || context.activeAppIds.includes(targetAppId))) throw failure('LOCAL_APP_GAME_ACTIVE')
     if (this.context && !sameLocalAppSteam(this.context, context)) throw failure('LOCAL_APP_CONTEXT_CHANGED')
     return context
   }
@@ -401,11 +401,11 @@ export class LocalAppSimulationService {
       assert()
       await this.options.beforeStart?.(); assert()
       if (oldApp !== null && oldApp !== input.appId) { await this.host.shutdown(); assert(); this.context = null; this.desired = {} }
-      const context = await this.checkedContext(account.steamId, oldApp === input.appId ? oldApp : undefined); assert()
+      const context = await this.checkedContext(account.steamId, input.appId, oldApp ?? undefined); assert()
       let read: LocalAppSimulationRead
       if (oldApp !== input.appId || !this.context) {
         await this.host.shutdown(); assert()
-        const fresh = await this.checkedContext(account.steamId); assert()
+        const fresh = await this.checkedContext(account.steamId, input.appId); assert()
         this.context = fresh
         read = await this.host.begin(fresh, input.appId, owned); assert()
       } else { if (!sameLocalAppSteam(this.context, context)) throw failure('LOCAL_APP_CONTEXT_CHANGED'); read = await this.host.read(owned); assert() }
@@ -449,7 +449,7 @@ export class LocalAppSimulationService {
         return
       }
       const revision = this.activityRevision
-      void this.checkedContext(this.context.steamId, this.value.appId).then(() => {
+      void this.checkedContext(this.context.steamId, this.value.appId, this.value.appId).then(() => {
         if (this.current(generation) && this.activityRevision === revision && this.value.status === 'running') this.schedule(generation)
       }, error => {
         if (!this.current(generation)) { void this.invalidate().catch(noop); return }

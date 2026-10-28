@@ -86,10 +86,23 @@ describe('local AppID simulation without personal CM or CEF', () => {
     await expect(f.service.start({ ...f.action(), appId: 730 })).rejects.toMatchObject({ code: 'LOCAL_APP_LIVE_RESTORE_REQUIRED' })
     expect(f.host.calls.filter(call => call.op === 'begin')).toHaveLength(0)
   })
-  it.each([{ appId: 550 }, { activeAppIds: [550] }, { activeAppIds: [0] }])('refuses a real game or shortcut: %j', async context => {
+  it.each([{ appId: 550 }, { activeAppIds: [550] }, { activeAppIds: [0] }, { appId: 550, activeAppIds: [0, 550] }])('allows another real game or shortcut: %j', async context => {
+    const f = fixture(); f.setContext(context)
+    expect(await f.service.start({ ...f.action(), appId: 730 })).toMatchObject({ status: 'running', appId: 730 })
+    expect(f.host.calls.filter(call => call.op === 'begin')).toHaveLength(1)
+    expect(f.detector).toHaveBeenCalledTimes(2)
+  })
+  it.each([{ appId: 730 }, { activeAppIds: [730] }, { appId: 550, activeAppIds: [0, 550, 730] }])('refuses an already running target game: %j', async context => {
     const f = fixture(); f.setContext(context)
     await expect(f.service.start({ ...f.action(), appId: 730 })).rejects.toMatchObject({ code: 'LOCAL_APP_GAME_ACTIVE' })
     expect(f.host.calls.some(call => call.op === 'begin')).toBe(false)
+  })
+  it.each([{ appId: 730 }, { appId: 550, activeAppIds: [550, 730] }])('refuses a target game that appears between startup checks: %j', async context => {
+    const f = fixture()
+    f.detector.mockResolvedValueOnce({ ...CONTEXT, appId: 550, activeAppIds: [550] }).mockResolvedValueOnce({ ...CONTEXT, ...context })
+    await expect(f.service.start({ ...f.action(), appId: 730 })).rejects.toMatchObject({ code: 'LOCAL_APP_GAME_ACTIVE' })
+    expect(f.detector).toHaveBeenCalledTimes(2)
+    expect(f.host.calls.some(call => call.op === 'begin' || call.op === 'apply')).toBe(false)
   })
   it('does not resume an old start after account change or explicit stop', async () => {
     for (const kind of ['account', 'stop']) {
@@ -108,6 +121,18 @@ describe('local AppID simulation without personal CM or CEF', () => {
     await f.service.start({ ...input, presence: { displayToken: '#Fixture', values: { status: 'Two' } } })
     expect(f.host.calls.filter(call => call.op === 'apply').at(-1)!.changes).toEqual({ status: 'Two' })
   })
+  it('updates substatus without stopping or changing other games', async () => {
+    const f = fixture(); await f.service.inspect({ ...f.action(), appId: 730 })
+    const input = { ...f.action(), appId: 730, presence: { displayToken: '#Fixture', values: { status: 'One' } } }
+    f.setContext({ appId: 550, activeAppIds: [0, 550] }); await f.service.start(input)
+    const activity = { appId: 570, activeAppIds: [0, 570, 730] }
+    f.setContext(activity)
+    const before = f.host.calls.length
+    expect(await f.service.start({ ...input, presence: { displayToken: '#Fixture', values: { status: 'Two' } } })).toMatchObject({ status: 'running', appId: 730, fields: { status: 'Two' } })
+    expect(f.host.calls.slice(before).map(call => call.op)).toEqual(['read', 'apply', 'read'])
+    expect(f.host.calls.filter(call => call.op === 'begin').map(call => call.appId)).toEqual([730])
+    expect(await f.detector()).toMatchObject(activity)
+  })
   it('clears only fields previously set by this simulation when the template is removed', async () => {
     const f = fixture(); await f.service.inspect({ ...f.action(), appId: 730 })
     await f.service.start({ ...f.action(), appId: 730, presence: { displayToken: '#Fixture', values: { status: 'One' } } })
@@ -119,6 +144,13 @@ describe('local AppID simulation without personal CM or CEF', () => {
     const pending = f.service.start({ ...f.action(), appId: 550 }); await flush()
     expect(f.host.calls.filter(call => call.op === 'begin')).toHaveLength(1)
     gate.resolve(); await pending; expect(f.host.calls.filter(call => call.op === 'begin').map(call => call.appId)).toEqual([730, 550])
+  })
+  it.each([{ appId: 550 }, { appId: 730, activeAppIds: [730, 550] }])('refuses switching simulation to a target game that is already running: %j', async context => {
+    const f = fixture(); await f.service.start({ ...f.action(), appId: 730 })
+    f.setContext(context)
+    await expect(f.service.start({ ...f.action(), appId: 550 })).rejects.toMatchObject({ code: 'LOCAL_APP_GAME_ACTIVE' })
+    expect(f.host.calls.filter(call => call.op === 'begin').map(call => call.appId)).toEqual([730])
+    expect(f.service.state()).toMatchObject({ status: 'error', error: { code: 'LOCAL_APP_GAME_ACTIVE' } })
   })
   it('refuses arbitrary presence and templates not obtained from official metadata', async () => {
     const f = fixture()
@@ -232,12 +264,12 @@ describe('local AppID simulation without personal CM or CEF', () => {
     await f.service.start({ ...f.action(), appId: 730, unverifiedPresence: all })
     expect(f.service.state().fields).toEqual(all); expect(f.service.state().status).toBe('running')
   })
-  it('keeps account, active-game and safe-restore guards for experimental submission', async () => {
+  it('keeps account, target-game and safe-restore guards for experimental submission', async () => {
     const input = { appId: 730, unverifiedPresence: { desc: 'Synthetic' } }
     const account = fixture(); account.setAccount(null)
     await expect(account.service.start({ ...account.action(), ...input })).rejects.toMatchObject({ code: 'LOCAL_APP_CONTEXT_CHANGED' })
     expect(account.host.calls.some(call => call.op === 'begin')).toBe(false)
-    const game = fixture(); game.setContext({ appId: 550 })
+    const game = fixture(); game.setContext({ appId: 730 })
     await expect(game.service.start({ ...game.action(), ...input })).rejects.toMatchObject({ code: 'LOCAL_APP_GAME_ACTIVE' })
     expect(game.host.calls.some(call => call.op === 'apply')).toBe(false)
     const restore = fixture(); restore.before.mockRejectedValueOnce(new DomainError('LOCAL_APP_LIVE_RESTORE_REQUIRED', 'fixture'))
@@ -251,20 +283,46 @@ describe('local AppID simulation without personal CM or CEF', () => {
     f.host.listener!(new DomainError('LOCAL_APP_EXITED', 'fixture')); expect(f.service.state().submissionMode).toBeUndefined()
     await f.service.invalidate(); expect(f.service.state().fields).toEqual({}); expect(f.service.state().submissionMode).toBeUndefined()
   })
-  it('stops its helper if another game or Steam instance appears', async () => {
+  it('keeps its helper running when other games start, switch and exit', async () => {
     vi.useFakeTimers(); const f = fixture(); await f.service.start({ ...f.action(), appId: 730 })
-    f.setContext({ appId: 550 }); await vi.advanceTimersByTimeAsync(3000)
-    expect(f.service.state()).toMatchObject({ status: 'error', error: { code: 'LOCAL_APP_GAME_ACTIVE' }, verificationSource: null })
+    for (const context of [{ appId: 550, activeAppIds: [550, 730] }, { appId: 570, activeAppIds: [0, 570, 730] }, { appId: 730, activeAppIds: [730] }, { appId: 0, activeAppIds: [] }]) {
+      f.setContext(context); await vi.advanceTimersByTimeAsync(3000)
+      expect(f.service.state()).toMatchObject({ status: 'running', appId: 730, error: null, verificationSource: 'local-cache' })
+    }
+    expect(f.detector).toHaveBeenCalledTimes(6)
+    expect(f.host.calls.some(call => call.op === 'stop')).toBe(false)
+  })
+  it.each([{ steamId: '76561198000000002' }, { steamPid: 1235 }, { steamStartTicks: '638965000000000003' }, { steamExe: 'E:/Steam/steam.exe' }, { ownerPid: 5679 }, { ownerStartTicks: '638965000000000003' }])('stops its helper if the Steam or owner identity changes: %j', async context => {
+    vi.useFakeTimers(); const f = fixture(); await f.service.start({ ...f.action(), appId: 730 })
+    f.setContext({ appId: 550, activeAppIds: [550, 730], ...context }); await vi.advanceTimersByTimeAsync(3000)
+    expect(f.service.state()).toMatchObject({ status: 'error', error: { code: 'LOCAL_APP_CONTEXT_CHANGED' }, verificationSource: null })
     expect(f.host.calls.at(-1)!.op).toBe('stop')
   })
-  it('keeps the real-game guard active while anonymous metadata inspection is waiting', async () => {
+  it('stops its helper if the selected account changes while another game runs', async () => {
+    vi.useFakeTimers(); const f = fixture(); await f.service.start({ ...f.action(), appId: 730 })
+    const owned = f.host.calls.find(call => call.op === 'begin')!.permitted!
+    f.setContext({ appId: 550, activeAppIds: [550, 730] }); f.setAccount({ ...ACCOUNT, id: 'new-account' })
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(owned()).toBe(false)
+    expect(f.host.calls.some(call => call.op === 'stop')).toBe(true)
+    expect(f.service.state()).toMatchObject({ status: 'idle', accountId: 'new-account' })
+  })
+  it('stops only the owned host without changing another real game or restoring its fields', async () => {
+    const f = fixture(); const activity = { appId: 550, activeAppIds: [550] }; f.setContext(activity)
+    await f.service.start({ ...f.action(), appId: 730, unverifiedPresence: { desc: 'Synthetic' } })
+    const before = f.host.calls.length
+    expect(await f.service.stop(f.action())).toMatchObject({ status: 'idle', appId: null, fields: {} })
+    expect(f.host.calls.slice(before)).toEqual([{ op: 'shutdown' }])
+    expect(await f.detector()).toMatchObject(activity)
+  })
+  it('keeps the Steam identity guard active while anonymous metadata inspection is waiting', async () => {
     vi.useFakeTimers(); const f = fixture(); await f.service.start({ ...f.action(), appId: 730 })
     const gate = deferred<GameStatusAppInfo>(); f.metadata.mockImplementationOnce(() => gate.promise)
     const inspecting = f.service.inspect({ ...f.action(), appId: 730 }); const rejected = expect(inspecting).rejects.toMatchObject({ code: 'LOCAL_APP_CONTEXT_CHANGED' })
-    f.setContext({ appId: 550 }); await vi.advanceTimersByTimeAsync(3000)
-    expect(f.service.state()).toMatchObject({ status: 'error', error: { code: 'LOCAL_APP_GAME_ACTIVE' } })
+    f.setContext({ appId: 550, steamPid: 1235 }); await vi.advanceTimersByTimeAsync(3000)
+    expect(f.service.state()).toMatchObject({ status: 'error', error: { code: 'LOCAL_APP_CONTEXT_CHANGED' } })
     expect(f.host.calls.at(-1)!.op).toBe('stop'); gate.resolve(INFO); await rejected
-    expect(f.service.state().error?.code).toBe('LOCAL_APP_GAME_ACTIVE')
+    expect(f.service.state().error?.code).toBe('LOCAL_APP_CONTEXT_CHANGED')
   })
   it('invalidates immediately but waits for cleanup, and shutdown is permanent', async () => {
     const f = fixture(); await f.service.start({ ...f.action(), appId: 730 }); const gate = deferred<void>(); f.host.gate = gate
@@ -344,6 +402,23 @@ function brokerFixture() {
   return { broker, children, spawn }
 }
 describe('direct stdio local-AppID broker', () => {
+  it('binds the requested simulated AppID through the real broker while another AppID is active', async () => {
+    const f = brokerFixture()
+    const context = { ...CONTEXT, appId: 550, activeAppIds: [0, 550] }
+    const service = new LocalAppSimulationService({ getActiveAccount: () => ACCOUNT,
+      getWorkerPath: () => 'D:/fixture/worker.exe', host: f.broker, readContext: async () => structuredClone(context) })
+    cleanups.push(() => service.shutdown())
+    const action = { accountId: ACCOUNT.id, sessionId: service.state().sessionId }
+    expect(await service.start({ ...action, appId: 4000 })).toMatchObject({ status: 'running', appId: 4000 })
+    const args = f.spawn.mock.calls[0]![1]
+    expect(args[args.indexOf('--app-id') + 1]).toBe('4000')
+    expect(f.children).toHaveLength(1)
+    expect(await service.stop(action)).toMatchObject({ status: 'idle', appId: null })
+    expect(f.children[0]!.commands.at(-1)!.op).toBe('stop')
+    expect(f.children[0]!.killed).toBe(0)
+    expect(context).toMatchObject({ appId: 550, activeAppIds: [0, 550] })
+  })
+
   it.each(preciseWorkerCodes)('preserves startup %s rather than reporting a generic missing component', async code => {
     const f = brokerFixture()
     f.spawn.mockImplementationOnce(() => {

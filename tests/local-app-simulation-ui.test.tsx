@@ -5,7 +5,7 @@ import type { GameStatusAppInfo, GameStatusPresence } from '../src/shared/game-s
 import type { LocalAppSimulationApi, LocalAppSimulationSnapshot } from '../src/shared/local-app-simulation'
 import { richPresenceContract } from '../src/shared/rich-presence-contract'
 
-const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as any[], effects: [] as Array<() => void> }))
+const hooks = vi.hoisted(() => ({ cursor: 0, slots: [] as any[], effects: [] as Array<() => void>, language: 'en' as 'zh' | 'en' }))
 vi.mock('react', async original => {
   const react = await original<typeof import('react')>()
   return { ...react,
@@ -14,7 +14,7 @@ vi.mock('react', async original => {
     useLayoutEffect: (effect: () => void | (() => void), dependencies: unknown[]) => { const index = hooks.cursor++; const previous = hooks.slots[index]; if (!previous || dependencies.some((value, i) => !Object.is(previous.dependencies[i], value))) { previous?.cleanup?.(); const entry = { dependencies, cleanup: undefined as void | (() => void) }; hooks.slots[index] = entry; hooks.effects.push(() => { entry.cleanup = effect() }) } }
   }
 })
-vi.mock('../src/renderer/src/i18n', () => ({ useI18n: () => ({ language: 'en', t: (_zh: string, en: string) => en }) }))
+vi.mock('../src/renderer/src/i18n', () => ({ useI18n: () => ({ language: hooks.language, t: (zh: string, en: string) => hooks.language === 'en' ? en : zh }) }))
 import { LocalAppSimulationPanel, localSimulationError } from '../src/renderer/src/components/LocalAppSimulationPanel'
 
 const account = { id: 'local-ui-A', steamId: '76561198000000001' } as AccountView
@@ -25,9 +25,10 @@ const info: GameStatusAppInfo = { appId: 1329410, name: 'Synthetic game', iconUr
 const pending = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 const nodes = (value: ReactNode): ReactElement<any>[] => !value || typeof value !== 'object' ? [] : Array.isArray(value) ? value.flatMap(nodes) : [value as ReactElement<any>, ...nodes((value as ReactElement<any>).props.children)]
 const text = (value: ReactNode): string => typeof value === 'string' || typeof value === 'number' ? String(value) : Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as ReactElement<any>).props.children) : ''
-afterEach(() => { for (const entry of hooks.slots) entry?.cleanup?.(); hooks.cursor = 0; hooks.slots = []; hooks.effects = [] })
+afterEach(() => { for (const entry of hooks.slots) entry?.cleanup?.(); hooks.cursor = 0; hooks.slots = []; hooks.effects = []; hooks.language = 'en' })
 
-async function fixture(options: { initial?: LocalAppSimulationSnapshot; presence?: GameStatusPresence; appIdText?: string; restore?: boolean; groupSize?: number } = {}) {
+async function fixture(options: { initial?: LocalAppSimulationSnapshot; presence?: GameStatusPresence; appIdText?: string; restore?: boolean; groupSize?: number; language?: 'zh' | 'en' } = {}) {
+  hooks.language = options.language ?? 'en'
   let snapshot = options.initial ?? base
   const listeners = new Set<(state: LocalAppSimulationSnapshot) => void>()
   const api = { state: vi.fn(async () => snapshot), inspect: vi.fn(async () => info),
@@ -48,6 +49,66 @@ async function fixture(options: { initial?: LocalAppSimulationSnapshot; presence
 }
 
 describe('local AppID simulation UI', () => {
+  it.each(['zh', 'en'] as const)('always explains parallel display attempts and stop ownership in %s without an extra opt-in', async language => {
+    const f = await fixture({ language })
+    const help = language === 'zh' ? [
+      '可与其他不同 AppID 的游戏并行运行，尝试覆盖 Steam 展示',
+      '不会结束真实游戏，也不会创建个人 CM 或聊天会话',
+      '展示排序与停止后的切回时机由 Steam 决定，不保证立即恢复原展示',
+      '停止模拟只关闭工具箱自有的占位进程，不结束 Steam 或其他游戏',
+      '若要启动与模拟相同 AppID 的真实游戏，请先停止模拟',
+      '修改正在游玩的游戏子状态，请使用“真实游戏状态”编辑或锁定'
+    ] : [
+      'Run alongside other games with different AppIDs to attempt to override the Steam display',
+      'Real games are not terminated, and no personal CM or chat session is created',
+      'Steam decides display ordering and when to switch back after stopping; the original display may not return immediately',
+      'Stopping simulation only closes the toolbox-owned placeholder, never Steam or another game',
+      'Stop simulation before starting the real game with the same AppID',
+      'To change the substatus of the game you are playing, use Live game status to edit or lock it'
+    ]
+    for (const expected of help) {
+      const paragraph = nodes(f.root()).find(node => node.type === 'p' && text(node).includes(expected))
+      expect(paragraph).toBeDefined()
+      expect(text(paragraph)).not.toMatch(/[.。]$/)
+    }
+    expect(nodes(f.root()).filter(node => node.type === 'input' && node.props.type === 'checkbox')).toHaveLength(2)
+    const start = language === 'zh' ? '启动本机模拟' : 'Start local simulation'
+    expect(f.button(start).disabled).toBe(false)
+    expect(f.api.start).not.toHaveBeenCalled(); expect(f.api.inspect).not.toHaveBeenCalled()
+    await f.click(start)
+    expect(f.api.start).toHaveBeenCalledExactlyOnceWith({ accountId: account.id, sessionId: base.sessionId, appId: 1329410 })
+  })
+
+  it.each(['zh', 'en'] as const)('explains only a running target AppID as a game conflict in %s', async language => {
+    const f = await fixture({ language })
+    f.api.start.mockRejectedValueOnce({ code: 'LOCAL_APP_GAME_ACTIVE', message: 'private SDK payload' })
+    await f.click(language === 'zh' ? '启动本机模拟' : 'Start local simulation')
+    const alert = nodes(f.root()).find(node => node.props.role === 'alert')
+    const message = text(alert)
+    expect(message).toBe(localSimulationError('LOCAL_APP_GAME_ACTIVE', (zh, en) => language === 'zh' ? zh : en))
+    expect(message).toContain(language === 'zh' ? 'Steam 已将目标 AppID 标记为运行中' : 'Steam reports the target AppID as active')
+    expect(message).toContain(language === 'zh' ? '“真实游戏状态”编辑或锁定' : 'Live game status to edit or lock the substatus')
+    expect(message).not.toMatch(/[.。]$/)
+    expect(message).not.toContain('Another game is running')
+    expect(message).not.toContain('检测到其他游戏正在运行')
+    expect(text(f.root())).not.toContain('private SDK payload')
+    expect(f.api.start).toHaveBeenCalledOnce()
+  })
+
+  it.each(['zh', 'en'] as const)('limits the running-state stop-first reminder to the same AppID in %s', async language => {
+    const f = await fixture({ language, initial: { ...base, status: 'running', appId: info.appId, appInfo: info } })
+    const reminder = language === 'zh'
+      ? '若要启动与此模拟相同 AppID 的真实游戏，请先停止模拟；其他不同 AppID 的游戏可并行运行'
+      : 'Stop this simulation before starting the real game with the same AppID; other games with different AppIDs can run alongside it'
+    expect(text(f.root())).toContain(reminder)
+    expect(reminder).not.toMatch(/[.。]$/)
+    expect(text(f.root())).not.toContain('开始真实游戏前请先停止模拟')
+    expect(text(f.root())).not.toContain('Stop simulation before starting a real game')
+    expect(text(f.root())).toContain(language === 'zh' ? '好友端显示仍需实际确认' : 'a friend-client display still needs confirmation')
+    expect(f.button(language === 'zh' ? '更新子消息' : 'Update substatus').disabled).toBe(false)
+    expect(f.button(language === 'zh' ? '停止本机模拟' : 'Stop local simulation').disabled).toBe(false)
+  })
+
   it('retries the current template lookup without starting, stopping or submitting a status', async () => {
     const f = await fixture({ initial: { ...base, status: 'running', appId: info.appId, appInfo: info } })
     const editor = nodes(f.root()).find(node => typeof node.type === 'function' && node.type.name === 'GameStatusTemplateEditor')!

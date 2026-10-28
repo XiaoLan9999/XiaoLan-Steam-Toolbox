@@ -26,7 +26,7 @@ interface Props {
 type Translate = (zh: string, en: string) => string
 export function localSimulationError(code: unknown, t: Translate): string {
   switch (code) {
-    case 'LOCAL_APP_GAME_ACTIVE': return t('检测到其他游戏正在运行。请先正常退出游戏，再启动本机模拟', 'Another game is running. Exit it normally before starting local simulation')
+    case 'LOCAL_APP_GAME_ACTIVE': return t('Steam 已将目标 AppID 标记为运行中，不能再次启动同一 AppID 的本机模拟。修改正在游玩的游戏子状态请使用“真实游戏状态”编辑或锁定', 'Steam reports the target AppID as active, so another local simulation cannot start for the same AppID. Use Live game status to edit or lock the substatus of the game you are playing')
     case 'LOCAL_APP_LIVE_RESTORE_REQUIRED': return t('真实游戏仍有锁定或恢复记录，请先解除锁定并安全恢复', 'Unlock and safely restore the live-game edit before starting simulation')
     case 'LOCAL_APP_CONTEXT_CHANGED': return t('账号或 Steam 会话已变化，旧操作已停止。请重新读取状态', 'The account or Steam session changed. The old operation stopped; refresh the state')
     case 'LOCAL_APP_CONTEXT_UNAVAILABLE': return t('无法核实本机 Steam。请确认 Steam 正常运行且账号一致', 'Local Steam could not be verified. Check that Steam is running with the selected account')
@@ -215,13 +215,15 @@ export function LocalAppSimulationPanel(props: Props): React.JSX.Element {
     {props.liveRestoreRequired && <p className="game-status-notice info">{t('真实游戏仍有锁定或恢复记录，请先解除锁定并安全恢复，再启动本机模拟', 'Unlock and safely restore the live-game edit before starting local simulation')}</p>}
     {(error || snapshot?.error) && <p className="game-status-notice error" role="alert">{localSimulationError(error ?? snapshot?.error?.code, t)}</p>}
     <p className="game-status-help">{t('AppID 必须属于当前账号可运行且有许可的游戏，无需先下载或安装目标游戏。默认通过游戏发布的有效模板提交子状态；也可显式启用实验性手动模式，但不保证显示。首次可先不选子消息启动，再读取模板并更新', 'The selected account must be licensed to run this AppID; downloading or installing the target game is not required. Published templates are used by default. Experimental manual fields require explicit opt-in and may not display. Start without a substatus if needed, then read and apply its template')}</p>
+    <p className="game-status-help">{t('可与其他不同 AppID 的游戏并行运行，尝试覆盖 Steam 展示；不会结束真实游戏，也不会创建个人 CM 或聊天会话。展示排序与停止后的切回时机由 Steam 决定，不保证立即恢复原展示', 'Run alongside other games with different AppIDs to attempt to override the Steam display. Real games are not terminated, and no personal CM or chat session is created. Steam decides display ordering and when to switch back after stopping; the original display may not return immediately')}</p>
+    <p className="game-status-help">{t('停止模拟只关闭工具箱自有的占位进程，不结束 Steam 或其他游戏。若要启动与模拟相同 AppID 的真实游戏，请先停止模拟；修改正在游玩的游戏子状态，请使用“真实游戏状态”编辑或锁定', 'Stopping simulation only closes the toolbox-owned placeholder, never Steam or another game. Stop simulation before starting the real game with the same AppID. To change the substatus of the game you are playing, use Live game status to edit or lock it')}</p>
     {!experimental && omitUnverifiedDraft && <p className="game-status-notice info">{t('草稿中的子消息还未通过模板核对，本次只启动游戏，不提交这段子消息。草稿会保留，读取模板后可再更新', 'The draft substatus has not passed template verification. This start runs only the game, without submitting that substatus. The draft is retained for updating after templates are read')}</p>}
     {running && <div className="game-status-notice info" role="status"><strong>{snapshot.submissionMode === 'experimental'
       ? t('实验字段已提交；仅回读本机缓存，尚未确认好友端显示', 'Experimental fields were submitted; only the local cache was read, not a friend-client display')
       : t('本机接口已核对；好友端显示仍需实际确认', 'The local interface is verified; a friend-client display still needs confirmation')}</strong>
       <p>{t('当前运行的模拟', 'Currently running simulation')}: {snapshot.appId}{snapshot.appInfo?.name ? ` · ${snapshot.appInfo.name}` : ''}</p>
       {snapshot.localizedString && <p>{snapshot.localizedString}</p>}
-      <p>{t('开始真实游戏前请先停止模拟。停止只处理工具箱自己的占位进程，不结束 Steam 或其他游戏', 'Stop simulation before starting a real game. Only the toolbox-owned placeholder is stopped, never Steam or another game')}</p></div>}
+      <p>{t('若要启动与此模拟相同 AppID 的真实游戏，请先停止模拟；其他不同 AppID 的游戏可并行运行', 'Stop this simulation before starting the real game with the same AppID; other games with different AppIDs can run alongside it')}</p></div>}
     <div className="game-status-actions"><button className="primary" disabled={working || !snapshot || !validAppId || !substatusValid || !groupValid || props.liveRestoreRequired} onClick={() => void run('start')}>{operation === 'start' ? t('提交中…', 'Submitting…') : sameTarget ? t('更新子消息', 'Update substatus') : t('启动本机模拟', 'Start local simulation')}</button>
       <button disabled={!canStop || operation === 'stop'} onClick={() => void run('stop')}>{operation === 'stop' ? t('停止中…', 'Stopping…') : t('停止本机模拟', 'Stop local simulation')}</button>
       <button className="ghost" disabled={working || experimental || props.saveBusy || !validAppId || !groupValid} onClick={() => { if (!experimental) props.onSaveDraft() }}>{t('保存本机草稿', 'Save local draft')}</button></div>
