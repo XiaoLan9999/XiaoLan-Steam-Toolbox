@@ -19,5 +19,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/audit-source.mjs
-      - run: npm test -- --maxWorkers=1
+      # Allow disk-backed fixtures an I/O budget on shared Windows runners.
+      - run: npm test -- --maxWorkers=1 --testTimeout=30000
       - run: npm run build
