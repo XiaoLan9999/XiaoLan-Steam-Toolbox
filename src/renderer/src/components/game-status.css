@@ -4,10 +4,10 @@
 .game-status-heading h2 { margin: 8px 0 9px; font-size: 25px; }
 .game-status-heading p, .game-status-section-title p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .game-status-badge { flex-shrink: 0; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--panel-2); font-size: 11px; }
-.game-status-badge.connected { border-color: #c7dfd0; color: var(--green); background: #f0f8f2; }
+.game-status-badge.connected { border-color: var(--tone-border-c7dfd0ff, #c7dfd0); color: var(--green); background: var(--tone-bg-f0f8f2ff, #f0f8f2); }
 .game-status-card { margin-bottom: 20px; padding: 23px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); }
-.game-status-binding { display: flex; align-items: center; gap: 13px; margin-bottom: 17px; padding: 15px 18px; border: 1px solid #cce0e8; border-radius: 12px; background: var(--sky-soft); }
-.game-status-account-icon { display: grid; flex-shrink: 0; width: 38px; height: 38px; place-items: center; border-radius: 11px; color: var(--blue); background: #d9edf5; font-size: 18px; font-weight: 700; }
+.game-status-binding { display: flex; align-items: center; gap: 13px; margin-bottom: 17px; padding: 15px 18px; border: 1px solid var(--tone-border-cce0e8ff, #cce0e8); border-radius: 12px; background: var(--sky-soft); }
+.game-status-account-icon { display: grid; flex-shrink: 0; width: 38px; height: 38px; place-items: center; border-radius: 11px; color: var(--blue); background: var(--tone-bg-d9edf5ff, #d9edf5); font-size: 18px; font-weight: 700; }
 .game-status-binding > div { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
 .game-status-binding strong { overflow-wrap: anywhere; font-size: 13px; }
 .game-status-binding span:not(.game-status-account-icon) { color: var(--muted); font-size: 10px; }
@@ -17,9 +17,9 @@
 .game-status-section-title h3 { margin: 0 0 7px; font-size: 16px; }
 .game-status-section-title > button { flex-shrink: 0; }
 .game-status-panel button { padding: 9px 13px; font-size: 12px; font-weight: 600; }
-.game-status-panel button.primary { border-color: transparent; color: #214b61; background: linear-gradient(135deg, #c6e9f6, #add9ec); }
+.game-status-panel button.primary { border-color: transparent; color: var(--tone-fg-214b61ff, #214b61); background: linear-gradient(135deg, var(--tone-bg-c6e9f6ff, #c6e9f6), var(--tone-bg-add9ecff, #add9ec)); }
 .game-status-panel button.ghost { background: var(--panel); }
-.game-status-panel button:hover:not(:disabled) { border-color: #8cbdd3; }
+.game-status-panel button:hover:not(:disabled) { border-color: var(--tone-border-8cbdd3ff, #8cbdd3); }
 .game-status-panel input, .game-status-panel select { min-width: 0; padding: 10px 11px; font-size: 12px; }
 .game-status-panel label { display: flex; min-width: 0; flex-direction: column; gap: 9px; font-size: 12px; }
 .game-status-connect-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 11px; }
@@ -27,11 +27,11 @@
 .game-status-inline-error { margin: 14px 0 0; color: var(--red); font-size: 12px; line-height: 1.7; }
 .game-status-tabs { display: flex; gap: 6px; margin: 24px 0 17px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .game-status-tabs button { position: relative; min-width: 126px; border-color: transparent; color: var(--muted); background: transparent; }
-.game-status-tabs button.selected { border-color: #bfdbe8; color: var(--blue); background: var(--sky-soft); }
+.game-status-tabs button.selected { border-color: var(--tone-border-bfdbe8ff, #bfdbe8); color: var(--blue); background: var(--sky-soft); }
 .game-status-tabs i { display: inline-block; width: 6px; height: 6px; margin-left: 8px; border-radius: 50%; background: var(--tea); vertical-align: middle; }
 .game-status-notice { margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px; color: var(--muted); background: var(--panel-2); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-.game-status-notice.success { color: var(--green); border-left-color: var(--green); background: #f0f8f2; }
-.game-status-notice.error { color: var(--red); border-left-color: var(--red); background: #fdf2f0; }
+.game-status-notice.success { color: var(--green); border-left-color: var(--green); background: var(--tone-bg-f0f8f2ff, #f0f8f2); }
+.game-status-notice.error { color: var(--red); border-left-color: var(--red); background: var(--tone-bg-fdf2f0ff, #fdf2f0); }
 .game-status-notice.info { border-left-color: var(--blue); }
 .game-status-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 19px 17px; }
 .game-status-wide { grid-column: 1 / -1; }
@@ -45,7 +45,7 @@
 .game-status-empty > span { color: var(--blue); font-size: 34px; }
 .game-status-empty h3 { margin: 17px 0 9px; color: var(--text); font-size: 17px; }
 .game-status-empty p, .game-status-live-empty p { max-width: 620px; margin: 11px auto 0; font-size: 12px; line-height: 1.8; }
-.game-status-live-empty { margin: 18px 0; border: 1px dashed #bed5df; border-radius: 10px; background: var(--panel-2); }
+.game-status-live-empty { margin: 18px 0; border: 1px dashed var(--tone-border-bed5dfff, #bed5df); border-radius: 10px; background: var(--panel-2); }
 .game-status-live-meta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 19px 0 14px; color: var(--muted); font-size: 11px; }
 .game-status-live-meta strong { color: var(--blue); }
 .game-status-key-table-wrap { max-height: 470px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
@@ -83,7 +83,7 @@
 .game-status-template-preview.invalid { border-color: var(--tea-line); color: var(--tea); background: var(--tea-soft); }
 .game-status-live-display, .game-status-submitted, .game-status-lock { margin: 20px 0; padding: 17px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
 .game-status-submitted > strong, .game-status-submitted > p { overflow-wrap: anywhere; }
-.game-status-lock { border-color: #cce0e8; background: var(--sky-soft); }
+.game-status-lock { border-color: var(--tone-border-cce0e8ff, #cce0e8); background: var(--sky-soft); }
 .game-status-lock .game-status-section-title { margin-bottom: 10px; }
 .game-status-lock h3 { margin: 0; font-size: 14px; }
 .game-status-lock dl { display: grid; gap: 10px; font-size: 11px; }

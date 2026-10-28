@@ -10,6 +10,10 @@ files:
   - package.json
 asar: true
 extraResources:
+  - from: resources/screenshot-import
+    to: screenshot-import
+    filter:
+      - screenshot-import-host-x64.exe
   - from: build/icon.png
     to: icon.png
   - from: resources/native-presence

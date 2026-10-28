@@ -100,21 +100,21 @@ export function ComposerErrorLog({ batch, enabled = false }: {
       <h4>{t('失败与跳过记录', 'Failure and skipped-recipient log')}</h4>
       <button disabled={loading} onClick={() => void request(offset)}>{t('刷新记录', 'Refresh log')}</button>
     </div>
-    <p className="composer-error-log-note">{t(`已保存 ${batch.failedCount} 条失败／跳过记录，每页 5 条。`,
-      `${batch.failedCount} failure/skipped records saved, five per page.`)} {t('跳过不代表发送成功；完整记录保留在任务明细中。',
-      'Skipping does not mean sent. Full records remain in task details.')}</p>
-    {hasNewErrors && <p className="composer-error-log-note" role="status">{t('有新增记录，请点“刷新记录”查看；这里不会自动发送或重复处理。',
-      'New records are available. Refresh to view them; this log never sends or repeats a delivery.')}</p>}
+    <p className="composer-error-log-note">{t(`已保存 ${batch.failedCount} 条失败／跳过记录，每页 5 条`,
+      `${batch.failedCount} failure/skipped records saved, five per page`)} {t('跳过不代表发送成功；完整记录保留在任务明细中',
+      'Skipping does not mean sent. Full records remain in task details')}</p>
+    {hasNewErrors && <p className="composer-error-log-note" role="status">{t('有新增记录，请点“刷新记录”查看；这里不会自动发送或重复处理',
+      'New records are available. Refresh to view them; this log never sends or repeats a delivery')}</p>}
     {loading ? <p role="status">{t('正在读取保存的失败记录…', 'Reading saved failure records…')}</p>
-      : current?.failed ? <p role="alert">{t('暂时无法读取失败记录，请点击刷新重试；不会影响发送任务。',
-        'The saved failure log could not be read. Refresh to retry; the sending task is unaffected.')}</p>
+      : current?.failed ? <p role="alert">{t('暂时无法读取失败记录，请点击刷新重试；不会影响发送任务',
+        'The saved failure log could not be read. Refresh to retry; the sending task is unaffected')}</p>
         : page && page.items.length > 0 ? <ol className="composer-error-log-list" start={offset + 1}>{page.items.map(item => <li key={item.id}>
           <strong dir="auto">{item.friendName.trim() || t('未记录好友名称', 'Friend name not recorded')}</strong>
           <span>SteamID: <bdi>{item.friendSteamId}</bdi></span>
           <span>{t('记录时间', 'Recorded time')}: {displayTime(batch.activity?.recent.find(record => record.deliveryId === item.id)?.recordedAt ?? item.sentAt)}</span>
-          <p dir="auto">{item.error ? localizeMessage(item.error, language) : t('未记录具体原因，请查看任务明细。',
-            'No specific reason was saved. Check task details.')}</p>
-        </li>)}</ol> : <p>{t('这一页没有失败或跳过记录。', 'No failed or skipped recipients on this page.')}</p>}
+          <p dir="auto">{item.error ? localizeMessage(item.error, language) : t('未记录具体原因，请查看任务明细',
+            'No specific reason was saved. Check task details')}</p>
+        </li>)}</ol> : <p>{t('这一页没有失败或跳过记录', 'No failed or skipped recipients on this page')}</p>}
     <div className="composer-error-log-pagination">
       <button disabled={loading || offset === 0} onClick={() => void request(Math.max(0, offset - PAGE_SIZE))}>{t('上一页', 'Previous')}</button>
       <span>{t(`第 ${Math.floor(offset / PAGE_SIZE) + 1} 页`, `Page ${Math.floor(offset / PAGE_SIZE) + 1}`)} · {page?.total ?? batch.failedCount} {t('条', 'records')}</span>

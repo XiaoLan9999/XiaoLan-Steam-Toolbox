@@ -1,11 +1,12 @@
 import { basename, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { copyFile, rename, unlink } from 'node:fs/promises'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, net, safeStorage, shell } from 'electron'
+import { copyFile, lstat, realpath, rename, unlink } from 'node:fs/promises'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, safeStorage, shell } from 'electron'
 import { BatchQueue } from './batch-queue'
 import { CommentScanQueue } from './comment-scan-queue'
 import { SecretCipher, SqliteStore } from './store'
+import { applyPendingDataImport, discardPreparedDataImport, prepareDataImport, queueDataImport, type PreparedDataImport } from './data-import'
 import { SteamService, publicErrorMessage } from './steam-service'
 import { GameStatusService, createGameStatusSteamClient } from './game-status-service'
 import { NativePresenceBroker } from './native-presence-broker'
@@ -40,6 +41,12 @@ import { ScreenshotNameService } from './steam-screenshot-names'
 import { ScreenshotController } from './screenshot-controller'
 import { ScreenshotBrowserImageAdapter } from './screenshot-image-adapter'
 import { discoverScreenshotSteamPaths, isSteamClientRunning } from './steam-screenshot-runtime'
+import { ScreenshotImport, screenshotImportBlocksChannel } from './screenshot-import'
+import { createScreenshotSteamRuntime } from './steam-screenshot-lifecycle-runtime'
+import { ScreenshotApiHost, discoverScreenshotApiContext } from './screenshot-api-host'
+import { ScreenshotLiveImport } from './screenshot-live-import'
+import { ScreenshotLocalImport } from './screenshot-local-import'
+import { hasScreenshotIdentityWork, readScreenshotActiveUser, shutdownScreenshotIdentityReads } from './screenshot-active-user'
 import type { ScreenshotPrepareInput } from '../shared/steam-screenshots'
 import { prepareWindowsUpdate } from './update-installer'
 import { UPDATE_REPOSITORY, type UpdatePreferences, type UpdatePackageKind } from '../shared/update-types'
@@ -67,11 +74,16 @@ let nativePresenceForQuit: NativePresenceBroker | undefined
 let recoveringRenderer = false
 let shuttingDown = false
 let exportInProgress = false
+let dataImportInProgress = false
+let dataImportQueued = false
 let installInProgress = false
 let screenshotImportInProgress = false
+let screenshotPresenceOperations = 0
 let screenshotService: SteamScreenshotService
 let screenshotController: ScreenshotController
 let screenshotImageAdapter: ScreenshotBrowserImageAdapter
+let screenshotImport: ScreenshotImport
+let screenshotApiHost: ScreenshotApiHost | undefined
 const accountTransition = new AccountTransition()
 let updater: UpdateService
 let artworkBrowser: ArtworkBrowser | null = null
@@ -91,7 +103,7 @@ const quitDrain = new QuitDrain({
     () => { void statusCopy?.invalidate().catch(() => {}) }
   ],
   drain: async () => {
-    const results = await Promise.allSettled([gameStatus?.shutdown() ?? nativePresenceForQuit?.shutdown(), localAppSimulation?.shutdown(), statusCopy?.shutdown()])
+    const results = await Promise.allSettled([gameStatus?.shutdown() ?? nativePresenceForQuit?.shutdown(), localAppSimulation?.shutdown(), statusCopy?.shutdown(), screenshotApiHost?.shutdown(), shutdownScreenshotIdentityReads()])
     const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
     if (failed) throw failed.reason
   },
@@ -116,10 +128,22 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(async () => {
+  try {
+    mkdirSync(app.getPath('userData'), { recursive: true })
+    await applyPendingDataImport(app.getPath('userData'))
+  }
+  catch {
+    await dialog.showMessageBox({ type: 'error', title: APP_NAME_ZH,
+      message: '数据导入未能安全完成 / Data import could not finish safely',
+      detail: '工具箱没有打开数据库，请保留导入计划、旧数据及备份后重试，不要混用 WAL/SHM 文件\nThe database was not opened; preserve the import plan, original data and backups before retrying\n' + app.getPath('userData') })
+    app.quit()
+    return
+  }
   store = new SqliteStore(
     join(app.getPath('userData'), 'steam-friend-commenter.sqlite3'),
     createSecretCipher()
   )
+  nativeTheme.themeSource = store.getTheme()
   const emit = (event: AppEvent): void => {
     if (shuttingDown) return
     if (event.type === 'authFinished') {
@@ -231,6 +255,45 @@ app.whenReady().then(async () => {
   screenshotImageAdapter = new ScreenshotBrowserImageAdapter()
   screenshotService = new SteamScreenshotService({ imageAdapter: screenshotImageAdapter,
     findSteamPaths: discoverScreenshotSteamPaths, isSteamRunning: isSteamClientRunning })
+  screenshotApiHost = new ScreenshotApiHost({ workerPath: () => app.isPackaged
+    ? join(process.resourcesPath, 'screenshot-import', 'screenshot-import-host-x64.exe')
+    : join(app.getAppPath(), 'resources', 'screenshot-import', 'screenshot-import-host-x64.exe') })
+  screenshotImport = new ScreenshotImport({ service: screenshotService, runtime: createScreenshotSteamRuntime(),
+    localImport: new ScreenshotLocalImport({ service: screenshotService,
+      readActiveUser: steamPath => readScreenshotActiveUser(steamPath, app.isPackaged
+        ? join(process.resourcesPath, 'screenshot-import', 'screenshot-import-host-x64.exe')
+        : join(app.getAppPath(), 'resources', 'screenshot-import', 'screenshot-import-host-x64.exe')) }),
+    liveImport: new ScreenshotLiveImport({ service: screenshotService,
+      directory: join(app.getPath('userData'), 'screenshot-live-imports'),
+      discoverContext: discoverScreenshotApiContext,
+      createHost: () => screenshotApiHost!,
+      progress: phase => emit({ type: 'screenshotImportProgress', phase }) }),
+    assertRestartAllowed: mode => {
+      const status = gameStatus?.snapshot()
+      const simulation = localAppSimulation?.state()
+      const copy = statusCopy?.state()
+      const native = nativePresenceForQuit?.diagnostics()
+      if (mode !== 'live' && screenshotApiHost?.hasClientWork() || hasScreenshotIdentityWork() || accountTransition.active || screenshotPresenceOperations > 0 || localAppSimulation?.hasClientWork() ||
+          native && (native.active || native.retiringCount > 0) ||
+          status && (status.busy || status.connected || status.status === 'connecting' || status.live?.patchActive || status.liveLock) ||
+          simulation && (simulation.busy || simulation.appId !== null || ['starting', 'running', 'stopping'].includes(simulation.status)) ||
+          copy && (copy.busy || ['previewing', 'starting', 'following', 'waiting', 'stopping'].includes(copy.phase) || copy.error?.code === 'COPY_STOP_UNCONFIRMED')) {
+        throw new DomainError('SCREENSHOT_STEAM_WORK_BUSY', '请先停止模拟、锁定或状态复制并断开本机游戏状态连接，再自动重启 Steam')
+      }
+    },
+    confirmRestart: async () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return false
+      const en = store.getLanguage() === 'en'
+      const choice = await dialog.showMessageBox(mainWindow, { type: 'warning',
+        title: en ? 'Restart Steam to import screenshots?' : '退出并重启 Steam 以导入截图？',
+        message: en ? 'Mode 2 targets the account currently in use. Exit Steam, import locally and reopen it?' : '模式二的目标账号正在 Steam 中使用。是否正常退出、导入本地截图并重新打开？',
+        detail: en ? 'Steam friends and chat will disconnect briefly. Save your work and exit games first. The toolbox will not force-kill Steam. If it cannot exit within 60 seconds, no screenshots will be imported. Steam Cloud upload still requires your confirmation in Steam'
+          : 'Steam 好友和聊天会短暂断开。请先保存进度并退出游戏。工具箱不会强杀 Steam；60 秒内无法完全退出则不导入。这里只导入本地截图库，云端上传仍需你在 Steam 中确认',
+        buttons: en ? ['Cancel', 'Exit Steam, import & reopen'] : ['取消', '退出 Steam、导入并重开'],
+        defaultId: 0, cancelId: 0, noLink: true })
+      return choice.response === 1
+    },
+    progress: phase => emit({ type: 'screenshotImportProgress', phase }) })
   screenshotController = new ScreenshotController(screenshotService,
     new ScreenshotNameService({ cachePath: join(app.getPath('userData'), 'screenshot-catalog-names.json') }), {
       preferencesPath: join(app.getPath('userData'), 'screenshot-preferences.json'), accounts: () => store.getAccounts(),
@@ -293,7 +356,7 @@ app.on('child-process-gone', (_event, details) => {
 })
 
 app.on('before-quit', (event) => {
-  if (!exportInProgress && !screenshotImportInProgress) {
+  if (!exportInProgress && !screenshotImportInProgress && (!dataImportInProgress || dataImportQueued)) {
     shuttingDown = true
     if (!nativePresenceForQuit || quitDrain.settled) return
     event.preventDefault()
@@ -302,9 +365,11 @@ app.on('before-quit', (event) => {
   }
   event.preventDefault()
   if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, {
-    type: 'info', message: screenshotImportInProgress ? store.getLanguage() === 'en'
-      ? 'Screenshot preparation is committing local files. Please wait before closing.' : '截图正在准备并写入本地文件，请完成后再退出。'
-      : store.getLanguage() === 'en' ? 'Please wait for the data export to finish before closing.' : '数据正在导出，请完成后再退出。'
+    type: 'info', message: dataImportInProgress ? store.getLanguage() === 'en'
+      ? 'Data import is being prepared; wait for it to finish before closing' : '数据导入正在准备，请完成后再退出'
+      : screenshotImportInProgress ? store.getLanguage() === 'en'
+      ? 'Screenshot preparation is committing local files. Please wait before closing' : '截图正在准备并写入本地文件，请完成后再退出'
+      : store.getLanguage() === 'en' ? 'Please wait for the data export to finish before closing' : '数据正在导出，请完成后再退出'
   })
 })
 
@@ -319,7 +384,7 @@ function createWindow(): void {
     minHeight: 680,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#f3f6f7',
+    backgroundColor: store.getTheme() === 'dark' ? '#101820' : '#f3f6f7',
     icon: app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'build/icon.png'),
     title: APP_NAME_ZH,
     webPreferences: {
@@ -364,12 +429,14 @@ function createWindow(): void {
     })
   })
   mainWindow.on('close', (event) => {
-    if (exportInProgress || screenshotImportInProgress) {
+    if (exportInProgress || screenshotImportInProgress || dataImportInProgress && !dataImportQueued) {
       event.preventDefault()
       if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, {
-        type: 'info', message: screenshotImportInProgress ? store.getLanguage() === 'en'
-          ? 'Screenshot preparation is committing local files. Please wait before closing.' : '截图正在准备并写入本地文件，请完成后再退出。'
-          : store.getLanguage() === 'en' ? 'Please wait for the data export to finish before closing.' : '数据正在导出，请完成后再退出。'
+        type: 'info', message: dataImportInProgress ? store.getLanguage() === 'en'
+          ? 'Data import is being prepared; wait for it to finish before closing' : '数据导入正在准备，请完成后再退出'
+          : screenshotImportInProgress ? store.getLanguage() === 'en'
+          ? 'Screenshot preparation is committing local files. Please wait before closing' : '截图正在准备并写入本地文件，请完成后再退出'
+          : store.getLanguage() === 'en' ? 'Please wait for the data export to finish before closing' : '数据正在导出，请完成后再退出'
       })
     }
   })
@@ -399,10 +466,10 @@ function createWindow(): void {
     const en = store.getLanguage() === 'en'
     void dialog.showMessageBox(rendererWindow, {
       type: 'error', title: en ? 'Toolbox interface stopped' : '工具箱界面已停止',
-      message: en ? 'Tasks are paused. Game status maintenance has stopped and connection shutdown has been requested. Saved comment results remain in the task list.'
-        : '任务已暂停，游戏状态维持已停止并已请求关闭连接，已保存的留言结果仍保留在任务列表中。',
-      detail: en ? 'Reloading will not resume sending or game status maintenance. Disconnecting does not mean the original game text was restored. Revisit an in-game page to let the game refresh its own status.'
-        : '重新加载不会自动继续发送或恢复游戏状态维持。断开连接并不表示已恢复游戏原生文字；可重新进入游戏页面，让游戏自行刷新状态。',
+      message: en ? 'Tasks are paused. Game status maintenance has stopped and connection shutdown has been requested. Saved comment results remain in the task list'
+        : '任务已暂停，游戏状态维持已停止并已请求关闭连接，已保存的留言结果仍保留在任务列表中',
+      detail: en ? 'Reloading will not resume sending or game status maintenance. Disconnecting does not mean the original game text was restored. Revisit an in-game page to let the game refresh its own status'
+        : '重新加载不会自动继续发送或恢复游戏状态维持。断开连接并不表示已恢复游戏原生文字；可重新进入游戏页面，让游戏自行刷新状态',
       buttons: en ? ['Reload interface (keep paused)', 'Exit'] : ['重新加载界面（保持暂停）', '退出'],
       defaultId: 0, cancelId: 1
     }).then(({ response }) => {
@@ -454,10 +521,13 @@ function registerIpcHandlers(): void {
     if (screenshotImportInProgress) throw new DomainError('SCREENSHOT_BUSY', '正在准备截图，请稍后重试')
     screenshotImportInProgress = true
     try {
-      const result = await screenshotService.prepare(input)
-      mainWindow?.webContents.send('app:event', { type: 'screenshotsChanged', scope: 'images' })
+      const result = await screenshotImport.prepare(input)
       return result
-    } finally { screenshotImportInProgress = false }
+    } finally {
+      screenshotImportInProgress = false
+      emitScreenshotImagesChanged()
+      void screenshotController.refresh().catch(() => {})
+    }
   })
   handle('update:check', () => updater.checkForUpdates())
   handle('update:download', (routeId?: string) => updater.downloadUpdate(routeId))
@@ -507,6 +577,8 @@ function registerIpcHandlers(): void {
   handle('artwork:state', () => requireArtworkBrowser().getState())
   handle('artwork:openTool', (tool: ArtworkTool, accountId?: string) => requireArtworkBrowser().open(tool, accountId))
   handle('artwork:bounds', (bounds: ArtworkBounds | null) => requireArtworkBrowser().setBounds(bounds))
+  handle('artwork:zoom', (zoom: number | null) => requireArtworkBrowser().setZoom(zoom))
+  handle('artwork:dynamicPreview', (enabled: boolean) => requireArtworkBrowser().setDynamicPreview(enabled))
   handle('artwork:applyLong', () => requireArtworkBrowser().applyLongArtwork())
   handle('artwork:reload', () => requireArtworkBrowser().reload())
   handle('artwork:close', async () => {
@@ -617,6 +689,59 @@ function registerIpcHandlers(): void {
     store.setLanguage(language)
     mainWindow?.webContents.send('app:event', { type: 'snapshotChanged' })
   })
+  handle('settings:theme', (theme: 'light' | 'dark') => {
+    store.setTheme(theme)
+    nativeTheme.themeSource = theme
+    mainWindow?.setBackgroundColor(theme === 'dark' ? '#101820' : '#f3f6f7')
+    mainWindow?.webContents.send('app:event', { type: 'snapshotChanged' })
+  })
+  handle('storage:import', async () => {
+    if (!mainWindow || dataImportInProgress) throw new DomainError('DATA_IMPORT_BUSY', '数据导入正在进行中')
+    ensureDataImportIdle()
+    dataImportInProgress = true
+    let prepared: PreparedDataImport | undefined
+    try {
+      const en = store.getLanguage() === 'en'
+      const selected = await dialog.showOpenDialog(mainWindow, { title: en ? 'Import toolbox data backup' : '导入工具箱数据备份',
+        properties: ['openFile'], filters: [{ name: 'SQLite backup', extensions: ['sqlite3', 'sqlite', 'db'] }] })
+      if (selected.canceled || !selected.filePaths[0]) return null
+      ensureDataImportIdle()
+      prepared = await prepareDataImport(selected.filePaths[0], app.getPath('userData'))
+      const summary = prepared.summary
+      const choice = await dialog.showMessageBox(mainWindow, { type: 'warning',
+        title: en ? 'Replace toolbox data?' : '确认整体替换工具箱数据？',
+        message: en ? 'This replaces existing toolbox data, not merges it' : '此操作将整体替换现有工具箱数据，不是合并',
+        detail: (en ? `Backup contains ${summary.accounts} accounts, ${summary.friends} friends, ${summary.groups} groups, ${summary.tasks} tasks and ${summary.deliveries} delivery records\n\n`
+          : `备份包含 ${summary.accounts} 个账号、${summary.friends} 位好友、${summary.groups} 个分组、${summary.tasks} 个任务、${summary.deliveries} 条发送记录\n\n`) +
+          (en ? 'The toolbox will restart, back up the old database locally and apply the validated import before opening the database. Steam itself will not restart. Imported login tokens are discarded; sign in to Steam accounts again. Unfinished tasks will remain paused. Local screenshots and other separate files are not included\n\nOld-data backup: '
+            : '工具箱将正常重启，启动时先在本机备份旧数据库，再应用校验后的导入；不会重启 Steam。导入不会保留登录令牌，需要重新登录工具箱内的 Steam 账号；未完成任务保持暂停。本地截图等独立文件不包含在此次导入中\n\n旧数据备份位置：') + prepared.backupPath,
+        buttons: en ? ['Cancel', 'Back up, replace and restart toolbox'] : ['取消', '备份旧数据、替换并重启工具箱'],
+        defaultId: 0, cancelId: 0, noLink: true })
+      if (choice.response !== 1) return null
+      ensureDataImportIdle()
+      const restartPath = resolve(process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe'))
+      const executable = await lstat(restartPath)
+      if (!executable.isFile() || executable.isSymbolicLink() || (await realpath(restartPath)).toLowerCase() !== restartPath.toLowerCase() ||
+          process.platform === 'win32' && !restartPath.toLowerCase().endsWith('.exe')) {
+        throw new DomainError('DATA_IMPORT_RESTART_UNAVAILABLE', '无法核实工具箱重启程序，尚未安排导入，请将程序放回原位置后重试')
+      }
+      await queueDataImport(prepared, app.getPath('userData'))
+      dataImportQueued = true
+      try {
+        app.relaunch({ execPath: restartPath })
+        setTimeout(() => app.quit(), 600)
+      } catch {
+        if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, { type: 'info',
+          message: en ? 'Import is prepared; close and reopen the toolbox manually to finish' : '导入已准备，请手动关闭并重新打开工具箱以完成导入' })
+      }
+      return { backupPath: prepared.backupPath, restartScheduled: true as const }
+    } finally {
+      if (!dataImportQueued) {
+        try { if (prepared) await discardPreparedDataImport(prepared, app.getPath('userData')) }
+        finally { dataImportInProgress = false }
+      }
+    }
+  })
   handle('storage:export', async () => {
     if (!mainWindow || exportInProgress) throw new DomainError('EXPORT_BUSY', '数据导出正在进行中')
     const en = store.getLanguage() === 'en'
@@ -690,6 +815,13 @@ function registerIpcHandlers(): void {
   handle('batch:cancel', (batchId: string) => { requireCurrentTask(batchId); queue.cancel(batchId) })
 }
 
+function emitScreenshotImagesChanged(): void {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    try { mainWindow.webContents.send('app:event', { type: 'screenshotsChanged', scope: 'images' }) }
+    catch { /* The durable import ledger and queue can be read after renderer recovery. */ }
+  }
+}
+
 function requireTaskAccount(accountId: string): void {
   if (accountTransition.active || store.getActiveAccountId() !== accountId) {
     throw new DomainError('ACCOUNT_NOT_ACTIVE', '请先切换到任务所属账号')
@@ -703,6 +835,7 @@ function requireCurrentTask(batchId: string): void {
 }
 
 function ensureInstallationIdle(): void {
+  if (screenshotApiHost?.hasClientWork() || hasScreenshotIdentityWork()) throw new DomainError('update.installBusy', 'update.installBusy')
   const copy = statusCopy?.state()
   if (copy && (copy.busy || ['previewing', 'starting', 'following', 'waiting', 'stopping'].includes(copy.phase) || copy.error?.code === 'COPY_STOP_UNCONFIRMED')) {
     throw new DomainError('update.installBusy', 'update.installBusy')
@@ -714,7 +847,26 @@ function ensureInstallationIdle(): void {
     return batch?.status === 'running' || batch?.status === 'queued' ||
       Boolean(batch?.sending) || scan?.status === 'running'
   })
-  if (exportInProgress || screenshotImportInProgress || installInProgress || hasActiveWork || queue.hasPendingRequests()) throw new DomainError('update.installBusy', 'update.installBusy')
+  if (exportInProgress || dataImportInProgress || screenshotImportInProgress || installInProgress || hasActiveWork || queue.hasPendingRequests()) throw new DomainError('update.installBusy', 'update.installBusy')
+}
+
+function ensureDataImportIdle(): void {
+  const status = gameStatus.snapshot()
+  const simulation = localAppSimulation?.state()
+  const copy = statusCopy?.state()
+  const native = nativePresenceForQuit?.diagnostics()
+  const activeTasks = store.getAccounts().some(account => {
+    const batch = store.getActiveBatchSummary(account.id)
+    const scan = store.getLatestCommentScan(account.id)
+    return batch?.status === 'running' || batch?.status === 'queued' || Boolean(batch?.sending || batch?.nextRetryAt) || scan?.status === 'running'
+  })
+  if (exportInProgress || screenshotImportInProgress || installInProgress || accountTransition.active || activeTasks || queue.hasPendingRequests() ||
+      status.busy || status.connected || status.status === 'connecting' || status.live?.patchActive || status.liveLock && status.liveLock.status !== 'stopped' ||
+      simulation && (simulation.busy || simulation.appId !== null || ['starting', 'running', 'stopping'].includes(simulation.status)) ||
+      copy && (copy.busy || ['previewing', 'starting', 'following', 'waiting', 'stopping'].includes(copy.phase) || copy.error?.code === 'COPY_STOP_UNCONFIRMED') ||
+      native && (native.active || native.retiringCount > 0) || screenshotApiHost?.hasClientWork() || hasScreenshotIdentityWork() || artworkBrowser?.getState().tool || updater.getState().phase === 'downloading') {
+    throw new DomainError('DATA_IMPORT_BUSY', '请先暂停发送与检查任务、关闭自动继续计划，并停止游戏状态、截图及艺术作品操作后再导入')
+  }
 }
 
 function requireArtworkBrowser(): ArtworkBrowser {
@@ -745,6 +897,7 @@ function getSnapshot(): AppSnapshot {
     commentScan: scan ? { ...scan, lastError: translated(scan.lastError) } : null,
     dataDirectory: app.getPath('userData'),
     language,
+    theme: store.getTheme(),
     updater: updater.getState(),
     updatePreferences: store.getUpdatePreferences(),
     security: {
@@ -763,9 +916,25 @@ function handle<TArgs extends unknown[], TResult>(
     if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id || event.senderFrame !== mainWindow.webContents.mainFrame) {
       return { ok: false, error: { code: 'INVALID_SENDER', message: '拒绝未知页面的请求' } }
     }
-    if (installInProgress && channel !== 'snapshot:get') {
+    const hidingArtwork = channel === 'artwork:bounds' && args.length === 1 && args[0] === null
+    if (installInProgress && channel !== 'snapshot:get' && !hidingArtwork) {
       return { ok: false, error: { code: 'update.installBusy', message: 'update.installBusy' } }
     }
+    if (dataImportInProgress && !hidingArtwork && !['snapshot:get', 'gameStatus:state', 'localAppSimulation:state', 'statusCopy:state', 'screenshots:catalog', 'screenshots:images'].includes(channel)) {
+      return { ok: false, error: { code: 'DATA_IMPORT_BUSY', message: store.getLanguage() === 'en'
+        ? 'Data import is being prepared; wait for it to finish or restart the toolbox' : '数据导入正在准备，请等待完成或重启工具箱' } }
+    }
+    if (screenshotImportInProgress && screenshotImportBlocksChannel(channel)) {
+      return { ok: false, error: { code: 'SCREENSHOT_BUSY', message: store.getLanguage() === 'en'
+        ? 'Screenshot import is in progress. Wait for it to finish before changing screenshots or game status.' : '截图正在导入，请完成后再修改图片队列或游戏状态。' } }
+    }
+    if (!channel.startsWith('screenshots:') && screenshotImportBlocksChannel(channel) && (screenshotApiHost?.hasClientWork() || hasScreenshotIdentityWork())) {
+      return { ok: false, error: { code: 'SCREENSHOT_LIVE_STOP_FAILED', message: store.getLanguage() === 'en'
+        ? 'The screenshot component has not exited yet. Local presence changes are blocked until it closes. Retry screenshot import to drain it, or close the toolbox.'
+        : '截图辅助组件尚未确认退出，暂不启动游戏状态功能。可重新进入截图导入以完成清理，或先退出工具箱。' } }
+    }
+    const presenceOperation = !channel.startsWith('screenshots:') && screenshotImportBlocksChannel(channel)
+    if (presenceOperation) screenshotPresenceOperations++
     try {
       const data = await operation(...args)
       if (shuttingDown) return { ok: false, error: { code: 'APP_SHUTTING_DOWN', message: '应用正在退出' } }
@@ -773,13 +942,30 @@ function handle<TArgs extends unknown[], TResult>(
     } catch (error) {
       if (shuttingDown) return { ok: false, error: { code: 'APP_SHUTTING_DOWN', message: '应用正在退出' } }
       return { ok: false, error: toAppError(error) }
-    }
+    } finally { if (presenceOperation) screenshotPresenceOperations-- }
   })
 }
 
 function toAppError(error: unknown): AppError {
   const language = store?.getLanguage() ?? 'zh-CN'
   if (error instanceof DomainError) {
+    if (language === 'en' && error.code.startsWith('DATA_IMPORT_')) {
+      const messages: Record<string, string> = {
+        DATA_IMPORT_BUSY: 'Pause sending and checking tasks, disable scheduled retries, and stop presence, screenshots, artwork, exports and downloads before importing',
+        DATA_IMPORT_UNSAFE_PATH: 'The backup or import directory is not a safe regular path; choose an ordinary toolbox SQLite backup file',
+        DATA_IMPORT_FILE_CHANGED: 'The backup changed while it was being checked; keep the original file unchanged and try again',
+        DATA_IMPORT_INVALID: 'This is not a supported, valid toolbox backup; existing toolbox data was not replaced',
+        DATA_IMPORT_INVALID_PLAN: 'The prepared import record could not be verified; preserve it for recovery',
+        DATA_IMPORT_PENDING: 'Another import is already scheduled; restart the toolbox to finish it first',
+        DATA_IMPORT_RESTART_UNAVAILABLE: 'The toolbox executable cannot be verified for restart; restore it to its original location and try again',
+        DATA_IMPORT_LIVE_DATABASE: 'Do not import the running database or its WAL/SHM files; choose a previously exported backup',
+        DATA_IMPORT_BACKUP_FAILED: 'The old-data backup could not be created; no replacement was performed',
+        DATA_IMPORT_REPLACE_FAILED: 'The prepared data could not replace the database; preserve the original data and backup',
+        DATA_IMPORT_APPLY_UNCONFIRMED: 'Import completion could not be confirmed; do not open or overwrite the database manually'
+      }
+      return { code: error.code, message: messages[error.code] ?? 'Data import could not be prepared safely; preserve the file and import records before retrying', retryable: error.retryable }
+    }
+    if (language === 'en' && error.code === 'INVALID_THEME') return { code: error.code, message: 'Unsupported interface theme', retryable: false }
     return { code: error.code, message: localizeMessage(error.message, language), retryable: error.retryable }
   }
   return { code: 'UNEXPECTED_ERROR', message: localizeMessage(publicErrorMessage(error) || '发生未知错误', language) }

@@ -68,7 +68,7 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
     return window.steamCommenter.onEvent((event: AppEvent) => {
       if ('loginId' in event && event.loginId !== loginIdRef.current) return
       if (event.type === 'authRemoteInteraction') {
-        setStatus(t('已扫描，请在 Steam 手机应用中点“确认”', 'Scanned. Confirm in the Steam mobile app.'))
+        setStatus(t('已扫描，请在 Steam 手机应用中点“确认”', 'Scanned. Confirm in the Steam mobile app'))
       }
       if (event.type === 'authFailed') {
         loginIdRef.current = null
@@ -209,7 +209,7 @@ export function LoginModal({ open, onClose, onSuccess }: LoginModalProps): React
                 <button className="primary wide" type="submit" disabled={busy}>
                   {busy ? t('正在验证...', 'Verifying...') : t('继续', 'Continue')}
                 </button>
-                <small>{t('密码只用于本次 Steam 登录请求，不会写入磁盘。', 'Your password is used only for this sign-in and is never saved to disk.')}</small>
+                <small>{t('密码只用于本次 Steam 登录请求，不会写入磁盘', 'Your password is used only for this sign-in and is never saved to disk')}</small>
               </form>
             ) : needsCode ? (
               <form onSubmit={(event) => void submitGuard(event)}>

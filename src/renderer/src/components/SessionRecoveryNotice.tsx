@@ -35,15 +35,15 @@ export function SessionRecoveryNotice({ account, busy = false, onRetry, onSignIn
       : connecting ? t('正在连接 Steam', 'Connecting to Steam')
         : t('当前 Steam 账号尚未连接', 'The current Steam account is not connected')
   const description = expired
-    ? t('保存的登录状态已失效或不可用，请重新登录此账号。', 'The saved sign-in has expired or is unavailable. Sign in to this account again.')
+    ? t('保存的登录状态已失效或不可用，请重新登录此账号', 'The saved sign-in has expired or is unavailable. Sign in to this account again')
     : hasPlan || connecting
-      ? t('正在复用已保存的登录信息。暂时的网络错误不代表凭据失效，不需要反复扫码。',
-        'Saved sign-in details are being reused. A temporary network error does not mean credentials expired; repeated QR scans are unnecessary.')
-      : t('可以先尝试用已保存的登录信息重新连接；若凭据不可用，再重新登录。',
-        'Try reconnecting with saved sign-in details first. Sign in again only if those credentials are unavailable.')
+      ? t('正在复用已保存的登录信息。暂时的网络错误不代表凭据失效，不需要反复扫码',
+        'Saved sign-in details are being reused. A temporary network error does not mean credentials expired; repeated QR scans are unnecessary')
+      : t('可以先尝试用已保存的登录信息重新连接；若凭据不可用，再重新登录',
+        'Try reconnecting with saved sign-in details first. Sign in again only if those credentials are unavailable')
   const detail = account.sessionMessage && /Client network socket disconnected before secure TLS connection was established/i.test(account.sessionMessage)
-    ? t('网络连接在 TLS 安全握手完成前中断；这不能单独证明登录已失效。',
-      'The network connection closed before the TLS handshake completed. This alone does not prove sign-in expired.')
+    ? t('网络连接在 TLS 安全握手完成前中断；这不能单独证明登录已失效',
+      'The network connection closed before the TLS handshake completed. This alone does not prove sign-in expired')
     : account.sessionMessage ? localizeMessage(account.sessionMessage, language) : null
 
   return <section className={`session-recovery-notice${expired ? ' needs-sign-in' : ''}`}
@@ -58,8 +58,8 @@ export function SessionRecoveryNotice({ account, busy = false, onRetry, onSignIn
         {waiting && <strong>{countdown}</strong>}
         {attempt !== null && <span>{t(`第 ${attempt} 次重试`, `Retry ${attempt}`)}</span>}
       </p>}
-      <small>{t('重连不会新建留言任务或启动游戏状态功能；已有任务仍遵循暂停和自动重试设置。',
-        'Reconnection creates no delivery task and starts no presence features. Existing tasks keep their pause and automatic retry settings.')}</small>
+      <small>{t('重连不会新建留言任务或启动游戏状态功能；已有任务仍遵循暂停和自动重试设置',
+        'Reconnection creates no delivery task and starts no presence features. Existing tasks keep their pause and automatic retry settings')}</small>
     </div>
     <div className="session-recovery-actions">
       {!expired && <button type="button" className="primary" disabled={busy || connecting || retryBlocked} onClick={() => {

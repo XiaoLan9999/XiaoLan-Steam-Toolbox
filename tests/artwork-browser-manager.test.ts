@@ -22,6 +22,11 @@ vi.mock('electron', async () => {
       this.emit('did-finish-load')
     })
     reload = vi.fn(() => this.emit('did-finish-load'))
+    actualZoom = 1
+    setZoomFactor = vi.fn((value: number) => { this.actualZoom = value })
+    getZoomFactor = () => this.actualZoom
+    insertCSS = vi.fn(async () => 'fixture-css-key')
+    removeInsertedCSS = vi.fn(async () => {})
     downloadURL = vi.fn()
     executeJavaScriptInIsolatedWorld = vi.fn(async () => this.scriptResult)
     setWindowOpenHandler(handler: () => unknown) { this.windowOpenHandler = handler }
@@ -73,6 +78,8 @@ class Parent extends EventEmitter {
     removeChildView: (view: unknown) => { this.children = this.children.filter(child => child !== view) }
   }
   isDestroyed() { return this.destroyed }
+  isVisible() { return true }
+  isMinimized() { return false }
   getContentSize() { return [1000, 800] }
 }
 
@@ -104,6 +111,38 @@ describe('embedded artwork browser lifecycle', () => {
   })
 
   afterEach(async () => { await browser.close(); browser.shutdown() })
+
+  it('fits design automatically and changes only page zoom without reloading or replacing its view', async () => {
+    browser.setBounds({ x: 0, y: 60, width: 1000, height: 700 })
+    await browser.open('design')
+    const view = mock.views[0]
+    expect(browser.getState()).toMatchObject({ zoomFactor: 0.62, autoFit: true, dynamicPreview: false })
+    browser.setZoom(0.9)
+    browser.setBounds({ x: 0, y: 60, width: 900, height: 700 })
+    expect(browser.getState()).toMatchObject({ zoomFactor: 0.9, autoFit: false })
+    browser.setZoom(null)
+    expect(browser.getState()).toMatchObject({ zoomFactor: 0.56, autoFit: true })
+    expect(view.webContents.loadURL).toHaveBeenCalledTimes(1)
+    expect(view.webContents.reload).not.toHaveBeenCalled()
+    expect(mock.views).toHaveLength(1)
+    expect(() => browser.setZoom(4)).toThrow('ARTWORK_INVALID_ZOOM')
+  })
+
+  it('defaults design to paused motion and pauses it again when hidden or resized', async () => {
+    browser.setBounds({ x: 0, y: 60, width: 1000, height: 700 })
+    await browser.open('design')
+    const contents = mock.views[0].webContents
+    expect(browser.getState().dynamicPreview).toBe(false)
+    browser.setDynamicPreview(true)
+    expect(browser.getState().dynamicPreview).toBe(true)
+    browser.setBounds(null)
+    expect(contents.executeJavaScriptInIsolatedWorld.mock.calls.at(-1)[1][0].code).toContain('policy.update(true, false)')
+    browser.setBounds({ x: 0, y: 60, width: 900, height: 700 })
+    parent.emit('resize')
+    expect(mock.views[0].visible).toBe(false)
+    expect(contents.executeJavaScriptInIsolatedWorld.mock.calls.at(-1)[1][0].code).toContain('policy.update(true, false)')
+    expect(contents.reload).not.toHaveBeenCalled()
+  })
 
   it('embeds a sandboxed page with no preload, imports only Steam session cookies, and applies fixed isolated-world code', async () => {
     browser.setBounds({ x: 40, y: 160, width: 850, height: 550 })

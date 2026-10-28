@@ -7,35 +7,35 @@ import type { RunAction } from './types'
 import './update-panel.css'
 
 const updateErrors: Record<string, [string, string]> = {
-  'update.manifestUnavailable': ['所有更新线路暂时不可用，请稍后重试。', 'Update routes are currently unavailable. Please try again later.'],
-  'update.manifestSignature': ['更新清单验证失败，请重新检查更新。', 'The update manifest could not be verified. Check for updates again.'],
-  'update.manifestTooLarge': ['更新清单大小异常，请重新检查更新。', 'The update manifest has an unexpected size. Check for updates again.'],
-  'update.invalidResponse': ['线路返回的内容无效，请换一条线路。', 'This route returned invalid content. Try another route.'],
-  'update.timeout': ['连接超时，请稍后重试或换一条线路。', 'The connection timed out. Try again or choose another route.'],
-  'update.httpError': ['线路请求失败，请稍后重试或换一条线路。', 'The route request failed. Try again or choose another route.'],
-  'update.staleManifest': ['线路提供的更新清单已过期，请重新检查更新。', 'This route provided an outdated manifest. Check for updates again.'],
-  'update.conflictingManifest': ['不同线路的更新清单不一致，请稍后重新检查。', 'The routes returned conflicting manifests. Please check again later.'],
-  'update.routeUnavailable': ['所选线路不可用，请重新检查或使用自动选择。', 'The selected route is unavailable. Check again or use automatic selection.'],
-  'update.noUpdate': ['暂时没有可下载的新版，请先检查更新。', 'No newer version is available to download. Check for updates first.'],
-  'update.downloadSize': ['下载文件大小与更新清单不一致，请重新下载。', 'The download size does not match the manifest. Download it again.'],
-  'update.downloadHash': ['下载文件校验失败，请换一条线路重新下载。', 'The downloaded file failed verification. Download it again using another route.'],
-  'update.downloadInterrupted': ['下载已中断，请重新下载。', 'The download was interrupted. Download it again.'],
-  'update.cacheInvalid': ['已下载文件的校验失败，请重新下载。', 'The downloaded file could no longer be verified. Download it again.'],
-  'update.cancelled': ['已取消下载。', 'Download cancelled.'],
-  'update.redirectInvalid': ['线路重定向无效，请换一条线路。', 'This route returned an invalid redirect. Try another route.'],
-  'update.redirectLimit': ['线路重定向次数过多，请换一条线路。', 'This route redirected too many times. Try another route.'],
-  'update.storageError': ['无法保存更新文件，请检查可用磁盘空间后重试。', 'The update could not be saved. Check free disk space and try again.'],
-  'update.installBusy': ['请先暂停发送及检查任务，等待当前操作和数据导出完成后更新。', 'Pause comment and check tasks, then wait for current operations and data exports to finish before updating.'],
-  'update.installArtworkBusy': ['请先保存作品并关闭内置艺术作品页面，再安装更新。', 'Save your artwork and close the embedded artwork page before installing the update.'],
-  'update.notPackaged': ['请使用正式安装版或便携版进行内置更新。', 'Use an installed or portable release to update within the app.'],
-  'update.installPlatform': ['内置安装更新目前仅支持 Windows。', 'Installing updates within the app currently supports Windows only.'],
-  'update.installLaunch': ['无法启动更新，请打开版本说明页下载新版并手动安装。', 'The update could not be started. Open the release notes to download and install it manually.'],
-  'update.portableTarget': ['便携版程序位置已变更，请打开版本说明页下载新版并手动更新。', 'The portable app location has changed. Open the release notes to download and update it manually.']
+  'update.manifestUnavailable': ['所有更新线路暂时不可用，请稍后重试', 'Update routes are currently unavailable. Please try again later'],
+  'update.manifestSignature': ['更新清单验证失败，请重新检查更新', 'The update manifest could not be verified. Check for updates again'],
+  'update.manifestTooLarge': ['更新清单大小异常，请重新检查更新', 'The update manifest has an unexpected size. Check for updates again'],
+  'update.invalidResponse': ['线路返回的内容无效，请换一条线路', 'This route returned invalid content. Try another route'],
+  'update.timeout': ['连接超时，请稍后重试或换一条线路', 'The connection timed out. Try again or choose another route'],
+  'update.httpError': ['线路请求失败，请稍后重试或换一条线路', 'The route request failed. Try again or choose another route'],
+  'update.staleManifest': ['线路提供的更新清单已过期，请重新检查更新', 'This route provided an outdated manifest. Check for updates again'],
+  'update.conflictingManifest': ['不同线路的更新清单不一致，请稍后重新检查', 'The routes returned conflicting manifests. Please check again later'],
+  'update.routeUnavailable': ['所选线路不可用，请重新检查或使用自动选择', 'The selected route is unavailable. Check again or use automatic selection'],
+  'update.noUpdate': ['暂时没有可下载的新版，请先检查更新', 'No newer version is available to download. Check for updates first'],
+  'update.downloadSize': ['下载文件大小与更新清单不一致，请重新下载', 'The download size does not match the manifest. Download it again'],
+  'update.downloadHash': ['下载文件校验失败，请换一条线路重新下载', 'The downloaded file failed verification. Download it again using another route'],
+  'update.downloadInterrupted': ['下载已中断，请重新下载', 'The download was interrupted. Download it again'],
+  'update.cacheInvalid': ['已下载文件的校验失败，请重新下载', 'The downloaded file could no longer be verified. Download it again'],
+  'update.cancelled': ['已取消下载', 'Download cancelled'],
+  'update.redirectInvalid': ['线路重定向无效，请换一条线路', 'This route returned an invalid redirect. Try another route'],
+  'update.redirectLimit': ['线路重定向次数过多，请换一条线路', 'This route redirected too many times. Try another route'],
+  'update.storageError': ['无法保存更新文件，请检查可用磁盘空间后重试', 'The update could not be saved. Check free disk space and try again'],
+  'update.installBusy': ['请先暂停发送及检查任务，等待当前操作和数据导出完成后更新', 'Pause comment and check tasks, then wait for current operations and data exports to finish before updating'],
+  'update.installArtworkBusy': ['请先保存作品并关闭内置艺术作品页面，再安装更新', 'Save your artwork and close the embedded artwork page before installing the update'],
+  'update.notPackaged': ['请使用正式安装版或便携版进行内置更新', 'Use an installed or portable release to update within the app'],
+  'update.installPlatform': ['内置安装更新目前仅支持 Windows', 'Installing updates within the app currently supports Windows only'],
+  'update.installLaunch': ['无法启动更新，请打开版本说明页下载新版并手动安装', 'The update could not be started. Open the release notes to download and install it manually'],
+  'update.portableTarget': ['便携版程序位置已变更，请打开版本说明页下载新版并手动更新', 'The portable app location has changed. Open the release notes to download and update it manually']
 }
 
 export function describeUpdateError(error: string, t: Translate): string {
   const known = updateErrors[error]
-  return known ? t(...known) : t('操作失败，请查看错误信息后重试。', 'The operation failed. Review the error details and try again.')
+  return known ? t(...known) : t('操作失败，请查看错误信息后重试', 'The operation failed. Review the error details and try again')
 }
 
 export function parseCustomUpdateMirrors(value: string): string[] {
@@ -121,8 +121,8 @@ export function UpdatePanel({ state, preferences, runAction }: {
       await savePreferences({ ...preferences, customMirrors: mirrors })
     } catch (error) {
       setCustomError(error instanceof Error && error.message === 'tooMany'
-        ? t('最多设置 5 条自定义线路。', 'You can configure up to 5 custom routes.')
-        : t('请每行填写一个 HTTPS 代理前缀，不能包含账号密码、查询参数或片段。', 'Enter one HTTPS proxy prefix per line, without credentials, query parameters or fragments.'))
+        ? t('最多设置 5 条自定义线路', 'You can configure up to 5 custom routes')
+        : t('请每行填写一个 HTTPS 代理前缀，不能包含账号密码、查询参数或片段', 'Enter one HTTPS proxy prefix per line, without credentials, query parameters or fragments'))
     }
   }
   const cancel = async (): Promise<void> => {
@@ -152,7 +152,7 @@ export function UpdatePanel({ state, preferences, runAction }: {
       <div><dt>{t('最新版本', 'Latest version')}</dt><dd>{state.latestVersion ?? '—'}</dd></div>
       <div><dt>{t('上次检查', 'Last checked')}</dt><dd>{checkedAt}</dd></div>
     </dl>
-    <p>{t('更新跟随 GitHub 正式 Release 发布，代码提交不会触发更新。', 'Updates follow published GitHub releases. Code commits do not trigger an update.')}</p>
+    <p>{t('更新跟随 GitHub 正式 Release 发布，代码提交不会触发更新', 'Updates follow published GitHub releases. Code commits do not trigger an update')}</p>
     <div className="update-actions">
       <button disabled={updateBusy} onClick={() => void perform('check', () => window.steamCommenter.checkForUpdates())}>
         {checking ? t('正在检查…', 'Checking…') : t('检查更新与线路', 'Check updates and routes')}
@@ -169,13 +169,13 @@ export function UpdatePanel({ state, preferences, runAction }: {
       {t('启用代理线路（内置及自定义）', 'Enable proxy routes (built-in and custom)')}</label>
     <p className="update-mirror-note">{t('启用后会访问这些公共代理检测及下载更新：', 'When enabled, these public proxies are used to check and download updates: ')}
       <span>{BUILTIN_UPDATE_ROUTES.filter(route => route.prefix).map(route => route.label).join(' · ')}</span>
-      {t('。每次检查实测线路，连接质量可能变化。关闭后仅连接 GitHub。', '. Routes are tested on each check; connection quality can change. When disabled, only GitHub is used.')}</p>
+      {t('。每次检查实测线路，连接质量可能变化。关闭后仅连接 GitHub', '. Routes are tested on each check; connection quality can change. When disabled, only GitHub is used')}</p>
     <details className="update-advanced">
       <summary>{t('高级：自定义更新代理', 'Advanced: custom update proxies')}</summary>
       <label htmlFor={customInputId}>{t('HTTPS 代理前缀，每行一个', 'HTTPS proxy prefixes, one per line')}</label>
       <textarea id={customInputId} value={customMirrors} rows={3} spellCheck={false} disabled={disabledPreferences}
         placeholder="https://your-mirror.example/" onChange={event => { setCustomMirrors(event.target.value); setCustomError(null) }} />
-      <small>{t('代理应支持在前缀后拼接完整 GitHub 下载地址；留空即可只使用内置线路。', 'The proxy must accept the complete GitHub download URL after its prefix. Leave this empty to use only built-in routes.')}</small>
+      <small>{t('代理应支持在前缀后拼接完整 GitHub 下载地址；留空即可只使用内置线路', 'The proxy must accept the complete GitHub download URL after its prefix. Leave this empty to use only built-in routes')}</small>
       {customError && <p className="update-error" role="alert">{customError}</p>}
       <button disabled={disabledPreferences || customMirrors === storedCustomMirrors} onClick={() => void saveCustomMirrors()}>{t('保存自定义线路', 'Save custom routes')}</button>
     </details>
@@ -190,7 +190,7 @@ export function UpdatePanel({ state, preferences, runAction }: {
         {route.error && <details className="update-route-error"><summary>{describeUpdateError(route.error, t)}</summary><code>{route.error}</code></details>}
       </div>)}
     </div>}
-    {(state.phase === 'available' || state.phase === 'downloading' || state.phase === 'ready') && <p className="update-verified">{t('更新清单已验证；下载完成后再次校验文件。', 'The update manifest is verified. The downloaded file is verified again before installation.')}</p>}
+    {(state.phase === 'available' || state.phase === 'downloading' || state.phase === 'ready') && <p className="update-verified">{t('更新清单已验证；下载完成后再次校验文件', 'The update manifest is verified. The downloaded file is verified again before installation')}</p>}
     {(state.phase === 'available' || state.phase === 'downloading') && <div className="update-download-controls">
       <label>{t('下载线路', 'Download route')}<select value={routeId} disabled={updateBusy} onChange={event => setRouteId(event.target.value)}>
         <option value="">{t('自动选择最快有效线路', 'Automatically choose the fastest valid route')}</option>
@@ -207,8 +207,8 @@ export function UpdatePanel({ state, preferences, runAction }: {
     </div>}
     {state.phase === 'ready' && <div className="update-ready">
       <p>{state.packageKind === 'portable'
-        ? t('保存工作并暂停正在运行的任务后，更新便携版并重启工具箱。', 'Save your work and pause running tasks before updating the portable app and restarting the toolbox.')
-        : t('保存工作并暂停正在运行的任务后，安装新版并重启工具箱。', 'Save your work and pause running tasks before installing the update and restarting the toolbox.')}</p>
+        ? t('保存工作并暂停正在运行的任务后，更新便携版并重启工具箱', 'Save your work and pause running tasks before updating the portable app and restarting the toolbox')
+        : t('保存工作并暂停正在运行的任务后，安装新版并重启工具箱', 'Save your work and pause running tasks before installing the update and restarting the toolbox')}</p>
       <button className="primary" disabled={updateBusy} onClick={() => void perform('install', () => window.steamCommenter.installUpdate())}>{operation === 'install' ? t('正在准备更新…', 'Preparing the update…') : t('确认更新并重启', 'Confirm update and restart')}</button>
     </div>}
     {error && <div className="update-error" role="alert"><p>{describeUpdateError(error, t)}</p><details><summary>{t('错误信息', 'Error details')}</summary><code>{error}</code></details></div>}

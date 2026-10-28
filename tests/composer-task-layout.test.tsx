@@ -105,7 +105,7 @@ describe('compact composer runtime layout', () => {
       nextCheckAt: null, message: '' } }), 'en'))
     const sidebar = text(get(root, 'active-batch-card'))
     expect(sidebar).toContain('Stop verification')
-    expect(sidebar).toContain('Checking read-only; uncertain comments are never resent.')
+    expect(sidebar).toContain('Checking read-only; uncertain comments are never resent')
     expect(sidebar).not.toContain('Review Friend')
   })
 })

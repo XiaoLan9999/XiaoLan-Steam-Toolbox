@@ -8,6 +8,52 @@ Windows 桌面端 Steam 工具箱，由 [XiaoLan9999](https://xiaolan9999.net) �
 
 > 本软件的“留言”指 **Steam 好友个人资料页的公开评论**，不是 Steam 私聊消息。
 
+## 0.16.6 正式版：动画背景工作区与功能汇总
+
+本版正式发布包含此前 0.16.2–0.16.5 本地构建中已提供的截图双模式、暗夜主题和数据导入，并优化内嵌 Steam.Design 的操作空间。
+
+- 动画背景工具默认在工具箱内展开为全窗口工作区，可退出大屏返回原布局；不跳转到外部浏览器。
+- 提供适应窗口、手动缩放与 100% 还原，缩放范围为 50%–150%；缩放只影响在线页面显示，不改变作品原文件尺寸。
+- 为 Steam.Design 的菜单增加独立滚动，移开固定底部内容，避免短窗口中按钮、输入框及说明互相覆盖；窄视口保留页面滚动。
+- 默认暂停页面视频与装饰动画，需要时手动开启主背景动态预览；隐藏或关闭页面后不继续播放预览。不改变原动画文件，也不代替用户下载、上传或保存作品。
+- 本次优化针对显示布局与空闲预览开销。裁剪或转换动画仍可能占用较高 CPU；现有证据没有将整机卡顿唯一归因于该模块，本版不承诺解决所有系统卡顿。
+- 保留两种独立截图模式：默认模式一给当前 Steam 账号免重启导入；模式二可先准备非当前账号本地图库，切号后查看。自动退出并重启默认关闭，只在模式二写当前账号且再次确认后使用。
+- 设置可保存浅色／暗夜主题，并导入工具箱 schema 9、最高 256 MiB 的 SQLite 单文件备份。导入先校验和确认，整体替换而非合并，备份旧库后重启工具箱；导入不带登录令牌，未完成任务保持暂停。
+- 沿用原数据目录，发布包不包含账号、Cookie、登录令牌、任务数据库或诊断文件。SQLite 导入不覆盖截图及其他数据库外文件；ASF 状态复制仍为实验功能。
+- 内置更新继续使用固定公钥校验 Ed25519 发布清单及文件哈希；Windows EXE 尚无商业 Authenticode 代码签名，两者不是同一机制。
+
+## 0.16.5 界面与数据迁移
+
+- 设置中增加浅色／暗夜主题，保存后即时生效并在下次启动恢复；覆盖首页、好友留言、任务、截图、游戏状态及设置，不对头像或图片反色。
+- 清理固定界面文案末尾的句号，保留内部标点、省略号及用户昵称、草稿、留言、文件名的原始内容；删除首页底部的操作提示。
+- 设置中增加“导入数据”，支持本工具 schema 9 的 SQLite 单文件导出（最高 256 MiB）。先校验、展示内容数量并确认整体替换，不合并；取消不会修改当前数据。
+- 确认后正常重启工具箱（不重启 Steam），启动时自动备份旧数据库，再原子替换。保留原数据与恢复材料，无法确认应用状态时停止打开数据库，不盲目覆盖。
+- 导入的新库使用可信代码重建结构，拒绝任意数据库／未知版本／触发器等不受支持内容，不带登录令牌；导入后需在工具箱重新登录，未完成任务保持暂停且不会自动发送。
+- SQLite 导入不包含截图、截图防重记录、艺术作品或其他数据库外文件，这些资料仍需单独迁移。
+
+## 0.16.4 两种独立截图导入模式
+
+- **模式一：当前账号免重启导入（默认）**。用本机占位辅助进程和 Steam 截图接口给当前客户端登录账号添加截图。失败、选错账号或接口不可用时停止，不自动切换模式，不退出 Steam。
+- **模式二：指定账号本地导入**。目标不是当前 Steam 账号时，备份并写入该账号本地图库，不退出 Steam、不启动占位游戏；完成后提示切换到该账号再查看并确认云端上传。
+- 模式二目标正被 Steam 使用时，需要先手动完全退出。可单独勾选“自动退出并重启 Steam”，默认关闭，关闭前仍需确认。非当前账号即便勾选也不会退出或重启。
+- 使用只读辅助查询核实本机真实 Steam 身份，绑定客户端 PID、启动时间、路径和精确 DLL 哈希，不依赖过期的注册表 ActiveUser。非当前账号写入前、发布图片前和索引提交前三次复核；途中切号或实例变化会停止并保留原索引。
+- 已验证原账号运行时为另一已保存账号预写截图，再通过 Steam 原生切号，截图管理器可打开图片；原索引字段与图片／缩略图哈希保持一致。这不等同任意第三方多开实例都可并发写入。
+- 两种模式都只做本地导入，保留备份、源图校验、逐图结果和待核对防重导；不会自动上传云端。
+
+## 0.16.3 免重启截图导入（历史行为，已由两模式取代）
+
+- Steam 正在运行时，默认优先使用本机 `ISteamScreenshots::AddScreenshotToLibrary`，由 Steam 自行添加本地截图和缩略图，不需要退出客户端。
+- 当前本机已完成单图实测：收到对应成功回调，新增 JPEG 哈希一致；用户确认截图管理器能直接打开，好友列表正常，Steam 进程没有重启。并非仅凭接口非空判断成功。
+- 该路径限定当前本机 Steam 账号、可运行的 Steam AppID、受支持的 Windows x64 客户端及空截图说明；其他本地账号、非 Steam 游戏、填写说明或接口不可用时保留原索引导入。正式游戏和模拟／锁定功能应先停止。
+- “自动退出并重启 Steam”保留为可选兜底，只有免重启通道尚未提交任何图片时才会再次询问，绝不静默关闭 Steam。
+- 按图持久记录提交与核验结果；成功图片移出队列，结果不确定的图片禁止自动重导，也不会转为重启重导。已确认或明确失败的临时 JPEG 在辅助进程退出后清理，待核对图片保留。
+
+## 0.16.2 截图导入改进
+
+- Steam 运行时，导入确认框会说明并再次确认“正常退出 Steam → 等待退出完成 → 备份并导入 → 重新打开 Steam”。可取消自动重启，改为手动退出。
+- 不强杀进程、不重启 Steam 服务；运行游戏、模拟／锁定／复制状态未停止、客户端身份无法核实或退出超时，均不写入索引。
+- 显示退出、导入及重启进度。导入已完成但重启失败单独提示，防止重复导入；真实云端上传仍由用户在 Steam 中确认。
+
 ## 0.16.1 正式发布
 
 - 使用提供的原画上半部裁切作为统一 Logo，覆盖软件界面、窗口、任务栏和 Windows 安装／便携包。
@@ -164,7 +210,11 @@ npm.cmd run dist
 
 名称缓存和选中目录分别位于工具箱数据目录的 `screenshot-catalog-names.json` 与 `screenshot-preferences.json`；它们不是登录凭据，删除后可重新识别。图片队列只保存在内存中；准备完成的截图与原索引备份保存在 Steam 的 `userdata` 中，不属于工具箱 SQLite 导出文件。
 
-**English:** Open **Steam screenshots**, choose the named local user and game, add images, review the destination and prepare them with Steam fully exited. The toolbox creates local JPEGs, thumbnails and screenshot metadata with a backup; use Steam's screenshot manager for the final cloud upload. Names refresh once at startup and manually, with anonymous official-host lookups and offline caching. The queue is local and source images stay unchanged.
+模式二若要写入正在被 Steam 使用的当前账号，可以先手动完全退出，或单独勾选“自动退出并重启 Steam”（默认关闭）。启用后还会弹出原生确认框，提示好友／聊天暂时断开；请先保存进度并退出游戏，停止模拟、锁定、状态复制及本机状态连接。只有确认后才正常请求 Steam 退出，不会强杀 Steam；60 秒未退出就停止且不写入。若导入已完成但重开失败，会单独提示不要重复导入。目标不是当前账号时，上述退出流程不会触发，即使勾选也不触发。
+
+从 0.16.4 起，导入必须明确选择两种模式之一，默认模式一；不再使用“优先免重启失败后转重启”的联动逻辑。模式一仅处理当前 Steam 账号，模式二可为非当前账号先准备图库，等待以后自然切号生效。自动退出并重启仅是模式二针对当前账号的独立选项，默认关闭。截图导入防重记录保存在工具箱数据目录的 `screenshot-live-imports/`，不含源图片绝对路径或登录凭据；不确定结果会保留临时 JPEG。该目录与 Steam 的截图文件都不包含在 SQLite 导出中，迁移时需单独保留。
+
+**English:** Choose a local user and game, add images and select one of two explicit modes. Mode 1 is the default: it uses a local placeholder helper and Steam screenshot API for the currently signed-in Steam account, without restarting. Failure never selects Mode 2 automatically. Mode 2 writes the selected account's local library with a backup. A verified non-current account is prepared without exiting Steam; switch to that account later to see the images. If Mode 2 targets the current account, fully exit Steam manually or separately enable automatic exit/reopen, which defaults off and requires confirmation. That option never closes Steam for a non-current target. A successful import with failed reopening is reported separately to prevent duplicates. Review and confirm any cloud upload in Steam yourself; source images stay unchanged.
 
 ## 账号状态检查
 
@@ -173,6 +223,12 @@ npm.cmd run dist
 ## 艺术作品与背景适配
 
 侧栏“艺术作品与小工具”的本地裁剪、内置动画工具和来源查看无需登录。上传作品和配置展柜使用工具箱当前已登录的 Steam 账号。
+
+### 内嵌动画背景工作区
+
+点击“动画背景工具”会在工具箱内打开 Steam.Design，并默认展开为全窗口工作区。工具栏可退出大屏、适应窗口、调节 50%–150% 显示缩放或恢复 100%；窗口大小变化后会重新计算视图边界。Steam.Design 左侧菜单独立滚动，底部介绍不再压住输入区域；页面超出可用空间时保留滚动，不依靠裁掉内容来适配。
+
+页面默认使用省资源预览：视频和装饰动画暂停，需要查看效果时手动开启主背景动态预览。显示缩放和暂停预览不会重采样或修改原动画文件，下载、转换和上传仍由原页面及用户操作完成。裁剪／转换可能继续占用 CPU；这些改动不等于已经确定或排除了整机卡顿的其他来源，也不保证第三方页面今后更新后始终保持兼容。
 
 ### 长图上传助手
 
@@ -312,9 +368,11 @@ npm.cmd run dist:dir
 
 ### 备份与迁移
 
-点击侧栏“设置 / 语言 / 导出数据”，其中“打开数据目录”可打开本机实际目录。安装版和便携版都使用该目录，**不是 EXE 所在目录**。
+点击侧栏“设置 / 更新 / 语言 / 数据”，其中“打开数据目录”可打开本机实际目录。安装版和便携版都使用该目录，**不是 EXE 所在目录**。
 
-**推荐：设置 → 导出数据。** 可在软件运行时导出一致的 SQLite 快照，包含完整业务数据，并在副本中移除全部自动登录令牌。新电脑先启动同版或更新版并打开数据目录，再退出软件；备份并移开该目录的旧文件，把导出文件放入空数据目录并重命名为 `steam-friend-commenter.sqlite3`。重新启动、重新登录原账号即可。不要将导出文件与目的电脑已有的 `-wal` / `-shm` 文件混放。软件不会自动覆盖或合并另一台电脑的数据。
+**推荐：设置 → 导出数据，再在目标电脑的设置中选择“导入数据”。** 导出是一致的 SQLite 快照，包含业务数据但移除全部自动登录令牌。导入会先校验工具箱 schema 9 单文件备份，展示内容数量并明确确认整体替换（不合并）；之后重启工具箱，备份旧库，再原子应用。导入后在工具箱重新登录原账号，未完成任务保持暂停。不要手动混用旧 `-wal` / `-shm` 文件。
+
+导入前的旧库完整备份位于 `data-import-backups/before-import-<id>/`，包括旧库中仅本机可用的加密登录令牌，必须保持私有；它不同于已移除令牌的对外导出文件。`data-imports/` 与 `pending-data-import.json` 是受控导入暂存及计划，遇到失败请先保留这些恢复材料，不要随意覆盖旧数据库。SQLite 导入不包含 Steam 截图、截图导入防重记录、艺术作品和其他单独文件。
 
 也可以手动备份整个原始目录（此方式会保留 DPAPI 加密令牌，但换电脑通常仍需重新登录）：
 

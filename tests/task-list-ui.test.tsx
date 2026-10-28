@@ -57,7 +57,7 @@ describe('durable task center UI', () => {
       expect(html).toContain(`${label} <strong>${count}</strong>`)
     }
     expect(html).toContain('每页 50 条')
-    expect(html).toContain('2 条结果待核对，不会自动重发。')
+    expect(html).toContain('2 条结果待核对，不会自动重发')
     expect(html).toContain('不重复发送，也不阻塞其余待发')
     expect(html).toContain('好友发送状态')
   })
@@ -68,7 +68,7 @@ describe('durable task center UI', () => {
     expect(html).toContain('All locally saved tasks, 25 per page')
     expect(html).toContain('Interval 0.1 sec')
     expect(html).toContain('<dt>Finished</dt><dd>Not yet</dd>')
-    expect(html).toContain('2 uncertain results will NOT be automatically retried.')
+    expect(html).toContain('2 uncertain results will NOT be automatically retried')
     expect(html).toContain('Verify and resume remaining pending')
     expect(html).toContain('50 per page')
     expect(html).not.toContain('尚未')

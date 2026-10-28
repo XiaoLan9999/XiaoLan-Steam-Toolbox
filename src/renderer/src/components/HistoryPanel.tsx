@@ -195,7 +195,7 @@ function AccountTasks({ snapshot, runAction }: { snapshot: AppSnapshot; runActio
             </button>
           ))}
           {!tasks.loading && !tasks.error && tasks.data.items.length === 0 &&
-            <p className="task-empty">{t('此页没有任务。', 'No tasks on this page.')}</p>}
+            <p className="task-empty">{t('此页没有任务', 'No tasks on this page')}</p>}
         </div>
         <TaskPagination page={tasks.data} loading={tasks.loading} loaded={tasks.loaded} onChange={setOffset} />
       </section>
@@ -205,8 +205,8 @@ function AccountTasks({ snapshot, runAction }: { snapshot: AppSnapshot; runActio
         runAction={runAction} />
         : <section className="card empty-history task-empty-card">
           <h2>{t('还没有发送任务', 'No delivery tasks yet')}</h2>
-          <p>{t('创建任务后会先保存全部收件人；关闭或异常退出后仍能查看进度。',
-            'All recipients are saved when a task is created. Its progress remains available after closing or a crash.')}</p>
+          <p>{t('创建任务后会先保存全部收件人；关闭或异常退出后仍能查看进度',
+            'All recipients are saved when a task is created. Its progress remains available after closing or a crash')}</p>
         </section>}
     </div>
   )
@@ -246,11 +246,11 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
     if (kind === 'verify' && (!canVerify || !authenticated || otherTaskActive || verifying)) return
     if (kind === 'verify' && !window.confirm(batchVerificationConfirmation(batch, t))) return
     if (kind === 'resume' && !window.confirm(t(
-      `确认使用账号“${accountName}”继续此任务？仅发送剩余 ${batch.pending} 位待发好友；${batch.uncertain} 条待核对记录不会自动重发。`,
-      `Resume this task with account "${accountName}"? Only ${batch.pending} pending recipients will be sent. ${batch.uncertain} uncertain results will NOT be retried.`))) return
+      `确认使用账号“${accountName}”继续此任务？仅发送剩余 ${batch.pending} 位待发好友；${batch.uncertain} 条待核对记录不会自动重发`,
+      `Resume this task with account "${accountName}"? Only ${batch.pending} pending recipients will be sent. ${batch.uncertain} uncertain results will NOT be retried`))) return
     if (kind === 'cancel' && !window.confirm(t(
-      `取消剩余 ${batch.pending} 位好友的发送？已发送记录会保留，当前请求若已提交则无法撤回。`,
-      `Cancel ${batch.pending} remaining deliveries? Existing records are retained. A submitted request cannot be recalled.`))) return
+      `取消剩余 ${batch.pending} 位好友的发送？已发送记录会保留，当前请求若已提交则无法撤回`,
+      `Cancel ${batch.pending} remaining deliveries? Existing records are retained. A submitted request cannot be recalled`))) return
     actionLock.current = true
     setActing(true)
     try {
@@ -296,16 +296,16 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
       <BatchActivityPanel batch={batch} />
       <BatchVerificationPanel batch={batch} disabled={acting} onStop={() => void perform('pause')} />
       {!batch.activity && batch.uncertain > 0 && batch.status !== 'cancelled' && <div className="inline-warning task-uncertain-note" role="status">
-        <strong>{t(`${batch.uncertain} 条结果待核对，不会自动重发。`, `${batch.uncertain} uncertain results will NOT be automatically retried.`)}</strong>
+        <strong>{t(`${batch.uncertain} 条结果待核对，不会自动重发`, `${batch.uncertain} uncertain results will NOT be automatically retried`)}</strong>
         <span>{batchUncertainPolicyText(batch, t)}</span>
       </div>}
       <BatchRecoveryPanel key={batch.id} batch={batch} authenticated={authenticated}
         otherTaskActive={otherTaskActive} disabled={acting || verifying} runAction={runAction} />
       <BatchFailurePolicyPanel batch={batch} runAction={runAction} disabled={acting} />
-      {!authenticated && <p className="task-offline-note">{t('账号未登录：可查看保存记录，登录此账号后才能继续发送。',
-        'Account offline: saved records remain available. Sign in to this account to resume sending.')}</p>}
-      {otherTaskActive && active && <p className="task-offline-note">{t('当前账号有其他未结束任务，请先处理或取消该任务。',
-        'Another unfinished task exists for this account. Finish or cancel it first.')}</p>}
+      {!authenticated && <p className="task-offline-note">{t('账号未登录：可查看保存记录，登录此账号后才能继续发送',
+        'Account offline: saved records remain available. Sign in to this account to resume sending')}</p>}
+      {otherTaskActive && active && <p className="task-offline-note">{t('当前账号有其他未结束任务，请先处理或取消该任务',
+        'Another unfinished task exists for this account. Finish or cancel it first')}</p>}
       {(active || canVerify) && <div className="batch-controls task-controls">
         {(batch.status === 'running' || batch.status === 'queued') && <button disabled={acting} onClick={() => void perform('pause')}>{t('暂停任务', 'Pause task')}</button>}
         {(batch.status === 'paused' || canVerify) && <button className="primary" disabled={acting || verifying || !authenticated || otherTaskActive || (!canVerify && (batch.pending === 0 || coolingDown))}
@@ -336,7 +336,7 @@ export function TaskDetails({ batch, accountName, authenticated, otherTaskActive
           <span>{taskDate(delivery.sentAt ?? delivery.createdAt, language)}</span>
         </div>)}
         {!rows.loading && !rows.error && rows.data.items.length === 0 &&
-          <p className="task-empty">{t('此筛选下没有发送记录。', 'No deliveries match this filter.')}</p>}
+          <p className="task-empty">{t('此筛选下没有发送记录', 'No deliveries match this filter')}</p>}
       </div>
       <TaskPagination page={rows.data} loading={rows.loading} loaded={rows.loaded} onChange={setOffset} />
     </section>

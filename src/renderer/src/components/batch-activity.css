@@ -3,7 +3,7 @@
   display: grid;
   gap: 12px;
   padding: 14px;
-  border: 1px solid #b6d7e5;
+  border: 1px solid var(--tone-border-b6d7e5ff, #b6d7e5);
   border-radius: 9px;
   background: var(--sky-soft);
   font-size: 11px;

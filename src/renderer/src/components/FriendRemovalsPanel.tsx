@@ -36,10 +36,10 @@ export function FriendRemovalsPanel({ removals, canSync, onSync }: FriendRemoval
     </div>
     <div className="friend-removals-note">
       <strong>{t(`仍未恢复 ${removedCount} 人 · 历史 ${removals.length} 条 · 当前显示 ${visible.length} 条`, `${removedCount} still removed · ${removals.length} historical records · ${visible.length} shown`)}</strong>
-      <p>{t('通过成功同步前后的好友列表对比发现关系变化，无法判断是对方删除你，还是你删除对方。发现时间不是实际解除时间；昵称和头像是最后保存的缓存。', 'Changes are detected by comparing friends lists after a successful sync. This cannot tell who removed whom. The detection time is not the exact removal time; names and avatars are cached details.')}</p>
-      <p>{t('重新加回会保留历史并标记恢复；再次解除会新增记录。此页仅供查看，不可勾选留言、分组或启动留言权限检查。', 'Re-adding a friend marks the record restored without deleting its history. A later removal creates a new record. This page is read-only: no comment selection, grouping or availability checks.')}</p>
+      <p>{t('通过成功同步前后的好友列表对比发现关系变化，无法判断是对方删除你，还是你删除对方。发现时间不是实际解除时间；昵称和头像是最后保存的缓存', 'Changes are detected by comparing friends lists after a successful sync. This cannot tell who removed whom. The detection time is not the exact removal time; names and avatars are cached details')}</p>
+      <p>{t('重新加回会保留历史并标记恢复；再次解除会新增记录。此页仅供查看，不可勾选留言、分组或启动留言权限检查', 'Re-adding a friend marks the record restored without deleting its history. A later removal creates a new record. This page is read-only: no comment selection, grouping or availability checks')}</p>
     </div>
-    {removals.length === 0 ? <div className="empty-state"><div>◎</div><h3>{t('暂无解除好友记录', 'No removed-friend records')}</h3><p>{t('之后成功同步时，已不在好友列表中的缓存好友会显示在这里。未曾缓存的历史好友无法追溯。', 'After a successful sync, cached friends missing from the latest list appear here. Friends never cached by this app cannot be recovered from past history.')}</p></div> : <div className="friend-removals-table-wrap">
+    {removals.length === 0 ? <div className="empty-state"><div>◎</div><h3>{t('暂无解除好友记录', 'No removed-friend records')}</h3><p>{t('之后成功同步时，已不在好友列表中的缓存好友会显示在这里。未曾缓存的历史好友无法追溯', 'After a successful sync, cached friends missing from the latest list appear here. Friends never cached by this app cannot be recovered from past history')}</p></div> : <div className="friend-removals-table-wrap">
       <table className="friend-removals-table"><thead><tr><th>{t('好友（缓存）', 'Friend (cached)')}</th><th>SteamID</th><th>{t('发现时间', 'Detected at')}</th><th>{t('关系状态', 'Relationship status')}</th><th><span className="removal-profile-label">{t('资料页', 'Profile')}</span></th></tr></thead><tbody>
         {visible.map((removal) => <tr key={removal.id}>
           <td><div className="friend-identity">{removal.avatarUrl ? <img src={removal.avatarUrl} alt="" loading="lazy" referrerPolicy="no-referrer" draggable={false} /> : <span>{avatarFallback(removal.displayName)}</span>}<div className="friend-name"><strong title={removal.displayName}>{removal.displayName}</strong></div></div></td>
@@ -49,7 +49,7 @@ export function FriendRemovalsPanel({ removals, canSync, onSync }: FriendRemoval
           <td><a href={removal.profileUrl} target="_blank" rel="noreferrer" title={t('打开 Steam 资料页', 'Open Steam profile')} aria-label={t(`打开 ${removal.displayName} 的 Steam 资料页`, `Open Steam profile for ${removal.displayName}`)}>↗</a></td>
         </tr>)}
       </tbody></table>
-      {visible.length === 0 && <div className="no-results">{filter === 'unrestored' && !search.trim() ? t('目前没有仍未恢复的好友，可切换“全部历史”查看重新加回的记录。', 'No friends remain removed. Switch to All history to view re-added records.') : t('没有符合筛选条件的解除记录', 'No removal records match these filters')}</div>}
+      {visible.length === 0 && <div className="no-results">{filter === 'unrestored' && !search.trim() ? t('目前没有仍未恢复的好友，可切换“全部历史”查看重新加回的记录', 'No friends remain removed. Switch to All history to view re-added records') : t('没有符合筛选条件的解除记录', 'No removal records match these filters')}</div>}
     </div>}
   </div>
 }

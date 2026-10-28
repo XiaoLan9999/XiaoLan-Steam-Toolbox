@@ -13,6 +13,8 @@ import {
 } from '../shared/steam-screenshots'
 import { appendScreenshotMetadata, parseScreenshotVdf, vdfChild, vdfPath, type VdfNode } from './steam-screenshot-vdf'
 import { screenshotShortcutNames } from './steam-screenshot-shortcuts'
+import { safeScreenshotLiveDirectory, screenshotLiveUncertainDigests } from './screenshot-live-import'
+import { consumeScreenshotInactivePermit, type ScreenshotInactivePermit } from './screenshot-local-import'
 
 export interface ScreenshotImageAdapter {
   inspect(data: Buffer): Promise<{ width: number; height: number; previewJpeg: Buffer }>
@@ -26,6 +28,11 @@ export interface SteamScreenshotOptions {
   isSteamRunning(): Promise<boolean>
   findSteamPaths?(): Promise<string[]>
   now?(): Date
+  liveLedgerDirectory?: string
+}
+
+export interface ScreenshotLiveStagedImage {
+  imageId: string; name: string; path: string; width: number; height: number; sha256: string; sourceSha256: string
 }
 
 interface QueuedImage {
@@ -201,8 +208,14 @@ export class SteamScreenshotService {
   private adding = false
   private refreshPromise?: Promise<ScreenshotCatalog>
   private disposed = false
+  private liveLedgerDirectory?: string
 
-  constructor(private readonly options: SteamScreenshotOptions) {}
+  constructor(private readonly options: SteamScreenshotOptions) { this.liveLedgerDirectory = options.liveLedgerDirectory }
+
+  setLiveLedgerDirectory(directory: string): void {
+    if (!path.isAbsolute(directory) || this.liveLedgerDirectory && path.resolve(this.liveLedgerDirectory) !== path.resolve(directory)) fail('INVALID_PATH', '截图导入记录目录无效')
+    this.liveLedgerDirectory = directory
+  }
 
   getCatalog(): ScreenshotCatalog { return cloneCatalog(this.catalog) }
 
@@ -368,24 +381,135 @@ export class SteamScreenshotService {
 
   private now(): Date { return this.options.now?.() ?? new Date() }
 
-  async prepare(input: ScreenshotPrepareInput): Promise<ScreenshotPrepareResult> {
+  private validatePreparation(input: ScreenshotPrepareInput): QueuedImage[] {
     if (this.busy || this.adding || this.refreshPromise || this.disposed) fail('BUSY', '截图工具正忙，请稍后重试')
     if (!input || !isId(input.userId) || input.userId === '0' || !isGameId(input.appId) || typeof input.steamPath !== 'string') fail('INVALID_INPUT', '请选择有效的 Steam 用户和游戏')
     if (!Number.isInteger(input.jpegQuality) || input.jpegQuality < 1 || input.jpegQuality > 100 || typeof input.resizeLargeImages !== 'boolean') fail('INVALID_INPUT', '图片质量或缩放选项不正确')
+    if (input.restartSteam !== undefined && typeof input.restartSteam !== 'boolean') fail('INVALID_INPUT', 'Steam 重启选项无效')
+    if (input.preferLive !== undefined && typeof input.preferLive !== 'boolean') fail('INVALID_INPUT', '免重启导入选项无效')
+    if (input.mode !== undefined && input.mode !== 'current-account' && input.mode !== 'local-account') fail('INVALID_MODE', '截图导入模式无效')
     if (!Array.isArray(input.imageIds) || !input.imageIds.length || input.imageIds.length > MAX_QUEUE || new Set(input.imageIds).size !== input.imageIds.length || input.imageIds.some(id => typeof id !== 'string' || !this.images.has(id))) fail('INVALID_QUEUE', '截图队列已失效，请重新选择图片')
     const caption = input.caption ?? ''
     if (typeof caption !== 'string' || caption.length > 500 || /[\u0000-\u001f\u007f]/.test(caption)) fail('INVALID_CAPTION', '截图说明不能包含控制字符且最多 500 字')
     if (input.steamPath !== this.catalog.steamPath || !this.catalog.users.some(user => user.id === input.userId)) fail('CATALOG_CHANGED', 'Steam 用户或目录已变化，请刷新后重试')
     const queued = input.imageIds.map(id => this.images.get(id)!)
     if (!input.resizeLargeImages && queued.some(image => image.view.resizeRequired)) fail('RESIZE_REQUIRED', '图片超过 Steam 截图尺寸限制，请启用自动缩放')
+    return queued
+  }
+
+  async preflight(input: ScreenshotPrepareInput): Promise<void> {
+    const queued = this.validatePreparation(input)
+    const root = await safeRoot(input.steamPath)
+    const user = await safeDirectory(root, ['userdata', input.userId], false)
+    const base = path.join(user, '760')
+    try {
+      await safeDirectory(root, ['userdata', input.userId, '760'], false)
+      const previous = await optionalFile(path.join(base, 'screenshots.vdf'))
+      appendScreenshotMetadata(previous === null ? null : decodeVdf(previous), input.appId, [])
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error
+    }
+    for (const image of queued) {
+      if (digest(await regularFile(image.source, MAX_IMAGE_BYTES)) !== image.digest) fail('FILE_CHANGED', '选中的图片已被更改，请重新添加图片')
+    }
+    await this.assertNoLiveUncertain(input, queued)
+  }
+
+  private async assertNoLiveUncertain(input: ScreenshotPrepareInput, queued: QueuedImage[]): Promise<void> {
+    if (!this.liveLedgerDirectory) {
+      if (queued.some(image => image.view.importStatus === 'uncertain')) fail('LIVE_UNCERTAIN', '部分图片的上次导入结果尚待核对，不会再次提交；请先检查 Steam 本地截图库')
+      return
+    }
+    const blocked = await screenshotLiveUncertainDigests(this.liveLedgerDirectory, input.userId, input.appId)
+    let found = false
+    for (const image of queued) {
+      if (blocked.has(image.digest)) { image.view.importStatus = 'uncertain'; image.view.importReason = 'LIVE_PREVIOUS_UNCONFIRMED'; found = true }
+      else { delete image.view.importStatus; delete image.view.importReason }
+    }
+    if (found) fail('LIVE_UNCERTAIN', '同一账号和游戏存在这张图片的待核对导入记录，不会重复提交；请先检查 Steam 本地截图库')
+  }
+
+  async stageForLive(input: ScreenshotPrepareInput, stageRoot: string): Promise<ScreenshotLiveStagedImage[]> {
+    const queued = this.validatePreparation(input)
+    const staged: ScreenshotLiveStagedImage[] = []
+    this.busy = true
+    try {
+      await this.assertNoLiveUncertain(input, queued)
+      const directory = await safeScreenshotLiveDirectory(stageRoot)
+      for (let index = 0; index < queued.length; index++) {
+        const image = queued[index]!
+        const bytes = await regularFile(image.source, MAX_IMAGE_BYTES)
+        if (digest(bytes) !== image.digest) fail('FILE_CHANGED', '选中的图片已被更改，请重新添加图片')
+        const size = screenshotDimensions(image.view.width, image.view.height)
+        const thumbnailWidth = Math.min(200, size.width)
+        const thumbnailHeight = Math.max(1, Math.round(size.height * thumbnailWidth / size.width))
+        const encoded = await this.options.imageAdapter.encode(bytes, { quality: input.jpegQuality, ...size, thumbnailWidth, thumbnailHeight })
+        const geometry = headerDimensions(encoded.jpeg)
+        if (!geometry || encoded.jpeg.length > MAX_IMAGE_BYTES || encoded.jpeg[0] !== 0xff || encoded.jpeg[1] !== 0xd8 || geometry.width !== size.width || geometry.height !== size.height) fail('ENCODE_FAILED', '图片转换未通过校验，尚未提交 Steam')
+        const destination = path.join(directory, `${index}.jpg`)
+        await syncWrite(destination, encoded.jpeg)
+        staged.push({ imageId: image.view.id, name: image.view.name, path: destination, ...size, sha256: digest(encoded.jpeg), sourceSha256: image.digest })
+      }
+      return staged
+    } catch (error) {
+      for (const image of staged) {
+        try {
+          await safeScreenshotLiveDirectory(stageRoot)
+          if (digest(await regularFile(image.path, MAX_IMAGE_BYTES)) === image.sha256) await fs.unlink(image.path)
+        } catch { /* Do not remove changed files or follow changed staging paths. */ }
+      }
+      throw error
+    } finally { this.busy = false }
+  }
+
+  recordLiveOutcome(imageId: string, sourceSha256: string, status: 'confirmed' | 'rejected' | 'uncertain', code?: string): void {
+    const image = this.images.get(imageId)
+    if (!image || image.digest !== sourceSha256) return
+    if (status === 'confirmed') this.images.delete(imageId)
+    else if (status === 'uncertain') { image.view.importStatus = 'uncertain'; image.view.importReason = code }
+  }
+
+  async listLiveScreenshotFiles(input: ScreenshotPrepareInput): Promise<string[]> {
+    const root = await safeRoot(input.steamPath)
+    let directory: string
+    try { directory = await safeDirectory(root, ['userdata', input.userId, '760', 'remote', input.appId, 'screenshots'], false) }
+    catch (error) { if (errorCode(error) === 'ENOENT') return []; throw error }
+    const entries = await fs.readdir(directory, { withFileTypes: true })
+    if (entries.length > 20000) fail('LIVE_UNAVAILABLE', '截图目录过大，暂未继续实时导入')
+    return entries.filter(entry => entry.isFile() && !entry.isSymbolicLink() && /\.jpe?g$/i.test(entry.name)).map(entry => path.join(directory, entry.name))
+  }
+
+  async findVerifiedLiveScreenshot(input: ScreenshotPrepareInput, previous: Set<string>, sha256: string): Promise<string | null> {
+    for (const file of await this.listLiveScreenshotFiles(input)) {
+      if (!previous.has(file) && digest(await regularFile(file, MAX_IMAGE_BYTES)) === sha256) return file
+    }
+    return null
+  }
+
+  async prepare(input: ScreenshotPrepareInput): Promise<ScreenshotPrepareResult & { backupPath: string }> {
+    return this.prepareWithGuard(input)
+  }
+
+  async prepareInactive(input: ScreenshotPrepareInput, permit: ScreenshotInactivePermit): Promise<ScreenshotPrepareResult & { backupPath: string }> {
+    return this.prepareWithGuard(input, consumeScreenshotInactivePermit(permit, this, input))
+  }
+
+  private async prepareWithGuard(input: ScreenshotPrepareInput, assertInactive?: () => Promise<void>): Promise<ScreenshotPrepareResult & { backupPath: string }> {
+    const queued = this.validatePreparation(input)
+    const caption = input.caption ?? ''
     this.busy = true
     let lock: Awaited<ReturnType<typeof fs.open>> | undefined
     let lockPath: string | undefined
     let stage: string | undefined
     const published: { file: string; hash: string }[] = []
     let committed = false
+    const assertWritable = async (): Promise<void> => {
+      if (assertInactive) await assertInactive()
+      else if (await this.options.isSteamRunning()) fail('STEAM_RUNNING', '请先完全退出 Steam 客户端，再准备截图，避免截图索引被覆盖')
+    }
     try {
-      if (await this.options.isSteamRunning()) fail('STEAM_RUNNING', '请先完全退出 Steam 客户端，再准备截图，避免截图索引被覆盖')
+      await this.assertNoLiveUncertain(input, queued)
+      await assertWritable()
       const root = await safeRoot(input.steamPath)
       await safeDirectory(root, ['userdata', input.userId], false)
       const base = await safeDirectory(root, ['userdata', input.userId, '760'], true)
@@ -435,7 +559,7 @@ export class SteamScreenshotService {
       const backupPath = await safeDirectory(backupRoot, [`${this.now().toISOString().replace(/[:.]/g, '-')}-${token}`], true)
       if (previous) await syncWrite(path.join(backupPath, 'screenshots.vdf'), previous)
       await syncWrite(path.join(backupPath, 'manifest.json'), JSON.stringify({ version: 1, createdAt: this.now().toISOString(), userId: input.userId, appId: input.appId, originalExisted: previous !== null, originalSha256: previous ? digest(previous) : null, nextSha256: digest(Buffer.from(nextText)), files: metadata.map(entry => ({ filename: entry.filename, thumbnail: entry.thumbnail })) }, null, 2))
-      if (await this.options.isSteamRunning()) fail('STEAM_RUNNING', 'Steam 已启动，已停止准备截图；请退出 Steam 后重试')
+      await assertWritable()
       if (this.disposed) fail('CLOSED', '截图工具已关闭')
       await safeDirectory(root, ['userdata', input.userId, '760', 'remote', input.appId, 'screenshots', 'thumbnails'], false)
       const sameMetadata = async () => {
@@ -449,7 +573,7 @@ export class SteamScreenshotService {
         const handle = await fs.open(file.dest, 'r+')
         try { await handle.sync() } finally { await handle.close() }
       }
-      if (await this.options.isSteamRunning()) fail('STEAM_RUNNING', 'Steam 已启动，已停止准备截图；请退出 Steam 后重试')
+      await assertWritable()
       if (this.disposed) fail('CLOSED', '截图工具已关闭')
       await safeDirectory(root, ['userdata', input.userId, '760', 'remote', input.appId, 'screenshots', 'thumbnails'], false)
       await sameMetadata()

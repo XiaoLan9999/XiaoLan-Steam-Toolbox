@@ -39,12 +39,13 @@ describe('toolbox welcome home', () => {
 
   it.each(['zh-CN', 'en'] as const)('offers four separate tools without starting work in %s', language => {
     const { html, actions } = render(snapshot(), language)
-    expect(html).toContain(language === 'en' ? 'Your Steam tools, in one place.' : '你的 Steam 工具，都在这里。')
+    expect(html).toContain(language === 'en' ? 'Your Steam tools, in one place' : '你的 Steam 工具，都在这里')
     expect(html).toContain('LOCAL PROJECT')
     expect((html.match(/class="toolbox-home-card"/g) ?? [])).toHaveLength(4)
     expect(html).toContain(language === 'en' ? 'Open comments' : '打开留言板')
     expect(html).toContain(language === 'en' ? 'Open game status' : '打开游戏状态')
-    expect(html).toContain(language === 'en' ? 'Opening home does not start sending' : '打开首页不会启动发送')
+    expect(html).not.toContain(language === 'en' ? 'Opening home does not start sending' : '打开首页不会启动发送')
+    expect(html).toContain(language === 'en' ? 'Settings, theme &amp; data transfer' : '设置、主题与数据迁移')
     expect(html).not.toContain('delivery-row')
     expect(html).not.toContain('<textarea')
     expect(actions.onNavigate).not.toHaveBeenCalled()
@@ -89,5 +90,20 @@ describe('toolbox welcome home', () => {
     const { html } = render(state)
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
     expect(html).not.toContain('<img')
+  })
+
+  it('removes only fixed sentence terminators while preserving internal punctuation and user names', () => {
+    const state = snapshot()
+    state.accounts[0]!.displayName = 'User.'
+    const { html } = render(state)
+    expect(html).toContain('你的 Steam 工具，都在这里</h1>')
+    expect(html).not.toContain('你的 Steam 工具，都在这里。')
+    expect(html).toContain('从一项工具开始。账号与数据保存在本机，各项操作由你决定</p>')
+    expect(html).toContain('当前账号：User.</span>')
+    expect(html).not.toContain('打开首页不会启动发送')
+    const english = render(state, 'en').html
+    expect(english).toContain('Your Steam tools, in one place</h1>')
+    expect(english).toContain('Choose a tool to get started. Accounts and data stay local; you decide what runs</p>')
+    expect(english).toContain('Selected: User.</span>')
   })
 })

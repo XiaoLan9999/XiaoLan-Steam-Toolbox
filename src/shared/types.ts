@@ -2,7 +2,7 @@ import type { ArtworkSource } from './artwork-links'
 import type { ArtworkBounds, ArtworkBrowserState, ArtworkTool } from './artwork-browser'
 import type { ArtworkUploadDraft, ProfileBackgroundCatalog, ProfileBackgroundImage } from './profile-backgrounds'
 import type { UpdatePreferences, UpdateState } from './update-types'
-import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotPrepareInput, ScreenshotPrepareResult } from './steam-screenshots'
+import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotImportPhase, ScreenshotPrepareInput, ScreenshotPrepareResult } from './steam-screenshots'
 import type { GameStatusApi, GameStatusSnapshot } from './game-status'
 import type { LocalAppSimulationApi, LocalAppSimulationSnapshot } from './local-app-simulation'
 import type { StatusCopyApi, StatusCopySnapshot } from './status-copy'
@@ -291,6 +291,7 @@ export interface AppSnapshot {
   commentScan: CommentScanJob | null
   dataDirectory: string
   language: 'zh-CN' | 'en'
+  theme?: 'light' | 'dark'
   updater: UpdateState
   updatePreferences: UpdatePreferences
   security: {
@@ -337,6 +338,7 @@ export type AppEvent =
   | { type: 'localAppSimulationChanged'; state: LocalAppSimulationSnapshot }
   | { type: 'statusCopyChanged'; state: StatusCopySnapshot }
   | { type: 'screenshotsChanged'; scope?: 'catalog' | 'images' | 'all' }
+  | { type: 'screenshotImportProgress'; phase: ScreenshotImportPhase }
   | { type: 'artworkChanged'; state: ArtworkBrowserState }
   | { type: 'updateChanged'; state: UpdateState }
   | { type: 'snapshotChanged' }
@@ -368,7 +370,7 @@ export interface SteamFriendCommenterApi {
   chooseScreenshotImages(): Promise<IpcResult<ScreenshotImage[]>>
   clearScreenshotImages(imageIds?: string[]): Promise<IpcResult<ScreenshotImage[]>>
   resolveScreenshotGame(appId: string): Promise<IpcResult<ScreenshotGame>>
-  prepareScreenshots(input: ScreenshotPrepareInput): Promise<IpcResult<ScreenshotPrepareResult>>
+  prepareScreenshots(input: ScreenshotPrepareInput): Promise<IpcResult<ScreenshotPrepareResult | null>>
   getProfileBackgrounds(accountId: string): Promise<IpcResult<ProfileBackgroundCatalog>>
   loadProfileBackground(accountId: string, backgroundId: string): Promise<IpcResult<ProfileBackgroundImage>>
   cancelProfileBackgroundLoad(): Promise<IpcResult<void>>
@@ -382,6 +384,8 @@ export interface SteamFriendCommenterApi {
   openArtworkTool(tool: ArtworkTool, accountId?: string): Promise<IpcResult<ArtworkBrowserState>>
   getArtworkToolState(): Promise<IpcResult<ArtworkBrowserState>>
   setArtworkToolBounds(bounds: ArtworkBounds | null): Promise<IpcResult<void>>
+  setArtworkToolZoom(zoom: number | null): Promise<IpcResult<ArtworkBrowserState>>
+  setArtworkDynamicPreview(enabled: boolean): Promise<IpcResult<ArtworkBrowserState>>
   applyLongArtwork(): Promise<IpcResult<void>>
   reloadArtworkTool(): Promise<IpcResult<void>>
   closeArtworkTool(): Promise<IpcResult<void>>
@@ -406,7 +410,9 @@ export interface SteamFriendCommenterApi {
   cancelCommentScan(jobId: string): Promise<IpcResult<void>>
   openDataDirectory(): Promise<IpcResult<void>>
   setLanguage(language: 'zh-CN' | 'en'): Promise<IpcResult<void>>
+  setTheme(theme: 'light' | 'dark'): Promise<IpcResult<void>>
   exportData(): Promise<IpcResult<{ path: string } | null>>
+  importData(): Promise<IpcResult<{ backupPath: string; restartScheduled: true } | null>>
   createGroup(accountId: string, name: string, color: string): Promise<IpcResult<FriendGroup>>
   renameGroup(accountId: string, groupId: string, name: string): Promise<IpcResult<void>>
   deleteGroup(accountId: string, groupId: string): Promise<IpcResult<void>>

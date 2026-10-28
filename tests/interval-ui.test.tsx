@@ -125,7 +125,7 @@ describe('fractional-second interval controls', () => {
     expect(friends).toMatch(/type="number"[^>]*value=""/)
     expect(composer).toMatch(/disabled=""[^>]*>预览并确认发送/)
     expect(friends).toMatch(/disabled=""[^>]*>检查当前筛选/)
-    expect(composer).toContain('基础间隔必须在 0.1–300 秒之间。')
+    expect(composer).toContain('基础间隔必须在 0.1–300 秒之间')
   })
 
   it('translates the supported range accurately in English', () => {

@@ -197,7 +197,7 @@ export function ComposerPanel({
           <div className="card-heading">
             <div>
               <h2>{t('1. 选择留言对象', '1. Select recipients')}</h2>
-              <p>{t('只允许选择当前账号已同步的 Steam 好友，黑名单好友始终排除。', 'Choose synced friends of this account. Blacklisted friends are always excluded.')}</p>
+              <p>{t('只允许选择当前账号已同步的 Steam 好友，黑名单好友始终排除', 'Choose synced friends of this account. Blacklisted friends are always excluded')}</p>
             </div>
             <button className="ghost" onClick={onOpenFriends}>
               {t('管理好友选择', 'Manage selection')}
@@ -242,7 +242,7 @@ export function ComposerPanel({
             )}
             {selectedRecords.length > 12 && <b>{t(`另有 ${selectedRecords.length - 12} 人`, `${selectedRecords.length - 12} more`)}</b>}
           </div>
-          {excludedCount > 0 && <div className="inline-warning">{t(`已排除 ${excludedCount} 位黑名单好友，不会发送留言。`, `${excludedCount} blacklisted friends excluded. No comments will be sent to them.`)}</div>}
+          {excludedCount > 0 && <div className="inline-warning">{t(`已排除 ${excludedCount} 位黑名单好友，不会发送留言`, `${excludedCount} blacklisted friends excluded. No comments will be sent to them`)}</div>}
         </section>
 
         <section className="card message-card">
@@ -320,7 +320,7 @@ export function ComposerPanel({
           <div className="card-heading">
             <div>
               <h2>{t('3. 发送设置', '3. Delivery settings')}</h2>
-              <p>{t('逐条单线程发送，并在基础间隔上增加 0–3 秒随机抖动。', 'Send sequentially, with 0–3 seconds of random jitter added to the base interval.')}</p>
+              <p>{t('逐条单线程发送，并在基础间隔上增加 0–3 秒随机抖动', 'Send sequentially, with 0–3 seconds of random jitter added to the base interval')}</p>
             </div>
           </div>
           <div className="delivery-settings">
@@ -351,8 +351,8 @@ export function ComposerPanel({
             <input type="checkbox" checked={autoRetryEnabled} disabled={submitting}
               onChange={(event) => setAutoRetryEnabled(event.target.checked)} />
             <span>{t('临时错误后自动重试并继续待发', 'Automatically retry temporary errors and resume pending deliveries')}
-              <small>{t('仅对明确尚未接受的临时错误退避恢复；不重发已发送、已接受或结果不确定的对象。手动暂停后需手动继续。',
-                'Backoff only retries temporary failures known not to have been accepted. Sent, accepted and uncertain deliveries are never resent. A manual pause requires a manual resume.')}</small></span>
+              <small>{t('仅对明确尚未接受的临时错误退避恢复；不重发已发送、已接受或结果不确定的对象。手动暂停后需手动继续',
+                'Backoff only retries temporary failures known not to have been accepted. Sent, accepted and uncertain deliveries are never resent. A manual pause requires a manual resume')}</small></span>
           </label>
           <div id="send-readiness" aria-live="polite">
             {issues.length > 0 && <div className="inline-warning"><strong>{t('暂时不能发送：', 'Cannot send yet:')}</strong><ul>
@@ -396,9 +396,9 @@ export function ComposerPanel({
                 <small>{t('刚刚', 'Just now')}</small>
               </span>
             </div>
-            <p>{renderedPreview || t('留言预览会显示在这里。', 'Your comment preview will appear here.')}</p>
+            <p>{renderedPreview || t('留言预览会显示在这里', 'Your comment preview will appear here')}</p>
           </div>
-          <small>{t('Steam 的最终字体和表情渲染可能与此预览不同。', 'Steam may render fonts and emoticons differently.')}</small>
+          <small>{t('Steam 的最终字体和表情渲染可能与此预览不同', 'Steam may render fonts and emoticons differently')}</small>
         </section>
 
         {lastBatch && (
@@ -456,7 +456,7 @@ export function ComposerPanel({
             </div>
             <div className="confirm-message">{renderedPreview}</div>
             <div className="experimental-note">
-              {t('上方显示首位好友的最终正文，其余对象会分别替换昵称。此功能使用 Steam Community 网页接口；接口变动或频率控制可能导致失败。', 'The preview shows the final text for the first friend. Names are replaced for each recipient. This uses the Steam Community web interface; changes and rate limits may cause failures.')}
+              {t('上方显示首位好友的最终正文，其余对象会分别替换昵称。此功能使用 Steam Community 网页接口；接口变动或频率控制可能导致失败', 'The preview shows the final text for the first friend. Names are replaced for each recipient. This uses the Steam Community web interface; changes and rate limits may cause failures')}
             </div>
             <label className="confirm-check">
               <input
@@ -521,8 +521,8 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, onOpenDiagnostics
           <dd dir="auto">{batch.activity.nextPending?.friendName || t('请刷新任务明细', 'Refresh task details')}</dd></div>}
       </dl>}
       {batch.status === 'paused' && <p className="composer-batch-stop" role="status">{batchStopLabel(batch.stopCode, t)}</p>}
-      {coolingDown && <p className="composer-batch-note">{t('发送冷却尚未结束，详情见运行记录。', 'Sending is cooling down. See task activity for details.')}</p>}
-      {verifying && <p className="composer-batch-note" role="status">{t('正在只读核对，不重发待核对留言。', 'Checking read-only; uncertain comments are never resent.')}</p>}
+      {coolingDown && <p className="composer-batch-note">{t('发送冷却尚未结束，详情见运行记录', 'Sending is cooling down. See task activity for details')}</p>}
+      {verifying && <p className="composer-batch-note" role="status">{t('正在只读核对，不重发待核对留言', 'Checking read-only; uncertain comments are never resent')}</p>}
       <button className="ghost composer-open-diagnostics" onClick={onOpenDiagnostics}>{t('展开运行记录与错误', 'Open activity and errors')}</button>
       {onOpenTasks && <button className="ghost" onClick={onOpenTasks}>{t('查看持久任务与明细', 'View saved tasks and details')}</button>}
       {verifying && <button className="ghost" disabled={pendingAction}
@@ -535,8 +535,8 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, onOpenDiagnostics
         ) : (
             <button className="primary" disabled={pendingAction || verifying || !authenticated || (!canVerify && (coolingDown || batch.pending === 0))} onClick={() => {
             if (window.confirm(canVerify ? batchVerificationConfirmation(batch, t)
-              : t(`继续该任务的 ${batch.pending} 位未发送好友？已发送和待核对对象不会重发。`,
-                `Resume the ${batch.pending} pending recipients? Sent and uncertain recipients will not be retried.`))) {
+              : t(`继续该任务的 ${batch.pending} 位未发送好友？已发送和待核对对象不会重发`,
+                `Resume the ${batch.pending} pending recipients? Sent and uncertain recipients will not be retried`))) {
               void perform(canVerify ? t('正在核对留言', 'Verifying comments') : t('正在恢复', 'Resuming'), async () => unwrap(
                 canVerify ? await window.steamCommenter.verifyBatch(batch.id) : await window.steamCommenter.resumeBatch(batch.id)))
             }
@@ -548,7 +548,7 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, onOpenDiagnostics
           className="danger-text"
           disabled={pendingAction}
           onClick={() => {
-            if (window.confirm(t('取消后，尚未开始的好友将不再发送。当前请求若已提交则不会撤回。', 'Cancel remaining deliveries? A request already submitted cannot be recalled.'))) {
+            if (window.confirm(t('取消后，尚未开始的好友将不再发送。当前请求若已提交则不会撤回', 'Cancel remaining deliveries? A request already submitted cannot be recalled'))) {
               void perform(t('正在取消', 'Cancelling'), async () => unwrap(await window.steamCommenter.cancelBatch(batch.id)))
             }
           }}
@@ -562,14 +562,14 @@ function ActiveBatchPanel({ batch, authenticated, onOpenTasks, onOpenDiagnostics
 
 function issueText(issue: ComposerIssue, t: Translate): string {
   switch (issue.code) {
-    case 'login': return t('当前账号尚未登录，请先登录或恢复会话。', 'Sign in to the current account or restore its session first.')
-    case 'noRecipients': return t('请至少选择一位已同步的好友。', 'Select at least one synced friend.')
-    case 'blacklisted': return t('选中的好友均在黑名单中；请选择其他好友。', 'All selected friends are blacklisted. Choose other friends.')
-    case 'emptyMessage': return t('留言正文不能为空。', 'Enter a comment message.')
-    case 'messageTooLong': return t(`留言正文超过 ${MAX_COMMENT_LENGTH} 字符。`, `The message exceeds ${MAX_COMMENT_LENGTH} characters.`)
-    case 'renderedMessageTooLong': return t(`替换昵称后，给“${issue.friendName}”的留言超过 ${MAX_COMMENT_LENGTH} 字符。`, `After inserting names, the comment for “${issue.friendName}” exceeds ${MAX_COMMENT_LENGTH} characters.`)
-    case 'invalidDelay': return t('基础间隔必须在 0.1–300 秒之间。', 'The base interval must be between 0.1 and 300 seconds.')
-    case 'activeBatch': return t('当前账号有未完成批次，请在右侧继续或取消后再创建。', 'This account has an unfinished batch. Resume or cancel it on the right first.')
+    case 'login': return t('当前账号尚未登录，请先登录或恢复会话', 'Sign in to the current account or restore its session first')
+    case 'noRecipients': return t('请至少选择一位已同步的好友', 'Select at least one synced friend')
+    case 'blacklisted': return t('选中的好友均在黑名单中；请选择其他好友', 'All selected friends are blacklisted. Choose other friends')
+    case 'emptyMessage': return t('留言正文不能为空', 'Enter a comment message')
+    case 'messageTooLong': return t(`留言正文超过 ${MAX_COMMENT_LENGTH} 字符`, `The message exceeds ${MAX_COMMENT_LENGTH} characters`)
+    case 'renderedMessageTooLong': return t(`替换昵称后，给“${issue.friendName}”的留言超过 ${MAX_COMMENT_LENGTH} 字符`, `After inserting names, the comment for “${issue.friendName}” exceeds ${MAX_COMMENT_LENGTH} characters`)
+    case 'invalidDelay': return t('基础间隔必须在 0.1–300 秒之间', 'The base interval must be between 0.1 and 300 seconds')
+    case 'activeBatch': return t('当前账号有未完成批次，请在右侧继续或取消后再创建', 'This account has an unfinished batch. Resume or cancel it on the right first')
   }
 }
 

@@ -40,6 +40,24 @@ function fixture() {
 }
 
 describe('local AppID simulation without personal CM or CEF', () => {
+  it('reports hidden client retirement work even after the public snapshot has reset to idle', async () => {
+    const f = fixture()
+    expect(f.service.hasClientWork()).toBe(false)
+    f.host.gate = deferred<void>()
+    const retiring = f.service.invalidate()
+    expect(f.service.state().status).toBe('idle')
+    expect(f.service.hasClientWork()).toBe(true)
+    f.host.gate.resolve()
+    await retiring
+    expect(f.service.hasClientWork()).toBe(false)
+  })
+
+  it('keeps unconfirmed broker sessions visible to the screenshot-restart guard', () => {
+    const f = fixture()
+    Object.assign(f.host, { hasClientWork: () => true })
+    expect(f.service.hasClientWork()).toBe(true)
+  })
+
   it('passes AppID 4000 directly to the host without installation metadata or a target game-directory dependency', async () => {
     const f = fixture(); await f.service.start({ ...f.action(), appId: 4000 })
     expect(f.host.calls.find(call => call.op === 'begin')?.appId).toBe(4000)
@@ -376,15 +394,20 @@ describe('direct stdio local-AppID broker', () => {
     binding.resolve({ worker: 'D:/fixture/worker.exe', clientDll: 'D:/Steam/steamclient64.dll', clientSha256: 'a'.repeat(64) }); await rejected; expect(spawn).not.toHaveBeenCalled()
   })
   it('waits for close, ignores late responses while stopping and never overlaps helpers', async () => {
-    const f = brokerFixture(); await f.broker.begin(CONTEXT, 730, () => true); const first = f.children[0]!; first.autoClose = false
+    const f = brokerFixture(); expect(f.broker.hasClientWork()).toBe(false)
+    await f.broker.begin(CONTEXT, 730, () => true); const first = f.children[0]!; first.autoClose = false
+    expect(f.broker.hasClientWork()).toBe(true)
     let done = false; const stopping = f.broker.shutdown().then(() => { done = true }); await flush(); first.reply({ v: 1, requestId: 'late', op: 'applied', ok: true }); expect(done).toBe(false)
     const replacement = f.broker.begin(CONTEXT, 550, () => true); await flush(); expect(f.children).toHaveLength(1)
+    expect(f.broker.hasClientWork()).toBe(true)
     first.emit('close', 0); await stopping; await replacement; expect(f.children).toHaveLength(2)
+    await f.broker.shutdown(); expect(f.broker.hasClientWork()).toBe(false)
   })
   it('refuses a replacement after an unconfirmed forced exit', async () => {
     vi.useFakeTimers(); const f = brokerFixture(); await f.broker.begin(CONTEXT, 730, () => true); const first = f.children[0]!; first.autoClose = false
     const closing = f.broker.shutdown(); const rejected = expect(closing).rejects.toMatchObject({ code: 'LOCAL_APP_STOP_FAILED' }); await vi.advanceTimersByTimeAsync(45); await rejected
     expect(first.killed).toBe(1); await expect(f.broker.begin(CONTEXT, 550, () => true)).rejects.toMatchObject({ code: 'LOCAL_APP_STOP_FAILED' }); expect(f.children).toHaveLength(1)
+    expect(f.broker.hasClientWork()).toBe(true)
   })
   it('rejects an identity or interface mismatch before any RPC writes', async () => {
     const f = brokerFixture(); f.spawn.mockImplementationOnce(() => { const child = new Child(); f.children.push(child); queueMicrotask(() => child.ready({ identityMatch: false })); return child as unknown as ChildProcessWithoutNullStreams })

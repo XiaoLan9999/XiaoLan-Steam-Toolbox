@@ -1,0 +1,53 @@
+@import './theme-colors.css';
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1923;
+  --panel: #162631;
+  --panel-2: #1b2e3b;
+  --panel-3: #243c4b;
+  --line: #314b5c;
+  --text: #e0edf5;
+  --muted: #a1b8c8;
+  --blue: #80cef4;
+  --blue-2: #91ddff;
+  --sky: #315f77;
+  --sky-soft: #163647;
+  --tea: #d7b68d;
+  --tea-soft: #30291f;
+  --tea-line: #66533d;
+  --green: #8bd1a5;
+  --yellow: #e0bf79;
+  --red: #f29b98;
+  --shadow: 0 5px 22px #0000002b;
+}
+
+:root[data-theme="dark"] .screenshot-tools {
+  --shot-ink: var(--text);
+  --shot-muted: var(--muted);
+  --shot-line: var(--line);
+  --shot-sky: var(--blue);
+  --shot-tea: var(--tea);
+}
+
+:root[data-theme="dark"] :is(.modal-backdrop, .screenshot-confirm-backdrop) { background: #020b13b8; }
+:root[data-theme="dark"] .sidebar { background: linear-gradient(180deg, #172a36, #111d27); }
+:root[data-theme="dark"] .screenshot-output { background: #1b2932; }
+:root[data-theme="dark"] .screenshot-directory { background: linear-gradient(110deg, #172e3c, #222e33); }
+:root[data-theme="dark"] .screenshot-confirm { background: #172630; }
+:root[data-theme="dark"] .screenshot-status-dot { background: var(--green); border-color: #8bd1a525; }
+:root[data-theme="dark"] .screenshot-status-dot.running { background: var(--yellow); border-color: #e0bf7925; }
+
+.settings-appearance-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
+.toolbox-home-footer { justify-content: flex-end; }
+.settings-update-controls { border: 0; padding: 0; margin: 0; min-width: 0; }
+.settings-appearance-grid :is(.settings-language, .settings-theme) { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 8px; margin: 0; font-size: 12px; color: var(--muted); }
+.settings-appearance-grid select { width: 100%; min-height: 39px; padding: 9px 11px; }
+.settings-transfer-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+.settings-import-notice { border: 1px solid var(--tea-line); border-radius: 10px; padding: 13px 15px; background: var(--tea-soft); color: var(--tea); font-size: 12px; line-height: 1.7; }
+.settings-import-notice p { color: var(--muted); margin: 8px 0 0; }
+.settings-import-result { border-left: 3px solid var(--green); padding-left: 12px; color: var(--green); overflow-wrap: anywhere; }
+.settings-import-result code { display: block; margin-top: 6px; }
+.settings-modal > small { display: block; margin-top: 15px; line-height: 1.8; color: var(--muted); }
+
+@media (max-width: 720px) { .settings-appearance-grid { grid-template-columns: 1fr; } }

@@ -12,7 +12,7 @@
 
 .task-details > .batch-recovery { margin: 0 20px 16px; }
 .active-batch-card > .batch-recovery { margin: 14px 0; }
-.batch-recovery.scheduled { border-color: #a5ccdf; background: var(--sky-soft); }
+.batch-recovery.scheduled { border-color: var(--tone-border-a5ccdfff, #a5ccdf); background: var(--sky-soft); }
 .batch-stop-reason { display: grid; gap: 4px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
 .batch-stop-reason > strong { color: var(--yellow); font-size: 13px; }
 .batch-stop-reason > small, .batch-stop-reason > span { color: var(--muted); font-size: 10px; }

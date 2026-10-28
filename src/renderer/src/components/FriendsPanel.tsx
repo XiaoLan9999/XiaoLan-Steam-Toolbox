@@ -180,7 +180,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
     if (result !== null && accountIdRef.current === group.accountId) setRenamingGroup(null)
   }
   const deleteGroup = async (group: FriendGroup): Promise<void> => {
-    if (!window.confirm(t(`删除分组“${group.name}”？好友不会从 Steam 删除。`, `Delete group "${group.name}"? Friends will not be removed from Steam.`))) return
+    if (!window.confirm(t(`删除分组“${group.name}”？好友不会从 Steam 删除`, `Delete group "${group.name}"? Friends will not be removed from Steam`))) return
     await runAction(t('正在删除分组', 'Deleting group'), async () => unwrap(await window.steamCommenter.deleteGroup(account.id, group.id)), t('分组已删除', 'Group deleted'))
   }
   const updateBlacklist = async (blacklisted: boolean): Promise<void> => {
@@ -195,7 +195,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
     const accountId = account.id
     setScanSubmitting(true)
     try {
-      await runAction(t('正在创建留言权限检查任务', 'Starting comment availability check'), async () => unwrap(await window.steamCommenter.startCommentScan({ accountId, friendSteamIds: ids, delayMs: safeScanDelay * 1000 })), t('检查任务已启动，可继续筛选、分组或切换页面', 'Check started. You can keep filtering, grouping or switching pages.'))
+      await runAction(t('正在创建留言权限检查任务', 'Starting comment availability check'), async () => unwrap(await window.steamCommenter.startCommentScan({ accountId, friendSteamIds: ids, delayMs: safeScanDelay * 1000 })), t('检查任务已启动，可继续筛选、分组或切换页面', 'Check started. You can keep filtering, grouping or switching pages'))
     } finally {
       if (accountIdRef.current === accountId) setScanSubmitting(false)
     }
@@ -213,7 +213,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
 
       {!readOnlyView && <section className="card group-card">
         <div className="card-heading">
-          <div><h2>{t('好友分组', 'Friend groups')}</h2><p>{t('每个账号独立保存，同一好友不会跨账号串组。', 'Groups are saved independently for each account.')}</p></div>
+          <div><h2>{t('好友分组', 'Friend groups')}</h2><p>{t('每个账号独立保存，同一好友不会跨账号串组', 'Groups are saved independently for each account')}</p></div>
           <div className="new-group">
             <input value={newGroupName} maxLength={40} onChange={(event) => setNewGroupName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createGroup() }} placeholder={t('新分组名称', 'New group name')} />
             <input className="color-input" type="color" value={newGroupColor} onChange={(event) => setNewGroupColor(event.target.value)} aria-label={t('分组颜色', 'Group color')} />
@@ -230,7 +230,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
       </section>}
 
       {!readOnlyView && <section className="card comment-scan-card" aria-label={t('留言权限检查任务', 'Comment availability check')}>
-        <div className="card-heading"><div><h2>{t('留言权限检查', 'Comment availability check')}</h2><p>{t('按顺序读取好友资料页，不会测试发送留言。页面可留言不代表一定投递成功；无法判断不会自动拉黑。', 'Reads profile pages one at a time, without posting test comments. An available form does not guarantee delivery. Unknown results are never automatically blacklisted.')}</p></div><span className="scan-readonly-badge">{t('只读检查', 'Read only')}</span></div>
+        <div className="card-heading"><div><h2>{t('留言权限检查', 'Comment availability check')}</h2><p>{t('按顺序读取好友资料页，不会测试发送留言。页面可留言不代表一定投递成功；无法判断不会自动拉黑', 'Reads profile pages one at a time, without posting test comments. An available form does not guarantee delivery. Unknown results are never automatically blacklisted')}</p></div><span className="scan-readonly-badge">{t('只读检查', 'Read only')}</span></div>
         <div className="comment-scan-controls">
           <label>{t('检查间隔', 'Interval')}<input type="number" min={MIN_DELAY_MS / 1000} max={60} step={0.1} value={Number.isFinite(scanDelay) ? scanDelay : ''} disabled={scanIntervalLocked} onChange={(event) => setScanDelay(event.target.valueAsNumber)} onBlur={() => setScanDelay(safeScanDelay)} />{t('秒 / 人', 'sec / friend')}</label>
           {scan?.status === 'paused' && <button className="ghost" disabled={scanUpdating || !Number.isFinite(scanDelay)} onClick={() => void updatePausedScan(false)}>{t('保存检查间隔', 'Save check interval')}</button>}
@@ -247,10 +247,10 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
           <progress max={scan.total || 1} value={scan.completed} aria-label={t('留言权限检查进度', 'Comment check progress')} />
           <div className="scan-counts"><span className="comment-status allowed">{t('可留言', 'Available')} {scan.allowed}</span><span className="comment-status blocked">{t('不可留言', 'Unavailable')} {scan.blocked}</span><span className="comment-status unknown">{t('无法判断', 'Unknown')} {scan.unknown}</span><small>{scan.currentSteamId ? t(`正在检查：${currentScanFriend?.displayName ?? scan.currentSteamId}`, `Checking: ${currentScanFriend?.displayName ?? scan.currentSteamId}`) : t(`每人间隔 ${scan.delayMs / 1000} 秒`, `${scan.delayMs / 1000} seconds per friend`)}</small></div>
           {scan.lastError && <p className="scan-error">{scan.lastError}</p>}
-          {scan.status === 'paused' && <small className="scan-background-note">{t('暂停时可修改间隔；单独保存会保持暂停，点击继续会先保存新间隔。', 'Edit the interval while paused. Saving keeps it paused; Resume saves the interval first.')}</small>}
-          {scanActive && <small className="scan-background-note">{t('任务在后台运行，可以继续操作。暂停或取消不会撤销已完成的检查。', 'Runs in the background. Pausing or cancelling keeps completed results.')}</small>}
+          {scan.status === 'paused' && <small className="scan-background-note">{t('暂停时可修改间隔；单独保存会保持暂停，点击继续会先保存新间隔', 'Edit the interval while paused. Saving keeps it paused; Resume saves the interval first')}</small>}
+          {scanActive && <small className="scan-background-note">{t('任务在后台运行，可以继续操作。暂停或取消不会撤销已完成的检查', 'Runs in the background. Pausing or cancelling keeps completed results')}</small>}
         </div>}
-        <p className="scan-help">{t('Steam 明确不允许留言的好友会归入“无法留言”。网络错误仍属暂无法判断，不会据此归类；可在该分类内重新检查，确认可留言后会移出。分类与黑名单仅属于当前账号，不改变自定义分组。', 'Friends with an explicit Steam comment restriction appear in Comments unavailable. Network errors stay unknown and do not establish a restriction. Recheck this category to remove friends once availability is confirmed. This account-scoped category does not change custom groups or the blacklist.')}</p>
+        <p className="scan-help">{t('Steam 明确不允许留言的好友会归入“无法留言”。网络错误仍属暂无法判断，不会据此归类；可在该分类内重新检查，确认可留言后会移出。分类与黑名单仅属于当前账号，不改变自定义分组', 'Friends with an explicit Steam comment restriction appear in Comments unavailable. Network errors stay unknown and do not establish a restriction. Recheck this category to remove friends once availability is confirmed. This account-scoped category does not change custom groups or the blacklist')}</p>
       </section>}
 
       <section className="card friends-card">
@@ -260,7 +260,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
           <button role="tab" aria-selected={listView === 'unavailable'} className={listView === 'unavailable' ? 'active' : ''} onClick={() => switchView('unavailable')}>{t('无法留言', 'Comments unavailable')} <b>{unavailableCount}</b></button>
           <button role="tab" aria-selected={listView === 'removed'} className={listView === 'removed' ? 'active' : ''} onClick={() => switchView('removed')}>{t('已解除好友', 'Removed friends')} <b>{removedCount}</b></button>
           <button role="tab" aria-selected={listView === 'nameChanges'} className={listView === 'nameChanges' ? 'active' : ''} onClick={() => switchView('nameChanges')}>{t('昵称变化', 'Name changes')} <b>{friendNameChanges.length}</b></button>
-          <span>{listView === 'nameChanges' ? t('仅展示本账号发现的昵称变化，不可选择发送留言。', 'Read-only name changes detected by this account. Not selectable for comments.') : listView === 'removed' ? t('仅展示关系变化记录，不计入当前好友数，也不能选择发送留言。', 'Read-only relationship history. Not counted as current friends or selectable for comments.') : listView === 'unavailable' ? t('已归入无法留言，包含黑名单中的同类对象；复查通过后返回正常好友，不改动原分组。', 'Moved to Comments unavailable, including blacklisted friends. A successful recheck returns eligible friends to the regular list without changing groups.') : listView === 'blacklist' ? t('黑名单不删除 Steam 好友，也不改变分组；移出后才能发送留言。', 'Does not unfriend or change groups. Remove from blacklist to send comments.') : t('默认排除黑名单及已归入“无法留言”的好友；网络问题不归入该类。', 'Blacklisted and confirmed unavailable friends are excluded by default. Network errors do not place friends in that category.')}</span>
+          <span>{listView === 'nameChanges' ? t('仅展示本账号发现的昵称变化，不可选择发送留言', 'Read-only name changes detected by this account. Not selectable for comments') : listView === 'removed' ? t('仅展示关系变化记录，不计入当前好友数，也不能选择发送留言', 'Read-only relationship history. Not counted as current friends or selectable for comments') : listView === 'unavailable' ? t('已归入无法留言，包含黑名单中的同类对象；复查通过后返回正常好友，不改动原分组', 'Moved to Comments unavailable, including blacklisted friends. A successful recheck returns eligible friends to the regular list without changing groups') : listView === 'blacklist' ? t('黑名单不删除 Steam 好友，也不改变分组；移出后才能发送留言', 'Does not unfriend or change groups. Remove from blacklist to send comments') : t('默认排除黑名单及已归入“无法留言”的好友；网络问题不归入该类', 'Blacklisted and confirmed unavailable friends are excluded by default. Network errors do not place friends in that category')}</span>
         </div>
         {listView === 'nameChanges' ? <FriendNameChangesPanel key={account.id} accountId={account.id} changes={friendNameChanges} canSync={account.sessionState === 'authenticated'} onSync={() => void runAction(t('正在同步好友资料', 'Syncing friend profiles'), async () => unwrap(await window.steamCommenter.syncFriends(account.id)))} /> : listView === 'removed' ? <FriendRemovalsPanel key={account.id} removals={friendRemovals} canSync={account.sessionState === 'authenticated'} onSync={() => void runAction(t('正在同步好友资料', 'Syncing friend profiles'), async () => unwrap(await window.steamCommenter.syncFriends(account.id)))} /> : <><div className="friend-toolbar">
           <label className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('搜索昵称或 SteamID', 'Search name or SteamID')} /></label>
@@ -273,7 +273,7 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
           <button className="ghost" disabled={visibleIds.length === 0} onClick={() => onSelectedChange(invertFriendSelection(visibleIds, selected))}>{t('反选筛选结果', 'Invert filtered')}</button>
           <button className="ghost" disabled={selected.size === 0} onClick={() => onSelectedChange(new Set())}>{t('清空选择', 'Clear selection')}</button>
         </div>
-        <div className="friend-selection-help">{t('单击好友行或复选框只切换该好友，不影响其他已选项。按住并拖动可叠加选择范围，保留此前已选好友；靠近列表上下边缘可自动滚动。Ctrl / ⌘ 从已选行开始拖动可减选，Shift 点击或拖动连续加选。', 'Click a row or checkbox to toggle only that friend, keeping other selections. Drag adds a range and keeps previously selected friends; hold near the list edges to auto-scroll. Ctrl / ⌘ drag from a selected row removes a range. Shift click or drag adds a range.')}</div>
+        <div className="friend-selection-help">{t('单击好友行或复选框只切换该好友，不影响其他已选项。按住并拖动可叠加选择范围，保留此前已选好友；靠近列表上下边缘可自动滚动。Ctrl / ⌘ 从已选行开始拖动可减选，Shift 点击或拖动连续加选', 'Click a row or checkbox to toggle only that friend, keeping other selections. Drag adds a range and keeps previously selected friends; hold near the list edges to auto-scroll. Ctrl / ⌘ drag from a selected row removes a range. Shift click or drag adds a range')}</div>
         <div className="selection-tools friend-selected-tools">
           <select disabled={selected.size === 0} aria-label={t('批量设置分组', 'Assign selected friends to group')} value={assignment} onChange={(event) => setAssignment(event.target.value)}><option value="">{t('未分组', 'Ungrouped')}</option>{snapshot.groups.map((group) => <option value={group.id} key={group.id}>{group.name}</option>)}</select>
           <button disabled={selected.size === 0} onClick={() => void assignSelected()}>{t(`应用分组 · ${selected.size} 人`, `Apply group · ${selected.size}`)}</button>
@@ -281,11 +281,11 @@ export function FriendsPanel({ snapshot, selected, onSelectedChange, onCompose, 
           {listView !== 'normal' && <button disabled={selectedBlacklistedCount === 0} onClick={() => void updateBlacklist(false)}>{t(`移出黑名单 · ${selectedBlacklistedCount} 人`, `Remove from blacklist · ${selectedBlacklistedCount}`)}</button>}
           <button className="primary" disabled={selectedAllowedIds.length === 0} onClick={() => { onSelectedChange(new Set(selectedAllowedIds)); onCompose() }}>{t(`去留言 · ${selectedAllowedIds.length} 人 →`, `Compose · ${selectedAllowedIds.length} →`)}</button>
         </div>
-        {friends.length === 0 ? <div className="empty-state"><div>◎</div><h3>{t('还没有好友缓存', 'No cached friends yet')}</h3><p>{t('登录成功后会自动同步，也可以点击上方“同步好友”。', 'Friends sync after login. You can also click Sync friends above.')}</p></div> : <div className={`friend-table-wrap friend-drag-surface ${selection.dragging ? 'is-dragging' : ''}`} ref={selection.containerRef} onPointerDown={selection.beginDrag} onPointerMove={selection.moveDrag} onPointerUp={selection.finishDrag} onPointerCancel={selection.stopDrag} onLostPointerCapture={selection.stopDrag}>
+        {friends.length === 0 ? <div className="empty-state"><div>◎</div><h3>{t('还没有好友缓存', 'No cached friends yet')}</h3><p>{t('登录成功后会自动同步，也可以点击上方“同步好友”', 'Friends sync after login. You can also click Sync friends above')}</p></div> : <div className={`friend-table-wrap friend-drag-surface ${selection.dragging ? 'is-dragging' : ''}`} ref={selection.containerRef} onPointerDown={selection.beginDrag} onPointerMove={selection.moveDrag} onPointerUp={selection.finishDrag} onPointerCancel={selection.stopDrag} onLostPointerCapture={selection.stopDrag}>
           <table className="friend-table"><thead><tr><th><input ref={headerCheckbox} type="checkbox" checked={allVisibleSelected} onChange={toggleVisible} aria-label={t('选择或取消当前筛选的所有好友', 'Toggle all filtered friends')} /></th><th>{t('好友', 'Friend')}</th><th>{t('在线状态', 'Presence')}</th><th>{t('留言检查', 'Comment check')}</th><th>{t('本地分组', 'Local groups')}</th><th>SteamID</th><th /></tr></thead><tbody>
             {visibleFriends.map((friend) => <FriendRow key={friend.steamId} friend={friend} groups={snapshot.groups} policy={policies.get(friend.steamId)} selected={selected.has(friend.steamId)} onToggle={selection.toggle} />)}
           </tbody></table>
-          {visibleFriends.length === 0 && <div className="no-results">{listView === 'blacklist' && blacklistedCount === 0 ? t('黑名单为空。选中正常好友后，可批量加入黑名单。', 'Blacklist is empty. Select regular friends to add them in bulk.') : t('没有符合筛选条件的好友', 'No friends match these filters')}</div>}
+          {visibleFriends.length === 0 && <div className="no-results">{listView === 'blacklist' && blacklistedCount === 0 ? t('黑名单为空。选中正常好友后，可批量加入黑名单', 'Blacklist is empty. Select regular friends to add them in bulk') : t('没有符合筛选条件的好友', 'No friends match these filters')}</div>}
         </div>}</>}
       </section>
     </div>

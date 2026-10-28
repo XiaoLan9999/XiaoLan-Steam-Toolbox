@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, realpathSync, unlinkSync, type Stats } from 'node:fs'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { backup, DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import {
@@ -41,6 +41,14 @@ export interface SecretCipher {
   backend(): string
   encrypt(value: string): Buffer
   decrypt(value: Buffer): string
+}
+
+export interface DataImportSummary {
+  accounts: number
+  friends: number
+  groups: number
+  tasks: number
+  deliveries: number
 }
 
 interface AccountRow {
@@ -250,12 +258,14 @@ export class SqliteStore {
   ) {
     mkdirSync(dirname(databasePath), { recursive: true })
     this.db = new DatabaseSync(databasePath)
-    this.db.exec('PRAGMA foreign_keys = ON;')
-    this.db.exec('PRAGMA journal_mode = WAL;')
-    this.db.exec('PRAGMA busy_timeout = 5000;')
-    this.migrate()
-    this.recoverInterruptedBatches()
-    this.recoverInterruptedCommentScans()
+    try {
+      this.db.exec('PRAGMA foreign_keys = ON;')
+      this.db.exec('PRAGMA journal_mode = WAL;')
+      this.db.exec('PRAGMA busy_timeout = 5000;')
+      this.migrate()
+      this.recoverInterruptedBatches()
+      this.recoverInterruptedCommentScans()
+    } catch (error) { try { this.db.close() } catch {} throw error }
   }
 
   close(): void {
@@ -266,6 +276,96 @@ export class SqliteStore {
     const row = this.db.prepare("SELECT value FROM app_meta WHERE key = 'ui_language'")
       .get() as unknown as { value: string } | undefined
     return row?.value === 'en' ? 'en' : 'zh-CN'
+  }
+
+  getTheme(): 'light' | 'dark' {
+    const row = this.db.prepare("SELECT value FROM app_meta WHERE key = 'ui_theme'").get() as { value: string } | undefined
+    return row?.value === 'dark' ? 'dark' : 'light'
+  }
+
+  setTheme(theme: 'light' | 'dark'): void {
+    if (theme !== 'light' && theme !== 'dark') throw new DomainError('INVALID_THEME', '不支持的界面主题')
+    this.setMetaInTransaction('ui_theme', theme)
+  }
+
+  static createImportedDatabase(sourcePath: string, destinationPath: string): DataImportSummary {
+    if (!isAbsolute(sourcePath) || !isAbsolute(destinationPath) || resolve(sourcePath).toLowerCase() === resolve(destinationPath).toLowerCase()) throw dataImportInvalid()
+    let source: DatabaseSync | undefined
+    let destination: SqliteStore | undefined
+    let complete = false
+    const outputs = new Map<string, Stats>()
+    try {
+      source = openImportDatabase(sourcePath)
+      const reserved = openSync(destinationPath, 'wx', 0o600)
+      try { outputs.set(destinationPath, fstatSync(reserved)) } finally { closeSync(reserved) }
+      destination = new SqliteStore(destinationPath, importCipher)
+      for (const suffix of ['-wal', '-shm', '-journal']) {
+        try { outputs.set(`${destinationPath}${suffix}`, lstatSync(`${destinationPath}${suffix}`)) } catch {}
+      }
+      const tables = validateImportSchema(source, destination.db)
+      let totalRows = 0
+      destination.transaction(() => {
+        destination!.db.exec('PRAGMA defer_foreign_keys = ON;')
+        for (const table of tables) {
+          if (table.name === 'account_secrets') continue
+          const names = table.columns.map(column => quoteImportIdentifier(column.name))
+          const insert = destination!.db.prepare(`INSERT INTO ${quoteImportIdentifier(table.name)} (${names.join(',')}) VALUES (${names.map(() => '?').join(',')})`)
+          for (const row of source!.prepare(`SELECT ${names.join(',')} FROM ${quoteImportIdentifier(table.name)} NOT INDEXED`).iterate()) {
+            if (++totalRows > 2_000_000) throw dataImportInvalid()
+            const values = table.columns.map(column => checkedImportValue(row[column.name], column))
+            if (table.name === 'app_meta' && !reviewedImportMeta(row.key, row.value)) continue
+            insert.run(...values)
+          }
+        }
+        validateImportedData(destination!.db)
+        destination!.db.exec('UPDATE batches SET auto_retry_enabled = 0, next_retry_at = NULL; DELETE FROM account_secrets;')
+        if (destination!.db.prepare('PRAGMA foreign_key_check').all().length) throw dataImportInvalid()
+      })
+      destination.recoverInterruptedBatches()
+      destination.recoverInterruptedCommentScans()
+      const active = destination.getActiveAccountId()
+      if (active && !destination.getAccount(active)) throw dataImportInvalid()
+      destination.setLanguage(destination.getLanguage())
+      destination.setTheme(destination.getTheme())
+      destination.setUpdatePreferences(destination.getUpdatePreferences())
+      const summary = importSummary(destination.db)
+      destination.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE; VACUUM;')
+      if (destination.db.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok') throw dataImportInvalid()
+      complete = true
+      return summary
+    } catch { throw dataImportInvalid() }
+    finally {
+      source?.close(); destination?.close()
+      if (!complete) for (const [path, original] of outputs) {
+        try {
+          const current = lstatSync(path)
+          if (current.isFile() && !current.isSymbolicLink() && current.dev === original.dev && current.ino === original.ino &&
+              current.birthtimeMs === original.birthtimeMs && resolve(realpathSync(path)).toLowerCase() === resolve(path).toLowerCase()) unlinkSync(path)
+        } catch {}
+      }
+    }
+  }
+
+  static validatePreparedImportDatabase(path: string): void {
+    let source: DatabaseSync | undefined
+    let reference: SqliteStore | undefined
+    try {
+      source = openImportDatabase(path)
+      reference = new SqliteStore(':memory:', importCipher)
+      validateImportSchema(source, reference.db)
+      const schema = (database: DatabaseSync): string => JSON.stringify(database.prepare(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+      ).all())
+      if (schema(source) !== schema(reference.db)) throw dataImportInvalid()
+      if (Number(source.prepare('SELECT COUNT(*) AS n FROM account_secrets').get()?.n) !== 0 ||
+          Number(source.prepare("SELECT COUNT(*) AS n FROM batches WHERE status IN ('queued','running') OR next_retry_at IS NOT NULL OR auto_retry_enabled <> 0").get()?.n) !== 0 ||
+          Number(source.prepare("SELECT COUNT(*) AS n FROM deliveries WHERE status = 'sending'").get()?.n) !== 0 ||
+          Number(source.prepare("SELECT COUNT(*) AS n FROM comment_scan_jobs WHERE status = 'running'").get()?.n) !== 0 ||
+          Number(source.prepare("SELECT COUNT(*) AS n FROM delivery_comment_verification WHERE state IN ('checking','waiting') OR next_check_at IS NOT NULL").get()?.n) !== 0) throw dataImportInvalid()
+      validateImportedData(source)
+      if (source.prepare('PRAGMA quick_check').get()?.quick_check !== 'ok' || source.prepare('PRAGMA foreign_key_check').all().length) throw dataImportInvalid()
+    } catch { throw dataImportInvalid() }
+    finally { source?.close(); reference?.close() }
   }
 
   getUpdatePreferences(): UpdatePreferences {
@@ -1968,6 +2068,108 @@ export class SqliteStore {
       }
     })
   }
+}
+
+const importCipher: SecretCipher = { isAvailable: () => false, backend: () => 'import',
+  encrypt: () => { throw dataImportInvalid() }, decrypt: () => { throw dataImportInvalid() } }
+interface ImportColumn { name: string; type: string; notnull: number; pk: number; hidden: number }
+interface ImportTable { name: string; columns: ImportColumn[] }
+const dataImportInvalid = (): DomainError => new DomainError('DATA_IMPORT_INVALID', '备份格式无效或与当前版本不兼容，请选择本工具导出的完整 SQLite 备份')
+const quoteImportIdentifier = (name: string): string => {
+  if (!/^[a-z][a-z0-9_]*$/.test(name)) throw dataImportInvalid()
+  return `"${name}"`
+}
+
+function openImportDatabase(path: string): DatabaseSync {
+  const database = new DatabaseSync(path, { readOnly: true, allowExtension: false })
+  try {
+    database.exec('PRAGMA trusted_schema = OFF; PRAGMA query_only = ON; PRAGMA busy_timeout = 1000;')
+    if (database.prepare('PRAGMA user_version').get()?.user_version !== 9 || database.prepare('PRAGMA journal_mode').get()?.journal_mode === 'wal') throw dataImportInvalid()
+    return database
+  } catch (error) { database.close(); throw error }
+}
+
+function validateImportSchema(source: DatabaseSync, reference: DatabaseSync): ImportTable[] {
+  interface SchemaRow { type: string; name: string; tbl_name: string; sql: string | null }
+  const rows = (database: DatabaseSync): SchemaRow[] => database.prepare(
+    "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY rowid"
+  ).all() as unknown as SchemaRow[]
+  const known = rows(reference)
+  const candidates = rows(source)
+  const expectedTables = known.filter(row => row.type === 'table')
+  const tables = new Map(expectedTables.map(row => [row.name, row]))
+  const indexes = new Map(known.filter(row => row.type === 'index').map(row => [row.name, row.tbl_name]))
+  const seen = new Set<string>()
+  for (const row of candidates) {
+    if (row.type === 'table') {
+      if (!tables.has(row.name) || seen.has(row.name) || !row.sql || /\bVIRTUAL\b/i.test(row.sql)) throw dataImportInvalid()
+      seen.add(row.name)
+    } else if (row.type !== 'index' || indexes.get(row.name) !== row.tbl_name) throw dataImportInvalid()
+  }
+  if (seen.size !== tables.size) throw dataImportInvalid()
+  return expectedTables.map(table => {
+    const columns = reference.prepare(`PRAGMA table_xinfo(${quoteImportIdentifier(table.name)})`).all() as unknown as ImportColumn[]
+    const actual = source.prepare(`PRAGMA table_xinfo(${quoteImportIdentifier(table.name)})`).all() as unknown as ImportColumn[]
+    if (columns.length !== actual.length) throw dataImportInvalid()
+    for (const column of columns) {
+      const found = actual.find(value => value.name === column.name)
+      if (!found || found.hidden !== 0 || found.type.toUpperCase() !== column.type.toUpperCase() || found.pk !== column.pk) throw dataImportInvalid()
+    }
+    return { name: table.name, columns }
+  })
+}
+
+function checkedImportValue(value: unknown, column: ImportColumn): string | number | null {
+  if (value === null) {
+    if (column.notnull || column.pk) throw dataImportInvalid()
+    return null
+  }
+  if (column.type.toUpperCase() === 'INTEGER') {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw dataImportInvalid()
+    return value
+  }
+  if (column.type.toUpperCase() !== 'TEXT' || typeof value !== 'string' || Buffer.byteLength(value) > 1_048_576) throw dataImportInvalid()
+  if (['avatar_url', 'profile_url', 'image_url'].includes(column.name) && value !== '') {
+    try {
+      const url = new URL(value)
+      if (value.length > 4096 || /[\u0000-\u0020\u007f]/.test(value) || url.protocol !== 'https:' || url.username || url.password) throw dataImportInvalid()
+    } catch { throw dataImportInvalid() }
+  }
+  if (column.name.endsWith('_at') && !isCanonicalIso(value)) throw dataImportInvalid()
+  return value
+}
+
+function reviewedImportMeta(key: unknown, value: unknown): boolean {
+  if (typeof key !== 'string' || typeof value !== 'string') throw dataImportInvalid()
+  return ['active_account_id', 'ui_language', 'ui_theme', 'update_preferences'].includes(key) ||
+    /^comment-post-safety:[A-Za-z0-9_-]{1,128}$/.test(key) && value === 'reconciliation-v1'
+}
+
+function validateImportedData(database: DatabaseSync): void {
+  const steamId = (value: unknown): boolean => typeof value === 'string' && /^\d{17}$/.test(value) &&
+    BigInt(value) > 0x0110000100000000n && BigInt(value) <= 0x01100001ffffffffn
+  for (const row of database.prepare('SELECT account_id, steam_id, account_name, display_name FROM accounts').iterate()) {
+    if (typeof row.account_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(row.account_id) || !steamId(row.steam_id) ||
+      typeof row.account_name !== 'string' || row.account_name.length > 256 || typeof row.display_name !== 'string' || row.display_name.length > 512) throw dataImportInvalid()
+  }
+  for (const row of database.prepare('SELECT steam_id FROM friends').iterate()) if (!steamId(row.steam_id)) throw dataImportInvalid()
+  for (const row of database.prepare('SELECT status, delay_ms, total, completed, succeeded, failed, failure_policy FROM batches').iterate()) {
+    if (typeof row.status !== 'string' || !['queued', 'running', 'paused', 'completed', 'cancelled'].includes(row.status) ||
+      typeof row.delay_ms !== 'number' || row.delay_ms < MIN_DELAY_MS || row.delay_ms > 300_000 ||
+      ['total', 'completed', 'succeeded', 'failed'].some(key => typeof row[key] !== 'number' || Number(row[key]) < 0) || typeof row.failure_policy !== 'string') throw dataImportInvalid()
+    validateBatchFailurePolicy(JSON.parse(row.failure_policy))
+  }
+  for (const row of database.prepare('SELECT status, friend_steam_id FROM deliveries').iterate()) {
+    if (typeof row.status !== 'string' || !['pending', 'sending', 'sent_verified', 'accepted_unverified', 'failed', 'uncertain', 'cancelled'].includes(row.status) || !steamId(row.friend_steam_id)) throw dataImportInvalid()
+  }
+  for (const row of database.prepare('SELECT status, delay_ms FROM comment_scan_jobs').iterate()) {
+    if (typeof row.status !== 'string' || !['running', 'paused', 'completed', 'cancelled'].includes(row.status) || typeof row.delay_ms !== 'number' || row.delay_ms < 100 || row.delay_ms > 60_000) throw dataImportInvalid()
+  }
+}
+
+function importSummary(database: DatabaseSync): DataImportSummary {
+  const count = (table: string): number => Number(database.prepare(`SELECT COUNT(*) AS n FROM ${quoteImportIdentifier(table)}`).get()?.n)
+  return { accounts: count('accounts'), friends: count('friends'), groups: count('friend_groups'), tasks: count('batches'), deliveries: count('deliveries') }
 }
 
 function isCanonicalIso(value: unknown): value is string {

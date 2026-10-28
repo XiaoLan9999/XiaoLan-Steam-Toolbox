@@ -9,6 +9,9 @@ import {
   artworkCookieAccountMatches,
   artworkDownloadExtension,
   clampArtworkBounds,
+  artworkPageZoom,
+  DESIGN_WORKSPACE_CSS,
+  designMotionScript,
   initialArtworkBrowserState,
   isAllowedArtworkNavigation,
   isArtworkTool,
@@ -41,6 +44,12 @@ interface BrowserRecord {
   downloads: Set<DownloadItem>
   releaseCookieListener: (() => void) | null
   disposing: Promise<void> | null
+  zoomPreference: number | null
+  zoomFactor: number
+  dynamicPreview: boolean
+  designCssKey: string | null
+  designEnhancement: Promise<void> | null
+  motionKey: string | null
 }
 
 export class ArtworkBrowser {
@@ -50,16 +59,26 @@ export class ArtworkBrowser {
   private generation = 0
   private stopped = false
   private readonly cleanup = new Set<Promise<void>>()
-  private readonly onResize = (): void => { this.bounds = null; this.record?.view.setVisible(false) }
+  private readonly onResize = (): void => { this.bounds = null; if (this.record) this.applyBounds(this.record) }
   private readonly onParentClosed = (): void => this.shutdown()
+  private readonly onHidden = (): void => { if (this.record) this.applyMotion(this.record, false) }
+  private readonly onShown = (): void => { if (this.record) this.applyMotion(this.record, !!this.bounds) }
 
   constructor(private readonly options: ArtworkBrowserOptions) {
     options.parent.on('resize', this.onResize)
     options.parent.on('closed', this.onParentClosed)
+    options.parent.on('hide', this.onHidden)
+    options.parent.on('minimize', this.onHidden)
+    options.parent.on('show', this.onShown)
+    options.parent.on('restore', this.onShown)
   }
 
   getState(): ArtworkBrowserState {
-    return { ...this.state }
+    const record = this.record
+    return { ...this.state, ...(record && this.state.tool === record.tool ? {
+      zoomFactor: record.zoomFactor, autoFit: record.zoomPreference === null,
+      ...(record.tool === 'design' ? { dynamicPreview: record.dynamicPreview } : {})
+    } : {}) }
   }
 
   async open(tool: ArtworkTool, accountId?: string, options?: { reload?: boolean }): Promise<ArtworkBrowserState> {
@@ -123,6 +142,26 @@ export class ArtworkBrowser {
     try { this.bounds = clampArtworkBounds(bounds, width, height) }
     catch { throw artworkError('ARTWORK_INVALID_BOUNDS') }
     if (this.record) this.applyBounds(this.record)
+  }
+
+  setZoom(zoom: number | null): ArtworkBrowserState {
+    const record = this.requireCurrent()
+    try { artworkPageZoom(record.tool, this.bounds, zoom) }
+    catch { throw artworkError('ARTWORK_INVALID_ZOOM') }
+    record.zoomPreference = zoom
+    this.applyBounds(record)
+    this.setState(this.state)
+    return this.getState()
+  }
+
+  setDynamicPreview(enabled: boolean): ArtworkBrowserState {
+    const record = this.requireCurrent()
+    if (typeof enabled !== 'boolean' || record.tool !== 'design') throw artworkError('ARTWORK_INVALID_PREVIEW')
+    record.dynamicPreview = enabled
+    record.motionKey = null
+    this.applyMotion(record, !!this.bounds)
+    this.setState(this.state)
+    return this.getState()
   }
 
   async applyLongArtwork(): Promise<void> {
@@ -271,6 +310,10 @@ export class ArtworkBrowser {
     this.stopped = true
     this.options.parent.removeListener('resize', this.onResize)
     this.options.parent.removeListener('closed', this.onParentClosed)
+    this.options.parent.removeListener('hide', this.onHidden)
+    this.options.parent.removeListener('minimize', this.onHidden)
+    this.options.parent.removeListener('show', this.onShown)
+    this.options.parent.removeListener('restore', this.onShown)
     void this.close()
   }
 
@@ -287,7 +330,9 @@ export class ArtworkBrowser {
     view.setVisible(false)
     const contents = view.webContents
     const record: BrowserRecord = { view, contents, session: isolatedSession, tool, accountId, prepared: false,
-      preparing: null, pendingCookieWrite: null, disposing: null, downloads: new Set(), releaseCookieListener: null }
+      preparing: null, pendingCookieWrite: null, disposing: null, downloads: new Set(), releaseCookieListener: null,
+      zoomPreference: tool === 'design' ? null : 1, zoomFactor: 1, dynamicPreview: false,
+      designCssKey: null, designEnhancement: null, motionKey: null }
     if (accountId) {
       const onCookieChanged = (_event: unknown, cookie: Cookie, cause: string, removed: boolean): void => {
         if (!this.isCurrent(record) || cookie.name !== 'steamLoginSecure' ||
@@ -308,10 +353,13 @@ export class ArtworkBrowser {
     contents.on('will-redirect', event => this.guardNavigation(record, event, event.url, event.isMainFrame))
     contents.on('did-start-navigation', event => {
       if (event.isMainFrame && this.isCurrent(record)) {
+        record.motionKey = null
+        record.designEnhancement = null
         this.setState({ ...this.state, phase: 'loading', canApplyLongArtwork: false, error: null })
       }
     })
     contents.on('did-finish-load', () => { if (this.isCurrent(record)) this.markReady(record) })
+    contents.on('dom-ready', () => { if (record.tool === 'design' && this.isCurrent(record)) void this.enhanceDesign(record) })
     contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
       if (isMainFrame && this.isCurrent(record)) this.markReady(record)
     })
@@ -396,6 +444,8 @@ export class ArtworkBrowser {
       this.setState({ ...this.state, phase: 'error', canApplyLongArtwork: false, error: 'ARTWORK_NAVIGATION_BLOCKED' })
       return
     }
+    this.applyBounds(record)
+    if (record.tool === 'design') void this.enhanceDesign(record)
     this.setState({ tool: record.tool, phase: 'ready', accountId: record.accountId,
       canApplyLongArtwork: record.tool === 'upload' && isArtworkUploadUrl(url), error: null })
   }
@@ -423,10 +473,42 @@ export class ArtworkBrowser {
   private applyBounds(record: BrowserRecord): void {
     if (!this.isCurrent(record) || !this.bounds || !record.prepared) {
       record.view.setVisible(false)
+      this.applyMotion(record, false)
       return
     }
     record.view.setBounds(this.bounds)
+    const zoom = artworkPageZoom(record.tool, this.bounds, record.zoomPreference)
+    if (Math.abs(zoom - record.contents.getZoomFactor()) > 0.001) record.contents.setZoomFactor(zoom)
+    if (Math.abs(zoom - record.zoomFactor) > 0.001) {
+      record.zoomFactor = zoom
+      this.setState(this.state)
+    }
     record.view.setVisible(true)
+    this.applyMotion(record, true)
+  }
+
+  private enhanceDesign(record: BrowserRecord): Promise<void> {
+    if (record.designEnhancement) return record.designEnhancement
+    const work = (async () => {
+      if (!this.isCurrent(record) || !isAllowedArtworkNavigation('design', record.contents.getURL())) return
+      if (record.designCssKey) await record.contents.removeInsertedCSS(record.designCssKey).catch(() => {})
+      record.designCssKey = await record.contents.insertCSS(DESIGN_WORKSPACE_CSS, { cssOrigin: 'user' })
+      record.motionKey = null
+      this.applyMotion(record, !!this.bounds)
+    })().catch(() => { /* Basic navigation remains usable if a future page cannot be enhanced. */ })
+    record.designEnhancement = work
+    return work
+  }
+
+  private applyMotion(record: BrowserRecord, visible: boolean): void {
+    if (record.tool !== 'design' || record.contents.isDestroyed() || !record.prepared ||
+        !isAllowedArtworkNavigation('design', record.contents.getURL())) return
+    visible = visible && this.options.parent.isVisible() && !this.options.parent.isMinimized()
+    const key = `${record.dynamicPreview}:${visible}`
+    if (record.motionKey === key) return
+    record.motionKey = key
+    void record.contents.executeJavaScriptInIsolatedWorld(1002, [{ code: designMotionScript(record.dynamicPreview, visible) }])
+      .catch(() => { if (record.motionKey === key) record.motionKey = null })
   }
 
   private dispose(record: BrowserRecord): Promise<void> {

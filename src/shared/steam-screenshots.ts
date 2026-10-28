@@ -43,9 +43,12 @@ export interface ScreenshotImage {
   size: number
   previewUrl: string
   resizeRequired: boolean
+  importStatus?: 'uncertain'
+  importReason?: string
 }
 
 export interface ScreenshotPrepareInput {
+  mode?: ScreenshotImportMode
   steamPath: string
   userId: string
   appId: string
@@ -53,13 +56,32 @@ export interface ScreenshotPrepareInput {
   jpegQuality: number
   resizeLargeImages: boolean
   caption?: string
+  restartSteam?: boolean
+  preferLive?: boolean
+}
+
+export type ScreenshotImportMode = 'current-account' | 'local-account'
+
+export type ScreenshotImportPhase = 'connecting-steam' | 'importing-live' | 'closing-steam' | 'importing' | 'starting-steam' | 'idle'
+
+export interface ScreenshotImageOutcome {
+  imageId: string
+  name: string
+  status: 'confirmed' | 'rejected' | 'uncertain'
+  code?: string
 }
 
 export interface ScreenshotPrepareResult {
   imported: number
   files: string[]
-  backupPath: string
+  backupPath: string | null
   vdfPath: string
+  steamRestart?: 'restarted' | 'failed'
+  method?: 'steam-api' | 'index'
+  outcomes?: ScreenshotImageOutcome[]
+  completedImageIds?: string[]
+  warning?: 'LIVE_WORKER_STOP_UNCONFIRMED'
+  activation?: 'after-account-switch'
 }
 
 export const SCREENSHOT_MAX_SIDE = 16_000

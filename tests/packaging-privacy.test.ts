@@ -85,8 +85,12 @@ describe('packaging privacy boundary', () => {
     expect(selected(path, config.files)).toBe(false)
   })
 
-  it('copies only the reviewed logo and three production workers, never whole resource directories', () => {
+  it('copies only the reviewed logo and four production workers, never whole resource directories', () => {
     expect(config.extraResources).toEqual([{
+      from: 'resources/screenshot-import',
+      to: 'screenshot-import',
+      filter: ['screenshot-import-host-x64.exe']
+    }, {
       from: 'build/icon.png',
       to: 'icon.png'
     }, {
@@ -98,11 +102,15 @@ describe('packaging privacy boundary', () => {
       to: 'local-app-simulation',
       filter: ['local-app-host-x64.exe']
     }])
-    const filter = config.extraResources[1]!.filter!
+    const filter = config.extraResources.find(resource => resource.to === 'native-presence')!.filter!
     for (const file of ['worker-x86.exe', 'worker-x64.exe']) expect(selected(file, filter)).toBe(true)
     for (const file of ['internal-x86-readonly.exe', 'profile.json', 'diagnostics/current.log', 'state.sqlite3', 'Cookies', '.env']) expect(selected(file, filter)).toBe(false)
-    expect(selected('local-app-host-x64.exe', config.extraResources[2]!.filter!)).toBe(true)
-    for (const file of ['local-app-host-test.exe', 'fake-game-host.exe', 'profile.json', 'state.sqlite3', '.env']) expect(selected(file, config.extraResources[2]!.filter!)).toBe(false)
+    const simulation = config.extraResources.find(resource => resource.to === 'local-app-simulation')!.filter!
+    expect(selected('local-app-host-x64.exe', simulation)).toBe(true)
+    for (const file of ['local-app-host-test.exe', 'fake-game-host.exe', 'profile.json', 'state.sqlite3', '.env']) expect(selected(file, simulation)).toBe(false)
+    const screenshots = config.extraResources.find(resource => resource.to === 'screenshot-import')!.filter!
+    expect(selected('screenshot-import-host-x64.exe', screenshots)).toBe(true)
+    for (const file of ['screenshot-live-probe.exe', 'screenshot-import-host-test.exe', 'ledger.json', '0.jpg', 'profile.json', 'state.sqlite3', '.env']) expect(selected(file, screenshots)).toBe(false)
     expect((config.win as { icon: string }).icon).toBe('build/icon.ico')
     expect((config.nsis as { installerIcon: string; uninstallerIcon: string }).installerIcon).toBe('build/icon.ico')
     expect((config.nsis as { installerIcon: string; uninstallerIcon: string }).uninstallerIcon).toBe('build/icon.ico')

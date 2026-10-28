@@ -15,6 +15,67 @@ export interface ArtworkBrowserState {
   accountId: string | null
   canApplyLongArtwork: boolean
   error: string | null
+  zoomFactor?: number
+  autoFit?: boolean
+  dynamicPreview?: boolean
+}
+
+export function artworkPageZoom(tool: ArtworkTool, bounds: ArtworkBounds | null, preference: number | null): number {
+  if (preference !== null) {
+    if (!Number.isFinite(preference) || preference < 0.5 || preference > 1.5) throw new Error('ARTWORK_INVALID_ZOOM')
+    return preference
+  }
+  if (tool !== 'design' || !bounds) return 1
+  return Math.max(0.5, Math.min(1, Math.floor(bounds.width / 1600 * 100) / 100))
+}
+
+export const DESIGN_WORKSPACE_CSS = `
+html,body{overflow:auto!important}
+.body__wrapper{min-width:1536px!important;flex-direction:row!important}
+.menu__window{position:relative!important;flex:none!important;width:250px!important;min-height:0!important;overflow-y:auto!important;overflow-x:hidden!important;box-sizing:border-box!important}
+.right__menu{display:flex!important;flex:none!important;width:309px!important}
+.menu__window>*{flex-shrink:0!important}
+.menu__window-credits{position:static!important;bottom:auto!important;flex-shrink:0!important;width:100%!important;margin-top:auto!important}
+html[data-xiaolan-motion="paused"] *{animation-play-state:paused!important}
+`
+
+export function designMotionScript(enabled: boolean, visible: boolean): string {
+  return String.raw`(() => {
+    if (location.hostname !== 'steam.design' && location.hostname !== 'www.steam.design') return false;
+    let policy = globalThis.__xiaolanDesignMotion;
+    if (!policy) {
+      const originals = new WeakMap();
+      policy = { enabled: false, visible: false, apply(video) {
+        if (!(video instanceof HTMLVideoElement)) return;
+        if (!originals.has(video)) originals.set(video, video.autoplay);
+        const sponsor = /\/assets\/video-duobot-[^/]+\.webm(?:[?#]|$)/.test(video.currentSrc || video.src);
+        if (!policy.enabled || !policy.visible || sponsor || video.closest('.bgPreloader')) {
+          if (video.autoplay) video.autoplay = false;
+          if (!video.paused) video.pause();
+        } else if (originals.get(video) && !video.closest('.bgPreloader')) {
+          if (!video.autoplay) video.autoplay = true;
+          if (video.paused) video.play().catch(() => {});
+        }
+      }, update(enabled, visible) {
+        policy.enabled = enabled; policy.visible = visible;
+        document.documentElement.dataset.xiaolanMotion = enabled && visible ? 'running' : 'paused';
+        document.querySelectorAll('video').forEach(policy.apply);
+      } };
+      document.addEventListener('play', event => policy.apply(event.target), true);
+      new MutationObserver(records => {
+        for (const record of records) {
+          if (record.type === 'attributes') policy.apply(record.target);
+          else for (const node of record.addedNodes) {
+            if (!(node instanceof Element)) continue;
+            policy.apply(node); node.querySelectorAll('video').forEach(policy.apply);
+          }
+        }
+      }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'autoplay'] });
+      globalThis.__xiaolanDesignMotion = policy;
+    }
+    policy.update(${JSON.stringify(enabled)}, ${JSON.stringify(visible)});
+    return true;
+  })()`
 }
 
 export const ARTWORK_TOOL_URLS: Record<ArtworkTool, string> = {

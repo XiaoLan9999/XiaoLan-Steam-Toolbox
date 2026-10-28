@@ -6,6 +6,8 @@ import { SteamScreenshotService, screenshotDimensions, type ScreenshotImageAdapt
 import { appendScreenshotMetadata, parseScreenshotVdf, vdfChild, vdfPath } from '../src/main/steam-screenshot-vdf'
 import { screenshotShortcutNames } from '../src/main/steam-screenshot-shortcuts'
 import type { ScreenshotPrepareInput } from '../src/shared/steam-screenshots'
+import { ScreenshotImport } from '../src/main/screenshot-import'
+import { ScreenshotLocalImport } from '../src/main/screenshot-local-import'
 
 const roots: string[] = []
 const SID = '76561198000000123'
@@ -311,6 +313,76 @@ describe('transactional local Steam screenshot preparation', () => {
     await fs.symlink(outside, screenshots, process.platform === 'win32' ? 'junction' : 'dir')
     await expect(service.prepare(input)).rejects.toMatchObject({ code: 'SCREENSHOT_UNSAFE_PATH' })
     expect(await fs.readdir(outside)).toEqual([])
+  })
+})
+
+describe('read-only screenshot preflight and graceful import fixture', () => {
+  it('preflights while Steam runs without creating backups or altering the index/queue', async () => {
+    const { service, input, running, vdf, root, imageAdapter } = await fixture()
+    running.mockResolvedValue(true)
+    const before = await fs.readdir(path.dirname(vdf))
+    await service.preflight({ ...input, restartSteam: true })
+    expect(await fs.readFile(vdf, 'utf8')).toBe(ORIGINAL)
+    expect(await fs.readdir(path.join(root, 'userdata', USER, '760'))).toEqual(before)
+    expect(service.getImages()).toHaveLength(1)
+    expect(imageAdapter.encode).not.toHaveBeenCalled()
+  })
+
+  it('accepts a never-initialized screenshot directory without creating it during preflight', async () => {
+    const { service, input, root } = await fixture()
+    const base = path.join(root, 'userdata', USER, '760')
+    await fs.rm(base, { recursive: true })
+    await service.preflight(input)
+    await expect(fs.stat(base)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects a changed original image before Steam could be asked to quit', async () => {
+    const { service, input, source } = await fixture()
+    await fs.writeFile(source, png(800, 600))
+    await expect(service.preflight(input)).rejects.toMatchObject({ code: 'SCREENSHOT_FILE_CHANGED' })
+  })
+
+  it.each([1, 'true', null])('rejects invalid restart consent %j before either preparation stage', async restartSteam => {
+    const { service, input } = await fixture()
+    const invalid = { ...input, restartSteam } as unknown as ScreenshotPrepareInput
+    await expect(service.preflight(invalid)).rejects.toMatchObject({ code: 'SCREENSHOT_INVALID_INPUT' })
+    await expect(service.prepare(invalid)).rejects.toMatchObject({ code: 'SCREENSHOT_INVALID_INPUT' })
+  })
+
+  it('rejects malformed existing metadata before client shutdown, retaining every original byte', async () => {
+    const { service, input, vdf } = await fixture()
+    await fs.writeFile(vdf, '"screenshots" {')
+    await expect(service.preflight(input)).rejects.toThrow()
+    expect(await fs.readFile(vdf, 'utf8')).toBe('"screenshots" {')
+  })
+
+  it('commits real fixture images/index only while the fake client is stopped, before reopening', async () => {
+    const { service, input, running, vdf, root } = await fixture()
+    let clientRunning = true
+    let time = 0
+    running.mockImplementation(async () => clientRunning)
+    const originalImage = await fs.readFile(path.join(root, 'source.png'))
+    const client = { executable: path.join(root, 'steam.exe'), pid: 1234, startTicks: '638964000000000001' }
+    const launch = vi.fn(async () => {
+      const text = await fs.readFile(vdf, 'utf8')
+      const entry = vdfPath(parseScreenshotVdf(text), 'screenshots', APP, '4')!
+      const filename = vdfChild(entry.children, 'filename')?.value
+      expect(filename).toBeTypeOf('string')
+      expect((await fs.readFile(path.join(root, 'userdata', USER, '760', 'remote', filename!))).subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]))
+      expect(await fs.readFile(path.join(root, 'source.png'))).toEqual(originalImage)
+      clientRunning = true
+    })
+    const localImport = new ScreenshotLocalImport({ service, readActiveUser: async () => ({ steamPath: root, steamExe: client.executable,
+      steamPid: client.pid, steamStartTicks: client.startTicks, steamId: SID, clientSha256: 'a'.repeat(64) }) })
+    const operation = new ScreenshotImport({ service, localImport, confirmRestart: async () => true, assertRestartAllowed: () => {},
+      runtime: { isRunning: async () => clientRunning, resolveRunningClient: async () => client,
+        requestShutdown: async () => { clientRunning = false }, start: launch },
+      progress: () => {}, now: () => time, sleep: async ms => { time += ms } })
+    const imported = await operation.prepare({ ...input, mode: 'local-account', restartSteam: true })
+    expect(imported).toMatchObject({ imported: 1, steamRestart: 'restarted' })
+    expect(launch).toHaveBeenCalledExactlyOnceWith(client)
+    expect(service.getImages()).toEqual([])
+    expect(await fs.readFile(path.join(imported!.backupPath!, 'screenshots.vdf'), 'utf8')).toBe(ORIGINAL)
   })
 })
 

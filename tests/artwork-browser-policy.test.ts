@@ -1,7 +1,7 @@
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import {
-  APPLY_LONG_ARTWORK_SCRIPT, ARTWORK_TOOL_URLS, artworkDownloadExtension, clampArtworkBounds,
+  APPLY_LONG_ARTWORK_SCRIPT, ARTWORK_TOOL_URLS, artworkDownloadExtension, clampArtworkBounds, artworkPageZoom, DESIGN_WORKSPACE_CSS, designMotionScript,
   initialArtworkBrowserState, isAllowedArtworkNavigation, isArtworkTool, isArtworkUploadUrl, isSafeArtworkSavePath,
   parseArtworkSessionCookies, type ArtworkTool
 } from '../src/shared/artwork-browser'
@@ -10,6 +10,33 @@ const account = '76561198000000001'
 const login = `${account}%7C%7Cfixture-token`
 
 describe('artwork embedded browser policy', () => {
+  it('fits the actual CSS viewport width without multiplying by the display scale', () => {
+    expect(artworkPageZoom('design', { x: 0, y: 60, width: 1320, height: 700 }, null)).toBe(0.82)
+    expect(artworkPageZoom('design', { x: 0, y: 60, width: 1100, height: 620 }, null)).toBe(0.68)
+    expect(artworkPageZoom('design', { x: 0, y: 60, width: 1920, height: 1000 }, null)).toBe(1)
+    expect(artworkPageZoom('design', { x: 0, y: 60, width: 500, height: 400 }, null)).toBe(0.5)
+    expect(artworkPageZoom('upload', { x: 0, y: 60, width: 800, height: 400 }, null)).toBe(1)
+    expect(artworkPageZoom('design', null, null)).toBe(1)
+    expect(artworkPageZoom('design', null, 1.5)).toBe(1.5)
+    for (const invalid of [0.49, 1.51, NaN, Infinity, '1', undefined]) expect(() => artworkPageZoom('design', null, invalid as number)).toThrow('ARTWORK_INVALID_ZOOM')
+  })
+
+  it('keeps all menus and credits accessible instead of hiding content to fake a fit', () => {
+    expect(DESIGN_WORKSPACE_CSS).toContain('min-width:1536px')
+    expect(DESIGN_WORKSPACE_CSS).toContain('overflow-y:auto')
+    expect(DESIGN_WORKSPACE_CSS).toContain('.menu__window-credits{position:static')
+    expect(DESIGN_WORKSPACE_CSS).not.toMatch(/display\s*:\s*none|visibility\s*:\s*hidden/)
+  })
+
+  it('generates valid isolated motion code and preserves metadata loading for animated crops', () => {
+    for (const enabled of [false, true]) for (const visible of [false, true]) expect(() => new Function(designMotionScript(enabled, visible))).not.toThrow()
+    const code = designMotionScript(false, false)
+    expect(code).toContain('video.pause()')
+    expect(code).toContain("video.closest('.bgPreloader')")
+    expect(code).toContain('if (!video.autoplay) video.autoplay = true')
+    expect(code).not.toMatch(/preload\s*=|removeAttribute\(['"]src|\.src\s*=/)
+    expect(code).not.toMatch(/requestAnimationFrame|setInterval|WebGL/)
+  })
   it('starts closed and only accepts the five fixed tools', () => {
     expect(initialArtworkBrowserState()).toEqual({ tool: null, phase: 'closed', accountId: null, canApplyLongArtwork: false, error: null })
     for (const tool of Object.keys(ARTWORK_TOOL_URLS)) expect(isArtworkTool(tool)).toBe(true)

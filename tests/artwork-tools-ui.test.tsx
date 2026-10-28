@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { ArtworkBrowserState } from '../src/shared/artwork-browser'
 import type { AccountView } from '../src/shared/types'
-import { ArtworkBrowserToolbar, ArtworkToolsPanel, artworkBrowserError, artworkHostBounds } from '../src/renderer/src/components/ArtworkToolsPanel'
+import { ArtworkBrowserToolbar, ArtworkToolsPanel, artworkBrowserError, artworkHostBounds, artworkZoomFactor } from '../src/renderer/src/components/ArtworkToolsPanel'
 import { I18nProvider } from '../src/renderer/src/i18n'
 
 vi.stubGlobal('React', React)
@@ -77,6 +77,63 @@ describe('embedded artwork tools entry points', () => {
 })
 
 describe('trusted embedded artwork toolbar', () => {
+  const renderWorkspaceToolbar = (state: ArtworkBrowserState, expanded = false, busy = false, language: 'zh-CN' | 'en' = 'zh-CN'): string => renderToStaticMarkup(
+    <I18nProvider language={language}><ArtworkBrowserToolbar state={state} busy={busy} expanded={expanded}
+      onApply={() => {}} onClose={() => {}} onReload={() => {}} onToggleExpanded={() => {}} onZoom={() => {}} onDynamicPreview={() => {}} /></I18nProvider>)
+
+  it('starts design preview in resource-saving mode without implying the source animation is modified', () => {
+    const state = { ...uploadState, tool: 'design' as const, accountId: null }
+    const html = renderWorkspaceToolbar(state)
+    expect(html).toContain('动态背景预览')
+    expect(html).toContain('省资源模式：暂停视频与装饰动画，需要预览时再开启')
+    expect(html).toContain('暂停预览不改变原动画文件，裁剪或转换仍可能占用 CPU')
+    expect(html).toContain('<input type="checkbox"/>')
+    expect(html).not.toContain('checked=""')
+    const enabled = renderWorkspaceToolbar({ ...state, dynamicPreview: true }, true, false, 'en')
+    expect(enabled).toContain('type="checkbox" checked=""')
+    expect(enabled).toContain('main background only')
+    expect(enabled).toContain('can still use CPU')
+    expect(enabled).not.toMatch(/\p{Script=Han}/u)
+  })
+
+  it('disables the preview toggle while processing and does not expose it on Steam upload pages', () => {
+    const html = renderWorkspaceToolbar({ ...uploadState, tool: 'design', accountId: null, dynamicPreview: false }, true, true)
+    expect(html).toContain('type="checkbox" disabled=""')
+    expect(renderWorkspaceToolbar(uploadState)).not.toContain('动态背景预览')
+  })
+
+  it('offers local workspace expansion and page zoom without requiring an external browser', () => {
+    const html = renderWorkspaceToolbar({ ...uploadState, tool: 'design', accountId: null, zoomFactor: 0.65, autoFit: true })
+    expect(html).toContain('展开工作区')
+    expect(html).toContain('在线页面显示缩放')
+    expect(html).toContain('aria-pressed="true"')
+    expect(html).toContain('65%</output>')
+    expect(html).toContain('适应窗口')
+    expect(html).toContain('缩小页面')
+    expect(html).toContain('放大页面')
+    expect(html).toContain('原始大小')
+    expect(html).not.toContain('href=')
+  })
+
+  it('keeps return and exit-expanded controls usable while an IPC operation is busy', () => {
+    const html = renderWorkspaceToolbar(uploadState, true, true, 'en')
+    expect(html).toContain('<button aria-pressed="true">Exit expanded view</button>')
+    expect(html).toContain('<button>Back to local cropping</button>')
+    expect(html).toMatch(/disabled=""[^>]*>Fit window/)
+    expect(html).toMatch(/aria-label="Zoom out"[^>]*|disabled="" aria-label="Zoom out"/)
+    expect(html).not.toMatch(/\p{Script=Han}/u)
+  })
+
+  it('bounds zoom buttons and tolerates legacy or malformed state without a zoom field', () => {
+    expect(artworkZoomFactor(uploadState)).toBe(1)
+    expect(artworkZoomFactor({ ...uploadState, zoomFactor: Number.NaN })).toBe(1)
+    expect(artworkZoomFactor({ ...uploadState, zoomFactor: Number.POSITIVE_INFINITY })).toBe(1)
+    expect(artworkZoomFactor({ ...uploadState, zoomFactor: 0.1 })).toBe(0.5)
+    expect(artworkZoomFactor({ ...uploadState, zoomFactor: 2 })).toBe(1.5)
+    expect(renderWorkspaceToolbar({ ...uploadState, zoomFactor: 0.5 })).toMatch(/disabled="" aria-label="缩小页面"/)
+    expect(renderWorkspaceToolbar({ ...uploadState, zoomFactor: 1.5 })).toMatch(/disabled="" aria-label="放大页面"/)
+    expect(renderWorkspaceToolbar(uploadState, false, false, 'en')).toContain('100%</output>')
+  })
   it('switches directly between upload and showcase without leaving the toolbox', () => {
     expect(renderToolbar(uploadState)).toContain('<button>配置艺术展柜</button>')
     expect(renderToolbar(uploadState, true)).toMatch(/disabled=""[^>]*>配置艺术展柜/)
@@ -102,6 +159,10 @@ describe('trusted embedded artwork toolbar', () => {
 })
 
 describe('native artwork host placement', () => {
+  it('keeps the panel hidden when another tool or a modal owns the workspace', () => {
+    const html = renderToStaticMarkup(<I18nProvider language="zh-CN"><ArtworkToolsPanel account={account} visible={false} /></I18nProvider>)
+    expect(html).toMatch(/<div hidden="" class="artwork-tools-panel"/)
+  })
   it('uses integer CSS coordinates clipped to the app viewport', () => {
     expect(artworkHostBounds({ left: 301.3, top: 140.1, right: 1000.8, bottom: 768.9 }, 1280, 800))
       .toEqual({ x: 302, y: 141, width: 698, height: 627 })

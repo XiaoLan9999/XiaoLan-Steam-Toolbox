@@ -72,7 +72,7 @@ describe('local AppID simulation UI', () => {
     const f = await fixture({ appIdText: '4000' })
     f.api.start.mockRejectedValueOnce({ code: 'LOCAL_APP_PROFILE_UNSUPPORTED', message: 'private SDK path and credential' })
     await f.click('Start local simulation')
-    expect(text(f.root())).toContain('Update the toolbox; this is not caused by the target game being uninstalled.')
+    expect(text(f.root())).toContain('Update the toolbox; this is not caused by the target game being uninstalled')
     expect(text(f.root())).toContain('downloading or installing the target game is not required')
     expect(text(f.root())).not.toContain('private SDK path')
   })

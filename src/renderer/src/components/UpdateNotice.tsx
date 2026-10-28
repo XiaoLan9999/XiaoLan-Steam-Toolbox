@@ -46,9 +46,9 @@ export function UpdateNotice({ state, onOpenSettings }: { state: UpdateState; on
       <strong>{isError ? t('软件更新遇到问题', 'Software update needs attention')
         : notice.kind === 'ready' ? t(`新版 v${notice.version} 已就绪`, `Update v${notice.version} is ready`)
           : t(`发现新版本 v${notice.version}`, `Update v${notice.version} is available`)}</strong>
-      <p>{isError ? t('请到设置中查看线路并重试。不会中断当前任务。', 'Review update routes and retry in Settings. Current tasks are not interrupted.')
-        : notice.kind === 'ready' ? t('已下载并校验；保存工作后在设置中确认重启。', 'Downloaded and verified. Save your work, then confirm the restart in Settings.')
-          : t(`当前 v${state.currentVersion}；在设置中下载，不会自动安装。`, `Current v${state.currentVersion}. Download in Settings; installation is never automatic.`)}</p>
+      <p>{isError ? t('请到设置中查看线路并重试。不会中断当前任务', 'Review update routes and retry in Settings. Current tasks are not interrupted')
+        : notice.kind === 'ready' ? t('已下载并校验；保存工作后在设置中确认重启', 'Downloaded and verified. Save your work, then confirm the restart in Settings')
+          : t(`当前 v${state.currentVersion}；在设置中下载，不会自动安装`, `Current v${state.currentVersion}. Download in Settings; installation is never automatic`)}</p>
       <button className="ghost" onClick={onOpenSettings}>{isError ? t('到设置重试', 'Retry in Settings') : t('查看更新', 'View update')}</button>
     </div>
     <button className="update-notice-close" aria-label={isError ? t('关闭本次错误提醒', 'Dismiss this update error') : t('关闭本次版本提醒', 'Dismiss this update version')}

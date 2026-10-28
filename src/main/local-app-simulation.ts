@@ -58,6 +58,7 @@ export interface LocalAppSimulationHost {
   stop(): void
   shutdown(): Promise<void>
   onExit?(listener: (error: DomainError) => void): () => void
+  hasClientWork?(): boolean
 }
 export interface LocalAppHostBinding { worker: string; clientDll: string; clientSha256: string }
 export interface LocalAppHostBrokerOptions {
@@ -107,6 +108,7 @@ export class LocalAppHostBroker implements LocalAppSimulationHost {
   private version = 0
   private sequence = 0
   constructor(private readonly options: LocalAppHostBrokerOptions) {}
+  hasClientWork(): boolean { return this.starting || this.session !== null || this.retiring.size > 0 }
   onExit(listener: (error: DomainError) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   private notify(error: DomainError): void { for (const listener of this.listeners) { try { listener(error) } catch { /* Observers do not own cleanup. */ } } }
   private reject(session: Session, error: DomainError): void {
@@ -287,6 +289,7 @@ export class LocalAppSimulationService {
   private disposed = false
   private hostError: DomainError | null = null
   private shutdownFlight: Promise<void> | null = null
+  private invalidations = 0
   private activityRevision = 0
   constructor(private readonly options: LocalAppSimulationServiceOptions) {
     this.value = this.empty()
@@ -306,6 +309,7 @@ export class LocalAppSimulationService {
     return { sessionId: id(), accountId: account?.id ?? null, steamId: account?.steamId ?? null, status: 'idle', busy: false, appId: null, appInfo: null, fields: {}, localizedString: null, verificationSource: null, error: null }
   }
   snapshot(): LocalAppSimulationSnapshot { return structuredClone(this.value) }
+  hasClientWork(): boolean { return this.invalidations > 0 || this.host.hasClientWork?.() === true }
   state(): LocalAppSimulationSnapshot {
     const account = this.options.getActiveAccount()
     if ((account?.id ?? null) !== this.value.accountId || (account?.steamId ?? null) !== this.value.steamId) void this.invalidate().catch(noop)
@@ -469,10 +473,13 @@ export class LocalAppSimulationService {
     return this.snapshot()
   }
   async invalidate(): Promise<void> {
-    this.generation++; this.operation = null; this.clearTimer()
-    for (const controller of this.metadataAbort) controller.abort()
-    this.host.stop(); this.context = null; this.desired = {}; this.metadata.clear(); this.value = this.empty(); this.emit()
-    await this.host.shutdown()
+    this.invalidations++
+    try {
+      this.generation++; this.operation = null; this.clearTimer()
+      for (const controller of this.metadataAbort) controller.abort()
+      this.host.stop(); this.context = null; this.desired = {}; this.metadata.clear(); this.value = this.empty(); this.emit()
+      await this.host.shutdown()
+    } finally { this.invalidations-- }
   }
   shutdown(): Promise<void> {
     if (this.shutdownFlight) return this.shutdownFlight

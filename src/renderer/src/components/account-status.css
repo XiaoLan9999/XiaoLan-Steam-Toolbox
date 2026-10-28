@@ -3,5 +3,5 @@
 .account-status-check button { padding: 6px 8px; font-size: 11px; }
 .account-status-check > span, .account-status-check small, .account-status-check time { display: block; margin-top: 7px; line-height: 1.5; overflow-wrap: anywhere; }
 .account-status-check small, .account-status-check time { color: var(--muted); }
-.account-status-check .status-verified { color: #3b7457; }
-.account-status-check .status-unverified { color: #82644a; }
+.account-status-check .status-verified { color: var(--tone-fg-3b7457ff, #3b7457); }
+.account-status-check .status-unverified { color: var(--tone-fg-82644aff, #82644a); }

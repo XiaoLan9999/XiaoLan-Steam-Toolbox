@@ -21,7 +21,11 @@ import { I18nProvider, type Translate } from './i18n'
 import { avatarFallback, unwrap } from './ui'
 import { applyBatchProgress, applyProgressUpdates, createSnapshotRefresh, type BatchProgressUpdate } from './snapshot-refresh'
 import { applyFriendPolicy, applyFriendPolicyUpdates, type FriendPolicyUpdate } from './friend-policy-updates'
+import { applyTheme, normalizeTheme, restoreCachedTheme } from './theme'
 import './task-list.css'
+import './theme.css'
+
+restoreCachedTheme()
 
 type Tab = 'home' | 'friends' | 'compose' | 'history' | 'tools' | 'screenshots' | 'game-status'
 
@@ -102,6 +106,7 @@ export default function App(): React.JSX.Element {
     }, ({ snapshot: next, batchRevision: revision }) => {
       document.documentElement.lang = next.language
       document.title = next.language === 'en' ? APP_NAME_EN : APP_NAME_ZH
+      applyTheme(normalizeTheme(next.theme))
       for (const [id, update] of friendPolicyUpdates.current) {
         if (update.revision <= revision || update.policy.accountId !== next.activeAccountId) friendPolicyUpdates.current.delete(id)
       }
@@ -174,8 +179,8 @@ export default function App(): React.JSX.Element {
   }
 
   const removeAccount = async (account: AccountView): Promise<void> => {
-    if (!window.confirm(t(`确定忘记账号“${account.displayName}”吗？本地分组、黑名单、好友历史、检查任务、缓存、发送记录和复制状态配置会一并删除。`,
-      `Forget "${account.displayName}"? Its local groups, blacklist, friend history, checks, cache, delivery history and status-copy settings will also be deleted.`))) {
+    if (!window.confirm(t(`确定忘记账号“${account.displayName}”吗？本地分组、黑名单、好友历史、检查任务、缓存、发送记录和复制状态配置会一并删除`,
+      `Forget "${account.displayName}"? Its local groups, blacklist, friend history, checks, cache, delivery history and status-copy settings will also be deleted`))) {
       return
     }
     await runAction(
@@ -277,7 +282,7 @@ export default function App(): React.JSX.Element {
             title={snapshot.dataDirectory}
             onClick={() => setSettingsOpen(true)}
           >
-            {t('设置 / 更新 / 语言 / 导出', 'Settings / Updates / Export')}
+            {t('设置 / 更新 / 语言 / 数据', 'Settings / Updates / Data')}
             {(snapshot.updater.phase === 'available' || snapshot.updater.phase === 'ready') && <b className="update-sidebar-badge">NEW</b>}
           </button>
           <a
@@ -377,7 +382,7 @@ export default function App(): React.JSX.Element {
             </div>
             <p className="eyebrow">LOCAL-FIRST STEAM TOOL</p>
             <h1>{t('先连接一个 Steam 账号', 'Connect a Steam account')}</h1>
-            <p>{t('使用 Steam 手机应用扫码最安全。应用只保存 DPAPI 加密后的自动登录令牌，不保存密码。', 'Scan with the Steam mobile app. Only DPAPI-encrypted login tokens are stored, never passwords.')}</p>
+            <p>{t('使用 Steam 手机应用扫码最安全。应用只保存 DPAPI 加密后的自动登录令牌，不保存密码', 'Scan with the Steam mobile app. Only DPAPI-encrypted login tokens are stored, never passwords')}</p>
             <button className="primary" onClick={() => setLoginOpen(true)}>
               {t('添加 Steam 账号', 'Add Steam account')}
             </button>

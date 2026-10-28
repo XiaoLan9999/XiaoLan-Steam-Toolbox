@@ -36,12 +36,12 @@ export interface ArtworkCropDraft {
 
 function errorMessage(code: ArtworkErrorCode, t: Translate): string {
   switch (code) {
-    case 'unsupportedFormat': return t('请选择静态 PNG 或 JPEG 图片。GIF、WebM 和 WebP 请使用本页的内置动画背景工具。', 'Choose a static PNG or JPEG image. Use the embedded animated background tool on this page for GIF, WebM or WebP.')
-    case 'animatedImage': return t('检测到 APNG 动画。本地裁剪只支持静态图片，请使用本页的内置动画背景工具。', 'APNG animation detected. Local cropping supports static images only; use the embedded animated background tool on this page.')
-    case 'fileTooLarge': return t('图片超过本地裁剪工具的 30 MiB 文件上限。', 'The image exceeds the local crop tool limit of 30 MiB.')
-    case 'imageTooLarge': return t('图片不能超过 3200 万像素，任一边不能超过 16384 像素。', 'The image must be at most 32 million pixels, with no side longer than 16384 pixels.')
-    case 'invalidImage': return t('图片无法读取或文件不完整，请重新选择 PNG / JPEG。', 'The image cannot be read or is incomplete. Choose a valid PNG / JPEG.')
-    case 'invalidCrop': return t('裁剪范围超出原图。X、Y 和高度必须是整数，整个裁剪框必须位于图片内。', 'The crop is outside the original image. X, Y and height must be whole numbers, and every crop must fit inside the image.')
+    case 'unsupportedFormat': return t('请选择静态 PNG 或 JPEG 图片。GIF、WebM 和 WebP 请使用本页的内置动画背景工具', 'Choose a static PNG or JPEG image. Use the embedded animated background tool on this page for GIF, WebM or WebP')
+    case 'animatedImage': return t('检测到 APNG 动画。本地裁剪只支持静态图片，请使用本页的内置动画背景工具', 'APNG animation detected. Local cropping supports static images only; use the embedded animated background tool on this page')
+    case 'fileTooLarge': return t('图片超过本地裁剪工具的 30 MiB 文件上限', 'The image exceeds the local crop tool limit of 30 MiB')
+    case 'imageTooLarge': return t('图片不能超过 3200 万像素，任一边不能超过 16384 像素', 'The image must be at most 32 million pixels, with no side longer than 16384 pixels')
+    case 'invalidImage': return t('图片无法读取或文件不完整，请重新选择 PNG / JPEG', 'The image cannot be read or is incomplete. Choose a valid PNG / JPEG')
+    case 'invalidCrop': return t('裁剪范围超出原图。X、Y 和高度必须是整数，整个裁剪框必须位于图片内', 'The crop is outside the original image. X, Y and height must be whole numbers, and every crop must fit inside the image')
   }
 }
 
@@ -110,24 +110,24 @@ export function ArtworkCropUploadButtons({ drafts, busy, authenticated, onPrepar
 
 export function profileBackgroundError(code: string, t: Translate): string {
   switch (code) {
-    case 'NOT_AUTHENTICATED': case 'BACKGROUND_NOT_AUTHENTICATED': return t('请先登录当前 Steam 账号，再获取背景。', 'Sign in to the current Steam account before loading its backgrounds.')
-    case 'BACKGROUND_SESSION_CHANGED': case 'BACKGROUND_ACCOUNT_CHANGED': case 'WRONG_ACCOUNT': return t('账号会话已变化，请重新获取当前账号的背景。', 'The account session changed. Load the current account backgrounds again.')
-    case 'BACKGROUND_ANIMATED': return t('该背景是动画，请使用工具箱内置动画背景工具，不会把封面当成完整动画。', 'This is an animated background. Use the embedded animation tool; its cover is not treated as the full animation.')
-    case 'BACKGROUND_NOT_FOUND': case 'BACKGROUND_IMAGE_UNAVAILABLE': return t('未获取到该背景的原始静态图片地址，不能使用缩略图替代。', 'The original static image URL is unavailable. A thumbnail cannot be used as a replacement.')
-    case 'BACKGROUND_CANCELLED': case 'ARTWORK_BACKGROUND_CANCELLED': return t('已取消获取背景。', 'Background loading cancelled.')
-    case 'BACKGROUND_FILE_TOO_LARGE': return t('背景图片超过 30 MiB，无法在本地裁剪。', 'The background exceeds 30 MiB and cannot be cropped locally.')
-    case 'RATE_LIMITED': return t('Steam 暂时限制了请求，请稍后再获取背景。', 'Steam is temporarily limiting requests. Try loading backgrounds again later.')
-    default: return t('获取 Steam 背景失败，请检查网络后重试。', 'Steam backgrounds could not be loaded. Check your connection and retry.')
+    case 'NOT_AUTHENTICATED': case 'BACKGROUND_NOT_AUTHENTICATED': return t('请先登录当前 Steam 账号，再获取背景', 'Sign in to the current Steam account before loading its backgrounds')
+    case 'BACKGROUND_SESSION_CHANGED': case 'BACKGROUND_ACCOUNT_CHANGED': case 'WRONG_ACCOUNT': return t('账号会话已变化，请重新获取当前账号的背景', 'The account session changed. Load the current account backgrounds again')
+    case 'BACKGROUND_ANIMATED': return t('该背景是动画，请使用工具箱内置动画背景工具，不会把封面当成完整动画', 'This is an animated background. Use the embedded animation tool; its cover is not treated as the full animation')
+    case 'BACKGROUND_NOT_FOUND': case 'BACKGROUND_IMAGE_UNAVAILABLE': return t('未获取到该背景的原始静态图片地址，不能使用缩略图替代', 'The original static image URL is unavailable. A thumbnail cannot be used as a replacement')
+    case 'BACKGROUND_CANCELLED': case 'ARTWORK_BACKGROUND_CANCELLED': return t('已取消获取背景', 'Background loading cancelled')
+    case 'BACKGROUND_FILE_TOO_LARGE': return t('背景图片超过 30 MiB，无法在本地裁剪', 'The background exceeds 30 MiB and cannot be cropped locally')
+    case 'RATE_LIMITED': return t('Steam 暂时限制了请求，请稍后再获取背景', 'Steam is temporarily limiting requests. Try loading backgrounds again later')
+    default: return t('获取 Steam 背景失败，请检查网络后重试', 'Steam backgrounds could not be loaded. Check your connection and retry')
   }
 }
 
 function backgroundIssueMessage(issue: ProfileBackgroundIssue, t: Translate): string {
   switch (issue) {
-    case 'profileUnavailable': return t('当前装备背景未能获取。', 'The equipped background could not be loaded.')
-    case 'ownedUnavailable': return t('已拥有的个人资料物品未能获取。', 'Owned profile items could not be loaded.')
-    case 'inventoryUnavailable': return t('库存背景未能获取。', 'Inventory backgrounds could not be loaded.')
-    case 'inventoryPartial': return t('库存仅获取了部分页面，背景列表可能不完整。', 'Only part of the inventory was loaded; the background list may be incomplete.')
-    case 'unsupportedItems': return t('部分背景没有可用原图地址，未以缩略图代替。', 'Some backgrounds have no usable original image URL. Thumbnails were not substituted.')
+    case 'profileUnavailable': return t('当前装备背景未能获取', 'The equipped background could not be loaded')
+    case 'ownedUnavailable': return t('已拥有的个人资料物品未能获取', 'Owned profile items could not be loaded')
+    case 'inventoryUnavailable': return t('库存背景未能获取', 'Inventory backgrounds could not be loaded')
+    case 'inventoryPartial': return t('库存仅获取了部分页面，背景列表可能不完整', 'Only part of the inventory was loaded; the background list may be incomplete')
+    case 'unsupportedItems': return t('部分背景没有可用原图地址，未以缩略图代替', 'Some backgrounds have no usable original image URL. Thumbnails were not substituted')
   }
 }
 
@@ -146,18 +146,18 @@ export function ProfileBackgroundPicker({ catalog, authenticated, loading, image
   const [filter, setFilter] = useState('')
   const items = catalog?.items.filter(item => item.title.toLocaleLowerCase().includes(filter.toLocaleLowerCase())) ?? []
   return <section className="artwork-account-backgrounds" aria-label={t('当前账号的 Steam 背景', 'Current account Steam backgrounds')}>
-    <div className="artwork-background-heading"><div><h4>{t('当前账号的 Steam 背景', 'Current account Steam backgrounds')}</h4><p>{t('获取已装备及已拥有的背景。选择静态原图后自动生成主图和侧图，无需先下载到本地。', 'Load equipped and owned backgrounds. Choosing an original static image automatically creates the main and side crops without a manual download.')}</p></div>
+    <div className="artwork-background-heading"><div><h4>{t('当前账号的 Steam 背景', 'Current account Steam backgrounds')}</h4><p>{t('获取已装备及已拥有的背景。选择静态原图后自动生成主图和侧图，无需先下载到本地', 'Load equipped and owned backgrounds. Choosing an original static image automatically creates the main and side crops without a manual download')}</p></div>
       <div className="artwork-actions"><button disabled={!authenticated || busy || loading || imageLoading} onClick={onRefresh}>{loading ? t('正在获取背景…', 'Loading backgrounds…') : catalog ? t('刷新账号背景', 'Refresh account backgrounds') : t('获取账号背景', 'Load account backgrounds')}</button>
         {(loading || imageLoading) && <button onClick={onCancel}>{t('取消获取', 'Cancel loading')}</button>}
       </div>
     </div>
-    {!authenticated && <p className="artwork-help">{t('获取账号背景需要当前账号已登录；仍可导入本地图片裁剪。', 'The current account must be signed in to load its backgrounds. You can still import and crop a local image.')}</p>}
+    {!authenticated && <p className="artwork-help">{t('获取账号背景需要当前账号已登录；仍可导入本地图片裁剪', 'The current account must be signed in to load its backgrounds. You can still import and crop a local image')}</p>}
     {catalog && <>
       <div className="artwork-background-summary"><span>{t(`已获取 ${catalog.items.length} 个背景`, `${catalog.items.length} backgrounds loaded`)}{!catalog.ownedComplete && t(' · 拥有列表可能不完整', ' · Owned list may be incomplete')}</span><input type="search" aria-label={t('搜索账号背景', 'Search account backgrounds')} placeholder={t('搜索背景名称', 'Search background names')} value={filter} onChange={event => setFilter(event.target.value)} /></div>
       {catalog.issues.length > 0 && <ul className="artwork-background-issues">{catalog.issues.map(issue => <li key={issue}>{backgroundIssueMessage(issue, t)}</li>)}</ul>}
       {items.length > 0 ? <div className="artwork-background-grid">{items.map(background => <button key={background.id} className={`artwork-background-choice${selectedId === background.id ? ' selected' : ''}`} aria-pressed={selectedId === background.id} disabled={busy || loading || imageLoading || !authenticated || (background.kind === 'static' && !background.imageUrl)} onClick={() => onSelect(background)}>
         <span className="artwork-background-icon" aria-hidden="true">{background.kind === 'animated' ? '▷' : '▧'}</span><strong>{background.title}</strong><span className="artwork-background-tags">{background.equipped && <span>{t('正在使用', 'Equipped')}</span>}<span>{background.kind === 'animated' ? t('动画 · 打开内置工具', 'Animated · Open embedded tool') : background.imageUrl ? t('静态原图 · 自动裁剪', 'Original static image · Auto crop') : t('原图暂不可用', 'Original image unavailable')}</span></span>
-      </button>)}</div> : <p className="artwork-help">{filter ? t('没有匹配的背景。', 'No matching backgrounds.') : t('没有获取到可用背景，可刷新重试或导入本地原图。', 'No usable backgrounds were loaded. Refresh to retry or import a local original image.')}</p>}
+      </button>)}</div> : <p className="artwork-help">{filter ? t('没有匹配的背景', 'No matching backgrounds') : t('没有获取到可用背景，可刷新重试或导入本地原图', 'No usable backgrounds were loaded. Refresh to retry or import a local original image')}</p>}
     </>}
   </section>
 }
@@ -196,25 +196,25 @@ function toolName(tool: ArtworkTool, t: Translate): string {
 
 export function artworkBrowserError(code: string, t: Translate): string {
   switch (code) {
-    case 'ARTWORK_AUTH_FAILED': case 'ARTWORK_NOT_AUTHENTICATED': case 'NOT_AUTHENTICATED': return t('请先添加 Steam 账号或重新登录当前账号。', 'Add a Steam account or sign in again first.')
-    case 'ARTWORK_SESSION_CHANGED': case 'ARTWORK_INVALID_SESSION': return t('Steam 账号会话已变化，请重新打开工具。', 'The Steam account session changed. Open the tool again.')
-    case 'ARTWORK_FILE_REQUIRED': return t('请先选择要上传的图片，再应用长图设置。', 'Select an image to upload before applying long artwork settings.')
-    case 'ARTWORK_IMAGE_LOADING': return t('图片仍在载入，请等待预览后再应用长图设置。', 'The image is still loading. Wait for its preview before applying long artwork settings.')
-    case 'ARTWORK_FORM_UNAVAILABLE': return t('未找到 Steam 上传表单，请重新载入页面并检查账号登录状态。', 'The Steam upload form was not found. Reload the page and check your sign-in status.')
-    case 'ARTWORK_UPLOAD_PAGE_REQUIRED': return t('请返回艺术作品上传页面，再应用长图设置。', 'Return to the artwork upload page before applying long artwork settings.')
-    case 'ARTWORK_APPLY_FAILED': return t('长图设置未能应用，请重新选择图片或载入页面后重试。', 'Long artwork settings could not be applied. Select the image again or reload the page and retry.')
-    case 'ARTWORK_NAVIGATION_BLOCKED': return t('此链接不属于当前内置工具允许的页面，已停止导航。', 'This link is outside the pages allowed by the embedded tool. Navigation was stopped.')
-    case 'ARTWORK_UNAVAILABLE': case 'ARTWORK_LOAD_FAILED': return t('在线页面载入失败，请检查网络后重新载入。', 'The online page failed to load. Check your connection and reload.')
-    case 'ARTWORK_RENDERER_FAILED': return t('内置页面已停止响应，请重新载入。', 'The embedded page stopped responding. Reload it.')
-    case 'ARTWORK_DOWNLOAD_UNSUPPORTED': return t('此下载不是受支持的图片、视频或 ZIP 文件，已取消。', 'This download is not a supported image, video or ZIP file and was cancelled.')
-    case 'ARTWORK_DOWNLOAD_PATH_INVALID': return t('保存路径无效。请选择普通本地文件位置，并保留正确的图片、视频或 ZIP 后缀。', 'The save path is invalid. Choose a normal local file location and keep the correct image, video or ZIP extension.')
-    case 'ARTWORK_DOWNLOAD_FAILED': return t('未能保存该文件，请重新点击页面中的下载按钮。', 'The file could not be saved. Click the page download button again.')
-    case 'ARTWORK_NOT_OPEN': return t('当前没有打开内置工具，请重新打开。', 'No embedded tool is currently open. Open it again.')
-    case 'ARTWORK_INVALID_TOOL': case 'ARTWORK_INVALID_BOUNDS': return t('内置工具参数无效，请关闭后重新打开。', 'The embedded tool received invalid parameters. Close it and open it again.')
-    case 'ARTWORK_INVALID_DRAFT': case 'ARTWORK_INVALID_IMAGE': case 'ARTWORK_INVALID_UPLOAD': case 'ARTWORK_UPLOAD_INVALID_IMAGE': case 'ARTWORK_UPLOAD_TOO_LARGE': return t('生成的上传图片无效或过大，请重新裁剪。', 'The generated upload image is invalid or too large. Crop it again.')
-    case 'ARTWORK_UPLOAD_BUSY': return t('内置上传页面正在处理其他操作，请稍后重试。', 'The embedded upload page is handling another operation. Please retry shortly.')
-    case 'ARTWORK_UPLOAD_PREPARE_FAILED': case 'ARTWORK_FILE_INPUT_FAILED': return t('图片未能载入内置上传页面，请重新准备上传或手动选择已导出的 PNG。', 'The image could not be loaded into the embedded upload page. Prepare the upload again or manually choose an exported PNG.')
-    default: return t('内置工具操作失败，请重新载入后重试。', 'The embedded tool operation failed. Reload it and retry.')
+    case 'ARTWORK_AUTH_FAILED': case 'ARTWORK_NOT_AUTHENTICATED': case 'NOT_AUTHENTICATED': return t('请先添加 Steam 账号或重新登录当前账号', 'Add a Steam account or sign in again first')
+    case 'ARTWORK_SESSION_CHANGED': case 'ARTWORK_INVALID_SESSION': return t('Steam 账号会话已变化，请重新打开工具', 'The Steam account session changed. Open the tool again')
+    case 'ARTWORK_FILE_REQUIRED': return t('请先选择要上传的图片，再应用长图设置', 'Select an image to upload before applying long artwork settings')
+    case 'ARTWORK_IMAGE_LOADING': return t('图片仍在载入，请等待预览后再应用长图设置', 'The image is still loading. Wait for its preview before applying long artwork settings')
+    case 'ARTWORK_FORM_UNAVAILABLE': return t('未找到 Steam 上传表单，请重新载入页面并检查账号登录状态', 'The Steam upload form was not found. Reload the page and check your sign-in status')
+    case 'ARTWORK_UPLOAD_PAGE_REQUIRED': return t('请返回艺术作品上传页面，再应用长图设置', 'Return to the artwork upload page before applying long artwork settings')
+    case 'ARTWORK_APPLY_FAILED': return t('长图设置未能应用，请重新选择图片或载入页面后重试', 'Long artwork settings could not be applied. Select the image again or reload the page and retry')
+    case 'ARTWORK_NAVIGATION_BLOCKED': return t('此链接不属于当前内置工具允许的页面，已停止导航', 'This link is outside the pages allowed by the embedded tool. Navigation was stopped')
+    case 'ARTWORK_UNAVAILABLE': case 'ARTWORK_LOAD_FAILED': return t('在线页面载入失败，请检查网络后重新载入', 'The online page failed to load. Check your connection and reload')
+    case 'ARTWORK_RENDERER_FAILED': return t('内置页面已停止响应，请重新载入', 'The embedded page stopped responding. Reload it')
+    case 'ARTWORK_DOWNLOAD_UNSUPPORTED': return t('此下载不是受支持的图片、视频或 ZIP 文件，已取消', 'This download is not a supported image, video or ZIP file and was cancelled')
+    case 'ARTWORK_DOWNLOAD_PATH_INVALID': return t('保存路径无效。请选择普通本地文件位置，并保留正确的图片、视频或 ZIP 后缀', 'The save path is invalid. Choose a normal local file location and keep the correct image, video or ZIP extension')
+    case 'ARTWORK_DOWNLOAD_FAILED': return t('未能保存该文件，请重新点击页面中的下载按钮', 'The file could not be saved. Click the page download button again')
+    case 'ARTWORK_NOT_OPEN': return t('当前没有打开内置工具，请重新打开', 'No embedded tool is currently open. Open it again')
+    case 'ARTWORK_INVALID_TOOL': case 'ARTWORK_INVALID_BOUNDS': return t('内置工具参数无效，请关闭后重新打开', 'The embedded tool received invalid parameters. Close it and open it again')
+    case 'ARTWORK_INVALID_DRAFT': case 'ARTWORK_INVALID_IMAGE': case 'ARTWORK_INVALID_UPLOAD': case 'ARTWORK_UPLOAD_INVALID_IMAGE': case 'ARTWORK_UPLOAD_TOO_LARGE': return t('生成的上传图片无效或过大，请重新裁剪', 'The generated upload image is invalid or too large. Crop it again')
+    case 'ARTWORK_UPLOAD_BUSY': return t('内置上传页面正在处理其他操作，请稍后重试', 'The embedded upload page is handling another operation. Please retry shortly')
+    case 'ARTWORK_UPLOAD_PREPARE_FAILED': case 'ARTWORK_FILE_INPUT_FAILED': return t('图片未能载入内置上传页面，请重新准备上传或手动选择已导出的 PNG', 'The image could not be loaded into the embedded upload page. Prepare the upload again or manually choose an exported PNG')
+    default: return t('内置工具操作失败，请重新载入后重试', 'The embedded tool operation failed. Reload it and retry')
   }
 }
 
@@ -223,21 +223,46 @@ interface ArtworkToolsProps {
   visible: boolean
 }
 
-export function ArtworkBrowserToolbar({ state, busy, onApply, onReload, onClose, onNavigate }: {
+export function artworkZoomFactor(state: ArtworkBrowserState): number {
+  return typeof state.zoomFactor === 'number' && Number.isFinite(state.zoomFactor)
+    ? Math.max(0.5, Math.min(1.5, state.zoomFactor)) : 1
+}
+
+export function ArtworkBrowserToolbar({ state, busy, expanded = false, onApply, onReload, onClose, onNavigate, onToggleExpanded, onZoom, onDynamicPreview, extraControls }: {
   state: ArtworkBrowserState
   busy: boolean
+  expanded?: boolean
   onApply: () => void
   onReload: () => void
   onClose: () => void
   onNavigate?: (tool: 'upload' | 'showcase') => void
+  onToggleExpanded?: () => void
+  onZoom?: (factor: number | null) => void
+  onDynamicPreview?: (enabled: boolean) => void
+  extraControls?: React.ReactNode
 }): React.JSX.Element {
   const { t } = useI18n()
+  const zoom = artworkZoomFactor(state)
   return <div className="artwork-browser-toolbar">
     <div className="artwork-browser-title"><strong>{state.tool ? toolName(state.tool, t) : t('内置艺术工具', 'Embedded artwork tool')}</strong><span>{state.phase === 'loading' ? t('正在载入在线页面…', 'Loading online page…') : state.phase === 'error' ? t('页面载入失败', 'Page failed to load') : t('在工具箱内完成，无需外部浏览器', 'Stay in the toolbox; no external browser needed')}</span></div>
+    {onZoom && <div className="artwork-browser-zoom" role="group" aria-label={t('在线页面显示缩放', 'Online page display zoom')}>
+      <button disabled={busy} className={state.autoFit ? 'selected' : ''} aria-pressed={state.autoFit === true} onClick={() => onZoom(null)}>{t('适应窗口', 'Fit window')}</button>
+      <button disabled={busy || zoom <= 0.5} aria-label={t('缩小页面', 'Zoom out')} onClick={() => onZoom(Math.max(0.5, Math.round((zoom - 0.1) * 100) / 100))}>−</button>
+      <output aria-label={t('当前页面缩放', 'Current page zoom')}>{Math.round(zoom * 100)}%</output>
+      <button disabled={busy || zoom >= 1.5} aria-label={t('放大页面', 'Zoom in')} onClick={() => onZoom(Math.min(1.5, Math.round((zoom + 0.1) * 100) / 100))}>+</button>
+      <button disabled={busy} onClick={() => onZoom(1)}>{t('原始大小', '100%')}</button>
+    </div>}
+    {state.tool === 'design' && onDynamicPreview && <div className="artwork-browser-motion">
+      <label><input type="checkbox" checked={state.dynamicPreview === true} disabled={busy} onChange={event => onDynamicPreview(event.target.checked)} /><span>{t('动态背景预览', 'Animated background preview')}</span></label>
+      <small>{state.dynamicPreview ? t('动态预览已开启，仅播放主背景', 'Dynamic preview is on for the main background only') : t('省资源模式：暂停视频与装饰动画，需要预览时再开启', 'Resource-saving mode: videos and decorative animations are paused; enable preview when needed')}</small>
+      <small>{t('暂停预览不改变原动画文件，裁剪或转换仍可能占用 CPU', 'Pausing preview does not change the original animation; cropping or conversion can still use CPU')}</small>
+    </div>}
+    {extraControls}
     <div className="artwork-actions">
       {state.tool === 'upload' && <button className="primary" disabled={busy || !state.canApplyLongArtwork} onClick={onApply}>{t('应用长图设置', 'Apply long artwork settings')}</button>}
       {state.tool === 'upload' && onNavigate && <button disabled={busy} onClick={() => onNavigate('showcase')}>{t('配置艺术展柜', 'Configure artwork showcase')}</button>}
       {state.tool === 'showcase' && onNavigate && <button disabled={busy} onClick={() => onNavigate('upload')}>{t('继续上传作品', 'Upload more artwork')}</button>}
+      {onToggleExpanded && <button aria-pressed={expanded} onClick={onToggleExpanded}>{expanded ? t('退出大屏', 'Exit expanded view') : t('展开工作区', 'Expand workspace')}</button>}
       <button disabled={busy} onClick={onReload}>{t('重新载入', 'Reload')}</button>
       <button onClick={onClose}>{t('返回本地裁剪', 'Back to local cropping')}</button>
     </div>
@@ -260,6 +285,15 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [imageError, setImageError] = useState<ArtworkErrorCode | null>(null)
   const [browser, setBrowser] = useState<ArtworkBrowserState>(CLOSED_BROWSER)
+  const [expanded, setExpanded] = useState(false)
+  const displayedTool = useRef<ArtworkTool | null>(null)
+  const acceptBrowser = (next: ArtworkBrowserState): void => {
+    if (displayedTool.current !== next.tool) {
+      displayedTool.current = next.tool
+      setExpanded(next.tool === 'design')
+    }
+    setBrowser(next)
+  }
   const generation = useRef(0)
   const cropGeneration = useRef(0)
   const backgroundGeneration = useRef(0)
@@ -299,7 +333,7 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
       void createArtworkCropPngs(asset, crop).then(outputs => {
         if (cropGeneration.current === serial) setGeneratedCrops({ asset, crop, drafts: outputs })
       }).catch(error => {
-        if (cropGeneration.current === serial) setNotice({ kind: 'error', message: error instanceof ArtworkError ? errorMessage(error.code, t) : t('裁剪生成失败，请重新选择图片或调整范围。', 'Crop generation failed. Select the image again or adjust the crop.') })
+        if (cropGeneration.current === serial) setNotice({ kind: 'error', message: error instanceof ArtworkError ? errorMessage(error.code, t) : t('裁剪生成失败，请重新选择图片或调整范围', 'Crop generation failed. Select the image again or adjust the crop') })
       }).finally(() => {
         if (cropGeneration.current === serial) setGeneratingCrops(false)
       })
@@ -314,13 +348,13 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
       if (event.type === 'artworkChanged') {
         eventReceived = true
         const requiresAccount = event.state.tool === 'upload' || event.state.tool === 'showcase'
-        if (active && (!requiresAccount || (event.state.accountId === currentAccount.current.id && currentAccount.current.authenticated))) setBrowser(event.state)
+        if (active && (!requiresAccount || (event.state.accountId === currentAccount.current.id && currentAccount.current.authenticated))) acceptBrowser(event.state)
       }
     })
     void window.steamCommenter.getArtworkToolState().then(result => {
       if (active && !eventReceived && result.ok) {
         const requiresAccount = result.data.tool === 'upload' || result.data.tool === 'showcase'
-        if (!requiresAccount || (result.data.accountId === currentAccount.current.id && currentAccount.current.authenticated)) setBrowser(result.data)
+        if (!requiresAccount || (result.data.accountId === currentAccount.current.id && currentAccount.current.authenticated)) acceptBrowser(result.data)
       }
     }).catch(() => undefined)
     return () => {
@@ -357,7 +391,7 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
     operationSerial.current += 1
     operationInFlight.current = false
     setIpcBusy(false)
-    setBrowser(CLOSED_BROWSER)
+    acceptBrowser(CLOSED_BROWSER)
     setNotice(null)
     void window.steamCommenter.cancelProfileBackgroundLoad().catch(() => undefined)
     void window.steamCommenter.setArtworkToolBounds(null).catch(() => undefined)
@@ -390,7 +424,7 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
       window.removeEventListener('scroll', schedule, true)
       void window.steamCommenter.setArtworkToolBounds(null).catch(() => undefined)
     }
-  }, [visible, browser.tool, account?.id, account?.sessionState, browser.accountId])
+  }, [visible, browser.tool, account?.id, account?.sessionState, browser.accountId, expanded])
 
   const runTool = async (operation: () => Promise<IpcResult<unknown>>, success?: string): Promise<void> => {
     if (operationInFlight.current) return
@@ -404,7 +438,7 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
         ? `${artworkBrowserError(result.error.code, t)} (${result.error.code})` : result.error.message)
       if (success && operationSerial.current === serial) setNotice({ kind: 'success', message: success })
     } catch (error) {
-      if (operationSerial.current === serial) setNotice({ kind: 'error', message: error instanceof Error ? error.message : t('操作失败，请重试。', 'The action failed. Please retry.') })
+      if (operationSerial.current === serial) setNotice({ kind: 'error', message: error instanceof Error ? error.message : t('操作失败，请重试', 'The action failed. Please retry') })
     } finally {
       if (operationSerial.current === serial) { operationInFlight.current = false; setIpcBusy(false) }
     }
@@ -414,14 +448,14 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
   const openTool = async (tool: ArtworkTool): Promise<void> => {
     const requiresAccount = tool === 'upload' || tool === 'showcase'
     if (requiresAccount && !canUseAccount) {
-      setNotice({ kind: 'error', message: t('请先添加 Steam 账号或重新登录当前账号，再使用上传和展柜设置。', 'Add a Steam account or sign in again before uploading artwork or configuring a showcase.') })
+      setNotice({ kind: 'error', message: t('请先添加 Steam 账号或重新登录当前账号，再使用上传和展柜设置', 'Add a Steam account or sign in again before uploading artwork or configuring a showcase') })
       return
     }
     if (operationInFlight.current) return
     const intent = ++toolGeneration.current
     await runTool(async () => {
       const result = await window.steamCommenter.openArtworkTool(tool, requiresAccount ? account!.id : undefined)
-      if (result.ok && toolGeneration.current === intent) setBrowser(result.data)
+      if (result.ok && toolGeneration.current === intent) acceptBrowser(result.data)
       return result
     })
   }
@@ -432,7 +466,7 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
     toolGeneration.current += 1
     operationSerial.current += 1
     operationInFlight.current = false
-    setBrowser(CLOSED_BROWSER)
+    acceptBrowser(CLOSED_BROWSER)
     void window.steamCommenter.setArtworkToolBounds(null).catch(() => undefined)
     try { await runTool(() => window.steamCommenter.closeArtworkTool()) }
     finally { closingTool.current = false }
@@ -550,9 +584,9 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
       if (toolGeneration.current !== intent || currentAccount.current.id !== owner || !currentAccount.current.authenticated || imageRevision.current.asset !== selectedAsset || imageRevision.current.crop !== selectedCrop) throw new Error(artworkBrowserError('ARTWORK_SESSION_CHANGED', t))
       // The main process validates and attaches only this account-bound PNG; it never submits the form.
       const result = await window.steamCommenter.prepareArtworkUpload(owner, { name: draft.fileName, base64 })
-      if (result.ok && toolGeneration.current === intent && currentAccount.current.id === owner && currentAccount.current.authenticated && imageRevision.current.asset === selectedAsset && imageRevision.current.crop === selectedCrop) setBrowser(result.data)
+      if (result.ok && toolGeneration.current === intent && currentAccount.current.id === owner && currentAccount.current.authenticated && imageRevision.current.asset === selectedAsset && imageRevision.current.crop === selectedCrop) acceptBrowser(result.data)
       return result
-    }, t(`${cropLabel(name, t)}已放入工具箱内的 Steam 上传页面。请等待预览，应用长图设置，再自行填写标题、版权声明并保存。`, `${cropLabel(name, t)} has been added to the Steam upload page in the toolbox. Wait for the preview, apply long artwork settings, then enter the title, confirm ownership and save yourself.`))
+    }, t(`${cropLabel(name, t)}已放入工具箱内的 Steam 上传页面。请等待预览，应用长图设置，再自行填写标题、版权声明并保存`, `${cropLabel(name, t)} has been added to the Steam upload page in the toolbox. Wait for the preview, apply long artwork settings, then enter the title, confirm ownership and save yourself`))
   }
 
   const exportCrops = async (): Promise<void> => {
@@ -561,9 +595,9 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
     setNotice(null)
     try {
       for (const output of drafts) saveLocalPng(output.blob, output.fileName)
-      setNotice({ kind: 'success', message: t(`已生成 ${drafts.length} 张 PNG，请在保存窗口选择位置。`, `${drafts.length} PNG file(s) created. Choose a location in the save dialog.`) })
+      setNotice({ kind: 'success', message: t(`已生成 ${drafts.length} 张 PNG，请在保存窗口选择位置`, `${drafts.length} PNG file(s) created. Choose a location in the save dialog`) })
     } catch (error) {
-      setNotice({ kind: 'error', message: error instanceof ArtworkError ? errorMessage(error.code, t) : t('裁剪导出失败，请重试。', 'Crop export failed. Please retry.') })
+      setNotice({ kind: 'error', message: error instanceof ArtworkError ? errorMessage(error.code, t) : t('裁剪导出失败，请重试', 'Crop export failed. Please retry') })
     } finally { setExporting(false) }
   }
 
@@ -571,42 +605,63 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
     setCrop(previous => ({ ...previous, [key]: value === '' ? Number.NaN : Number(value) }))
   }
 
-  return <div className={`artwork-tools-panel${browser.tool ? ' artwork-tools-embedded' : ''}`}>
-    <div className="artwork-heading">
-      <div><span className="artwork-eyebrow">STEAM ARTWORK</span><h2>{t('艺术作品展柜工具', 'Artwork showcase tools')}</h2><p>{browser.tool ? t('在线工具直接内嵌于工具箱，Steam 账号会话与当前账号隔离。', 'Online tools are embedded in the toolbox, with Steam sessions isolated by account.') : t('本地裁剪、作品上传和展柜配置都在工具箱中完成。在线页面仍需网络。', 'Crop locally, upload artwork and configure showcases within the toolbox. Online pages still require a connection.')}</p></div>
+  const changeZoom = (factor: number | null): void => {
+    const intent = toolGeneration.current
+    void runTool(async () => {
+      const result = await window.steamCommenter.setArtworkToolZoom(factor)
+      if (result.ok && toolGeneration.current === intent) acceptBrowser(result.data)
+      return result
+    })
+  }
+  const toggleExpanded = (): void => {
+    void window.steamCommenter.setArtworkToolBounds(null).catch(() => undefined)
+    setExpanded(current => !current)
+  }
+  const changeDynamicPreview = (enabled: boolean): void => {
+    const intent = toolGeneration.current
+    void runTool(async () => {
+      const result = await window.steamCommenter.setArtworkDynamicPreview(enabled)
+      if (result.ok && toolGeneration.current === intent) acceptBrowser(result.data)
+      return result
+    })
+  }
+
+  return <div hidden={!visible} className={`artwork-tools-panel${browser.tool ? ' artwork-tools-embedded' : ''}${browser.tool && expanded ? ' artwork-workspace-expanded' : ''}`}>
+    {!(browser.tool && expanded) && <div className="artwork-heading">
+      <div><span className="artwork-eyebrow">STEAM ARTWORK</span><h2>{t('艺术作品展柜工具', 'Artwork showcase tools')}</h2><p>{browser.tool ? t('在线工具直接内嵌于工具箱，Steam 账号会话与当前账号隔离', 'Online tools are embedded in the toolbox, with Steam sessions isolated by account') : t('本地裁剪、作品上传和展柜配置都在工具箱中完成。在线页面仍需网络', 'Crop locally, upload artwork and configure showcases within the toolbox. Online pages still require a connection')}</p></div>
       {!browser.tool && <button className="ghost" disabled={ipcBusy} onClick={() => void openTool('design')}>{t('动画背景工具', 'Animated background tool')}</button>}
-    </div>
+    </div>}
     {notice && <p role="status" className={`artwork-notice ${notice.kind}`}>{notice.message}</p>}
     {!browser.tool && browser.error && <p role="alert" className="artwork-notice error">{artworkBrowserError(browser.error, t)} <code>{browser.error}</code></p>}
     {browser.tool ? <section className="artwork-browser-card" aria-label={t('工具箱内置艺术页面', 'Embedded artwork page')}>
-      <ArtworkBrowserToolbar state={browser} busy={ipcBusy} onApply={() => void runTool(() => window.steamCommenter.applyLongArtwork(), t('长图设置已应用。请自行确认作品版权、标题和可见性，再点击 Steam 页面保存。', 'Long artwork settings applied. Review ownership, title and visibility, then save on the Steam page yourself.'))} onReload={() => void runTool(() => window.steamCommenter.reloadArtworkTool())} onClose={() => void closeTool()} onNavigate={tool => void openTool(tool)} />
+      <ArtworkBrowserToolbar state={browser} busy={ipcBusy} expanded={expanded} onToggleExpanded={toggleExpanded} onZoom={changeZoom} onDynamicPreview={changeDynamicPreview} onApply={() => void runTool(() => window.steamCommenter.applyLongArtwork(), t('长图设置已应用。请自行确认作品版权、标题和可见性，再点击 Steam 页面保存', 'Long artwork settings applied. Review ownership, title and visibility, then save on the Steam page yourself'))} onReload={() => void runTool(() => window.steamCommenter.reloadArtworkTool())} onClose={() => void closeTool()} onNavigate={tool => void openTool(tool)} />
       {browser.tool === 'upload' && drafts.length > 0 && <ArtworkCropUploadButtons drafts={drafts} busy={ipcBusy} authenticated={canUseAccount} onPrepare={name => void prepareCropUpload(name)} />}
-      {(browser.tool === 'upload' || browser.tool === 'showcase') && <p className="artwork-browser-account">{t('当前账号', 'Current account')}: <strong>{account?.displayName ?? account?.accountName}</strong><span>{t('不会自动勾选版权声明或提交作品。', 'Ownership is not checked and artwork is not submitted automatically.')}</span></p>}
-      {browser.tool === 'upload' && <p className="artwork-browser-instructions">{t('选择本地图片并等待预览载入，点击上方“应用长图设置”，然后自行保存。每张图片都需再次应用；无需 F12 或手动粘贴脚本。', 'Choose a local image, wait for the preview, apply the long artwork settings above, then save yourself. Apply again for each image; no F12 or manual script pasting is needed.')}</p>}
+      {(browser.tool === 'upload' || browser.tool === 'showcase') && <p className="artwork-browser-account">{t('当前账号', 'Current account')}: <strong>{account?.displayName ?? account?.accountName}</strong><span>{t('不会自动勾选版权声明或提交作品', 'Ownership is not checked and artwork is not submitted automatically')}</span></p>}
+      {browser.tool === 'upload' && <p className="artwork-browser-instructions">{t('选择本地图片并等待预览载入，点击上方“应用长图设置”，然后自行保存。每张图片都需再次应用；无需 F12 或手动粘贴脚本', 'Choose a local image, wait for the preview, apply the long artwork settings above, then save yourself. Apply again for each image; no F12 or manual script pasting is needed')}</p>}
       {browser.error && <p role="alert" className="artwork-notice error">{artworkBrowserError(browser.error, t)} <code>{browser.error}</code></p>}
       <div ref={browserHost} className="artwork-browser-host" data-artwork-host="true" aria-label={t('内置在线工具显示区域', 'Embedded online tool display area')}>
-        <div className="artwork-browser-placeholder">{browser.phase === 'loading' ? t('正在准备内置页面…', 'Preparing embedded page…') : browser.phase === 'error' ? t('使用上方“重新载入”重试。', 'Use Reload above to retry.') : t('在线页面在此显示。', 'The online page is displayed here.')}</div>
+        <div className="artwork-browser-placeholder">{browser.phase === 'loading' ? t('正在准备内置页面…', 'Preparing embedded page…') : browser.phase === 'error' ? t('使用上方“重新载入”重试', 'Use Reload above to retry') : t('在线页面在此显示', 'The online page is displayed here')}</div>
       </div>
     </section> : <>
     <section className="artwork-card artwork-upload-card">
-      <div className="artwork-section-title"><span className="artwork-step">1</span><div><h3>{t('内置上传与展柜配置', 'Embedded upload and showcase setup')}</h3><p>{t('使用当前已登录的 Steam 账号，不离开工具箱。', 'Use the current signed-in Steam account without leaving the toolbox.')}</p></div></div>
+      <div className="artwork-section-title"><span className="artwork-step">1</span><div><h3>{t('内置上传与展柜配置', 'Embedded upload and showcase setup')}</h3><p>{t('使用当前已登录的 Steam 账号，不离开工具箱', 'Use the current signed-in Steam account without leaving the toolbox')}</p></div></div>
       <ol className="artwork-upload-steps">
-        <li>{t('在下方本地裁剪背景图，或使用内置动画背景工具准备图片。', 'Crop a static background below, or prepare images with the embedded animated background tool.')}</li>
-        <li>{t('裁剪后点击“准备主图上传”或“准备侧图上传”，图片会自动放入工具箱内上传页面；也可点击“在工具箱内上传”手动选择图片。等待预览后点击“应用长图设置”。', 'After cropping, choose Prepare main upload or Prepare side upload to attach the image in the toolbox. You can also choose Upload in toolbox to select a file manually. Wait for the preview, then apply long artwork settings.')}</li>
-        <li>{t('核对标题、可见性，自己勾选作品版权声明并保存。上传完成后点击“配置艺术展柜”选择主图 / 侧图；展柜须账号已解锁。', 'Review the title and visibility, confirm ownership yourself and save. Then open Configure artwork showcase to select the main / side artwork. Your account must have unlocked the showcase.')}</li>
+        <li>{t('在下方本地裁剪背景图，或使用内置动画背景工具准备图片', 'Crop a static background below, or prepare images with the embedded animated background tool')}</li>
+        <li>{t('裁剪后点击“准备主图上传”或“准备侧图上传”，图片会自动放入工具箱内上传页面；也可点击“在工具箱内上传”手动选择图片。等待预览后点击“应用长图设置”', 'After cropping, choose Prepare main upload or Prepare side upload to attach the image in the toolbox. You can also choose Upload in toolbox to select a file manually. Wait for the preview, then apply long artwork settings')}</li>
+        <li>{t('核对标题、可见性，自己勾选作品版权声明并保存。上传完成后点击“配置艺术展柜”选择主图 / 侧图；展柜须账号已解锁', 'Review the title and visibility, confirm ownership yourself and save. Then open Configure artwork showcase to select the main / side artwork. Your account must have unlocked the showcase')}</li>
       </ol>
       <div className="artwork-actions">
         <button className="primary" disabled={ipcBusy || !canUseAccount} onClick={() => void openTool('upload')}>{t('在工具箱内上传', 'Upload in toolbox')}</button>
         <button disabled={ipcBusy || !canUseAccount} onClick={() => void openTool('showcase')}>{t('配置艺术展柜', 'Configure artwork showcase')}</button>
         <button disabled={ipcBusy} onClick={() => void openTool('design')}>{t('动画背景工具（内置 Steam.Design）', 'Animated backgrounds (embedded Steam.Design)')}</button>
       </div>
-      <p className="artwork-account-help">{canUseAccount ? t(`使用账号：${account.displayName || account.accountName}。切换账号会关闭当前内置页面。`, `Using account: ${account.displayName || account.accountName}. Switching accounts closes the embedded page.`) : t('请先添加 Steam 账号或重新登录当前账号，才能上传和配置展柜。本地裁剪和动画背景工具无需登录。', 'Add a Steam account or sign in again to upload artwork and configure showcases. Local cropping and the animated background tool do not require sign-in.')}</p>
-      <p className="artwork-help">{t('实际上传文件不被缩放，文件大小仍须满足 Steam 页面要求。展柜位置、边框、背景缩放方式会影响对齐，可在下方调整裁剪坐标。', 'The uploaded file is not resized and must meet the upload page file limit. Showcase position, borders and background scaling affect alignment; adjust crop coordinates below.')}</p>
-      <details className="artwork-reference-details"><summary>{t('原作者指南与脚本说明（内置查看）', 'Original guides and script details (embedded)')}</summary><div className="artwork-source-links"><button className="artwork-text-button" disabled={ipcBusy} onClick={() => void openTool('guide')}>{t('长图上传原作者指南', 'Original long artwork guide')}</button><button className="artwork-text-button" disabled={ipcBusy} onClick={() => void openTool('sapic')}>SAPIC / Steam.Design</button></div><p className="artwork-help">{t('“应用长图设置”只把尺寸字段设置为 1000 × 1 并移除它们的 id，避免页面覆盖；不会代替版权声明或提交作品。', 'Apply long artwork settings only sets the dimension fields to 1000 × 1 and removes their IDs to prevent page overrides; it does not confirm ownership or submit artwork.')}</p><pre className="artwork-script" tabIndex={0} aria-label={t('可查看的长图脚本', 'Readable long artwork script')}><code>{script}</code></pre></details>
+      <p className="artwork-account-help">{canUseAccount ? t(`使用账号：${account.displayName || account.accountName}。切换账号会关闭当前内置页面`, `Using account: ${account.displayName || account.accountName}. Switching accounts closes the embedded page`) : t('请先添加 Steam 账号或重新登录当前账号，才能上传和配置展柜。本地裁剪和动画背景工具无需登录', 'Add a Steam account or sign in again to upload artwork and configure showcases. Local cropping and the animated background tool do not require sign-in')}</p>
+      <p className="artwork-help">{t('实际上传文件不被缩放，文件大小仍须满足 Steam 页面要求。展柜位置、边框、背景缩放方式会影响对齐，可在下方调整裁剪坐标', 'The uploaded file is not resized and must meet the upload page file limit. Showcase position, borders and background scaling affect alignment; adjust crop coordinates below')}</p>
+      <details className="artwork-reference-details"><summary>{t('原作者指南与脚本说明（内置查看）', 'Original guides and script details (embedded)')}</summary><div className="artwork-source-links"><button className="artwork-text-button" disabled={ipcBusy} onClick={() => void openTool('guide')}>{t('长图上传原作者指南', 'Original long artwork guide')}</button><button className="artwork-text-button" disabled={ipcBusy} onClick={() => void openTool('sapic')}>SAPIC / Steam.Design</button></div><p className="artwork-help">{t('“应用长图设置”只把尺寸字段设置为 1000 × 1 并移除它们的 id，避免页面覆盖；不会代替版权声明或提交作品', 'Apply long artwork settings only sets the dimension fields to 1000 × 1 and removes their IDs to prevent page overrides; it does not confirm ownership or submit artwork')}</p><pre className="artwork-script" tabIndex={0} aria-label={t('可查看的长图脚本', 'Readable long artwork script')}><code>{script}</code></pre></details>
     </section>
 
     <section className="artwork-card artwork-crop-card">
-      <div className="artwork-section-title"><span className="artwork-step">2</span><div><h3>{t('背景适配裁剪', 'Crop artwork from a background')}</h3><p>{t('直接选择当前账号的静态原图，或导入本地背景；自动生成原分辨率 PNG 上传稿。', 'Choose an original static image from the current account or import a local background. Original-resolution PNG upload drafts are generated automatically.')}</p></div></div>
+      <div className="artwork-section-title"><span className="artwork-step">2</span><div><h3>{t('背景适配裁剪', 'Crop artwork from a background')}</h3><p>{t('直接选择当前账号的静态原图，或导入本地背景；自动生成原分辨率 PNG 上传稿', 'Choose an original static image from the current account or import a local background. Original-resolution PNG upload drafts are generated automatically')}</p></div></div>
       <ProfileBackgroundPicker key={account?.id ?? 'local'} catalog={backgroundCatalog?.accountId === account?.id ? backgroundCatalog : null} authenticated={canUseAccount} loading={backgroundsLoading} imageLoading={loading} selectedId={selectedBackgroundId} busy={ipcBusy} onRefresh={() => void loadAccountBackgrounds()} onSelect={background => void selectAccountBackground(background)} onCancel={cancelBackgroundLoading} />
       <div className="artwork-crop-layout">
         <div className="artwork-crop-controls">
@@ -625,19 +680,19 @@ export function ArtworkToolsPanel({ account, visible }: ArtworkToolsProps): Reac
             <label>{t('高度', 'Height')}<input aria-label={t('裁剪高度', 'Crop height')} type="number" step="1" min="1" value={Number.isNaN(crop.height) ? '' : crop.height} disabled={!asset || exporting || ipcBusy} onChange={event => updateNumber('height', event.target.value)} /></label>
           </div>
           <button disabled={!asset || exporting || ipcBusy} onClick={() => { if (asset) setCrop(defaultArtworkCrop(asset.width, asset.height, crop.preset)) }}>{t('恢复默认对齐', 'Reset alignment')}</button>
-          <p className="artwork-help">{t('默认 X = 原图宽度 ÷ 2 向下取整 − 467，Y = 256；侧图从 X + 515 开始，两张图之间留 9 px。高度默认取原图底部。不同展柜顺序可能需要调整 Y。', 'Default X = floor(image width / 2) − 467, Y = 256. The side image starts at X + 515, leaving a 9px gap. Default height extends to the bottom. Different showcase positions may need another Y value.')}</p>
+          <p className="artwork-help">{t('默认 X = 原图宽度 ÷ 2 向下取整 − 467，Y = 256；侧图从 X + 515 开始，两张图之间留 9 px。高度默认取原图底部。不同展柜顺序可能需要调整 Y', 'Default X = floor(image width / 2) − 467, Y = 256. The side image starts at X + 515, leaving a 9px gap. Default height extends to the bottom. Different showcase positions may need another Y value')}</p>
           {cropResult.error && <p className="artwork-notice error" role="alert">{errorMessage(cropResult.error, t)}</p>}
           {cropResult.rectangles.length > 0 && <ul className="artwork-output-sizes">{cropResult.rectangles.map(rectangle => <li key={rectangle.name}>{cropLabel(rectangle.name, t)} <code>{rectangle.width} × {rectangle.height}</code></li>)}</ul>}
           <button className="primary artwork-export" disabled={drafts.length === 0 || loading || exporting} onClick={() => void exportCrops()}>{generatingCrops ? t('正在生成 PNG…', 'Creating PNG…') : crop.preset === 'standard' ? t('导出主图与侧图 PNG', 'Export main and side PNG') : t('导出精选图 PNG', 'Export featured PNG')}</button>
           <ArtworkCropUploadButtons drafts={drafts} busy={ipcBusy || generatingCrops || loading} authenticated={canUseAccount} onPrepare={name => void prepareCropUpload(name)} />
-          {drafts.length > 0 && <p className="artwork-help">{t('上传稿已自动生成。准备上传只会填入图片，不会填写标题、勾选版权或自动发布。', 'Upload drafts were created automatically. Preparing an upload only attaches the image; it does not enter a title, confirm ownership or publish automatically.')}</p>}
+          {drafts.length > 0 && <p className="artwork-help">{t('上传稿已自动生成。准备上传只会填入图片，不会填写标题、勾选版权或自动发布', 'Upload drafts were created automatically. Preparing an upload only attaches the image; it does not enter a title, confirm ownership or publish automatically')}</p>}
         </div>
         <div className="artwork-preview-wrap">
-          {asset ? <div className="artwork-preview-scroll"><div className="artwork-preview-stage"><img src={asset.url} alt={t('本地背景与裁剪范围预览', 'Local background and crop preview')} draggable={false} />{cropResult.rectangles.map(rectangle => <div key={rectangle.name} className={`artwork-crop-overlay ${rectangle.name}`} style={{ left: `${rectangle.x / asset.width * 100}%`, top: `${rectangle.y / asset.height * 100}%`, width: `${rectangle.width / asset.width * 100}%`, height: `${rectangle.height / asset.height * 100}%` }}><span>{cropLabel(rectangle.name, t)}<small>{rectangle.width} px</small></span></div>)}</div></div> : <div className="artwork-preview-empty"><span>▧</span><strong>{t('选择背景图查看对齐预览', 'Choose a background to preview alignment')}</strong><p>{t('裁剪框保留原始像素，不拉伸。导出的主图 / 侧图可按上方步骤上传。', 'Crop boxes preserve original pixels without stretching. Upload the exported images using the steps above.')}</p></div>}
-          <p className="artwork-preview-caption">{t('预览按可用宽度缩小；导出使用原图坐标和像素。图片只在当前工具页临时使用，不加入软件数据库。', 'The preview scales to fit; exports use original coordinates and pixels. Images are temporary on this page and are not added to the app database.')}</p>
+          {asset ? <div className="artwork-preview-scroll"><div className="artwork-preview-stage"><img src={asset.url} alt={t('本地背景与裁剪范围预览', 'Local background and crop preview')} draggable={false} />{cropResult.rectangles.map(rectangle => <div key={rectangle.name} className={`artwork-crop-overlay ${rectangle.name}`} style={{ left: `${rectangle.x / asset.width * 100}%`, top: `${rectangle.y / asset.height * 100}%`, width: `${rectangle.width / asset.width * 100}%`, height: `${rectangle.height / asset.height * 100}%` }}><span>{cropLabel(rectangle.name, t)}<small>{rectangle.width} px</small></span></div>)}</div></div> : <div className="artwork-preview-empty"><span>▧</span><strong>{t('选择背景图查看对齐预览', 'Choose a background to preview alignment')}</strong><p>{t('裁剪框保留原始像素，不拉伸。导出的主图 / 侧图可按上方步骤上传', 'Crop boxes preserve original pixels without stretching. Upload the exported images using the steps above')}</p></div>}
+          <p className="artwork-preview-caption">{t('预览按可用宽度缩小；导出使用原图坐标和像素。图片只在当前工具页临时使用，不加入软件数据库', 'The preview scales to fit; exports use original coordinates and pixels. Images are temporary on this page and are not added to the app database')}</p>
         </div>
       </div>
-      <p className="artwork-animation-note">{t('动画背景 / GIF / WebM：使用工具箱内置的 Steam.Design 在线页面，仍需网络。本地裁剪不导出动画，避免丢失帧。', 'Animated backgrounds / GIF / WebM: use the Steam.Design page embedded in the toolbox. It still requires a connection. Local cropping does not export animations, so frames are not discarded.')} <button className="artwork-text-button" disabled={ipcBusy} onClick={() => void openTool('design')}>{t('打开内置动画背景工具', 'Open embedded animated background tool')}</button></p>
+      <p className="artwork-animation-note">{t('动画背景 / GIF / WebM：使用工具箱内置的 Steam.Design 在线页面，仍需网络。本地裁剪不导出动画，避免丢失帧', 'Animated backgrounds / GIF / WebM: use the Steam.Design page embedded in the toolbox. It still requires a connection. Local cropping does not export animations, so frames are not discarded')} <button className="artwork-text-button" disabled={ipcBusy} onClick={() => void openTool('design')}>{t('打开内置动画背景工具', 'Open embedded animated background tool')}</button></p>
     </section>
     </>}
   </div>
