@@ -1,4 +1,5 @@
 const messages = new Map<string, string>([
+  ['Steam 授权已完成，但 Community 网络连接失败；请检查浏览器能否访问 Steam 社区及当前代理或加速器设置', 'Steam authorization succeeded, but the Community network connection failed. Check browser access to Steam Community and your proxy or accelerator settings'],
   ['请先切换到需要检查的账号', 'Switch to the account you want to check first.'],
   ['账号正在登录或恢复，请稍后检查', 'The account is signing in or recovering. Check again shortly.'],
   ['启动时未能恢复账号连接，请查看账号提示后重试；保存的账号未被删除', 'The saved account could not be reconnected at startup. Review the account message and retry; the saved account was not deleted.'],

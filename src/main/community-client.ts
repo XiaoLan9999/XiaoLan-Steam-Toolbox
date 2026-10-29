@@ -148,7 +148,8 @@ export class SteamCommunityClient {
     private readonly accountId: string,
     cookies: string[],
     private readonly onSessionExpired: () => void,
-    private readonly onDiagnostic: (event: CommunityDiagnosticEvent) => void = () => undefined
+    private readonly onDiagnostic: (event: CommunityDiagnosticEvent) => void = () => undefined,
+    private readonly fetchImpl?: typeof fetch
   ) {
     this.replaceCookies(cookies)
   }
@@ -547,7 +548,7 @@ export class SteamCommunityClient {
         url.searchParams.set('input_json', JSON.stringify(input))
         try {
           return await withRequestTimeout(20_000, async signal => {
-            const response = await fetch(url, { method: 'GET', redirect: 'error', credentials: 'omit',
+            const response = await (this.fetchImpl ?? fetch)(url, { method: 'GET', redirect: 'error', credentials: 'omit',
               signal, headers: { Accept: 'application/json' } })
             try {
               assertCurrent()
@@ -592,7 +593,7 @@ export class SteamCommunityClient {
       return await withRequestTimeout(50_000, async signal => {
         const requestStartedAt = Date.now()
         const requestStartedMonotonic = performance.now()
-        const response = await fetch(url, {
+        const response = await (this.fetchImpl ?? fetch)(url, {
           ...init,
           redirect: 'manual',
           signal,

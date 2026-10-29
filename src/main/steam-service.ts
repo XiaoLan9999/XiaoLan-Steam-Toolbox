@@ -42,7 +42,14 @@ interface RuntimeSession {
   recovering: boolean
 }
 
+export interface SteamNetwork {
+  fetch: typeof fetch
+  dispose(): void
+  transport: 'node' | 'chromium'
+}
+
 export interface SteamServiceOptions {
+  createNetwork?: () => SteamNetwork
   keepAliveMs?: number
   retryDelaysMs?: readonly number[]
   loginAttemptTimeoutMs?: number
@@ -95,9 +102,10 @@ export class SteamService {
   private readonly loginAgents = new Map<LoginSession, Agent>()
   private readonly loginRequests = new Map<LoginSession, AbortController>()
   private readonly loginTransports = new Map<LoginSession, LoginApiTransport>()
+  private readonly loginNetworks = new Map<LoginSession, SteamNetwork>()
   private loginAttemptSequence = 0
   private readonly loginDiagnostics = new WeakMap<LoginSession, {
-    attempt: number; mode: LoginDiagnosticEvent['mode']; startedAt: number; terminal: boolean
+    attempt: number; mode: LoginDiagnosticEvent['mode']; startedAt: number; terminal: boolean; transport?: 'node' | 'chromium'
   }>()
   private readonly restorationFailures = new Map<string, number>()
   private restoration: { accountId: string; generation: number; promise: Promise<void> } | null = null
@@ -263,7 +271,7 @@ export class SteamService {
       const cookies = await this.startupWebCookies(session)
       if (!this.isCurrentTransition(generation, accountId)) return
       this.loginDiagnostic(session, 'web-cookies', 'success')
-      const community = this.createCommunity(accountId, cookies)
+      const community = this.createCommunity(accountId, cookies, session)
       this.loginDiagnostic(session, 'session-verify', 'started')
       await community.verifySession()
       if (!this.isCurrentTransition(generation, accountId)) return
@@ -701,20 +709,29 @@ export class SteamService {
 
   private createLoginSession(mode: LoginDiagnosticEvent['mode']): LoginSession {
     let session: LoginSession | undefined
+    const network = this.options.createNetwork?.()
     const controller = new AbortController()
-    const transport = new LoginApiTransport({ signal: controller.signal, onDiagnostic: event => {
+    const transport = new LoginApiTransport({ signal: controller.signal, fetchImpl: network?.fetch, onDiagnostic: event => {
       if (session) this.loginDiagnostic(session, 'request', event.outcome, event)
     } })
     const agent = new BoundedLoginAgent(LOGIN_REQUEST_TIMEOUT_MS, event => {
-      if (session) this.loginDiagnostic(session, 'request', event.outcome, event)
+      if (session) this.loginDiagnostic(session, 'request', event.outcome, { ...event, transport: 'node' })
     }, () => this.now())
-    session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent, transport, userAgent: STEAM_WEB_USER_AGENT })
+    try { session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent, transport, userAgent: STEAM_WEB_USER_AGENT }) }
+    catch (error) {
+      transport.close()
+      agent.destroy()
+      try { network?.dispose() } catch { /* A failed initialization must still release its private network. */ }
+      throw error
+    }
     session.loginTimeout = 5 * 60 * 1000
     this.loginAgents.set(session, agent)
     this.loginRequests.set(session, controller)
     this.loginTransports.set(session, transport)
+    if (network) this.loginNetworks.set(session, network)
     this.loginAttemptSequence = this.loginAttemptSequence % 0xffff_ffff + 1
-    this.loginDiagnostics.set(session, { attempt: this.loginAttemptSequence, mode, startedAt: this.now(), terminal: false })
+    this.loginDiagnostics.set(session, { attempt: this.loginAttemptSequence, mode, startedAt: this.now(), terminal: false,
+      ...(network ? { transport: network.transport } : {}) })
     this.loginDiagnostic(session, 'requested', 'started')
     return session
   }
@@ -729,6 +746,7 @@ export class SteamService {
     timer.unref?.()
     try {
       return await getCommunityWebCookies(session.steamID.getSteamID64(), session.refreshToken, {
+        fetchImpl: this.sessionFetch(session),
         signal: AbortSignal.any([owner.signal, timeout.signal]),
         onDiagnostic: event => this.loginDiagnostic(session, 'request', event.outcome, event)
       })
@@ -801,7 +819,7 @@ export class SteamService {
       const cookies = await this.communityWebCookies(session)
       if (!current()) return
       this.loginDiagnostic(session, 'web-cookies', 'success')
-      const community = this.createCommunity(accountId, cookies)
+      const community = this.createCommunity(accountId, cookies, session)
       this.loginDiagnostic(session, 'session-verify', 'started')
       await community.verifySession()
       if (!current()) return
@@ -847,7 +865,11 @@ export class SteamService {
       }
       void this.refreshStaleAccountData(accountId, true)
     } catch (error) {
-      this.failPendingLogin(loginId, publicErrorMessage(error), error)
+      const failure = loginDiagnosticFailure(error)
+      const message = ['network', 'timeout', 'dns', 'tls'].includes(failure.reason ?? '')
+        ? 'Steam 授权已完成，但 Community 网络连接失败；请检查浏览器能否访问 Steam 社区及当前代理或加速器设置'
+        : publicErrorMessage(error)
+      this.failPendingLogin(loginId, message, error)
     } finally {
       this.completingLogins.delete(loginId)
       if (this.runtime?.loginSession !== session) this.releaseLoginSession(session)
@@ -864,7 +886,13 @@ export class SteamService {
     this.emit({ type: 'authFailed', loginId, message })
   }
 
-  private createCommunity(accountId: string, cookies: string[]): SteamCommunityClient {
+  private sessionFetch(session: LoginSession): typeof fetch | undefined {
+    const network = this.loginNetworks.get(session)
+    if (this.options.createNetwork && !network) throw new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更')
+    return network?.fetch
+  }
+
+  private createCommunity(accountId: string, cookies: string[], session: LoginSession): SteamCommunityClient {
     const community = new SteamCommunityClient(accountId, cookies, () => {
       if (this.runtime?.community !== community) return
       const runtime = this.runtime
@@ -874,7 +902,7 @@ export class SteamService {
         this.onSessionExpired(accountId)
       }
       void this.refreshWebSession(runtime).catch(() => undefined)
-    }, event => this.options.onDiagnostic?.(event))
+    }, event => this.options.onDiagnostic?.(event), this.sessionFetch(session))
     return community
   }
 
@@ -902,7 +930,7 @@ export class SteamService {
         // WebBrowser tokens must use finalizelogin; refreshAccessToken is not supported for this platform.
         const cookies = await request
         if (!this.isCurrentRuntime(runtime)) throw new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更')
-        const candidate = this.createCommunity(runtime.accountId, cookies)
+        const candidate = this.createCommunity(runtime.accountId, cookies, runtime.loginSession)
         await candidate.verifySession()
         if (!this.isCurrentRuntime(runtime)) throw new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更')
         this.persistChangedToken(runtime.accountId, runtime.loginSession)
@@ -1007,6 +1035,9 @@ export class SteamService {
     this.loginRequests.delete(session)
     this.loginTransports.get(session)?.close()
     this.loginTransports.delete(session)
+    const network = this.loginNetworks.get(session)
+    this.loginNetworks.delete(session)
+    try { network?.dispose() } catch { /* Releasing one network must not block other sessions. */ }
     session.cancelLoginAttempt?.()
     this.loginAgents.get(session)?.destroy()
     this.loginAgents.delete(session)
@@ -1045,14 +1076,15 @@ export class SteamService {
     session: LoginSession,
     stage: LoginDiagnosticEvent['stage'],
     outcome: LoginDiagnosticEvent['outcome'],
-    detail: Partial<Pick<LoginDiagnosticEvent, 'endpoint' | 'reason' | 'networkCode' | 'httpStatus' | 'eresult' | 'elapsedMs'>> = {}
+    detail: Partial<Pick<LoginDiagnosticEvent, 'endpoint' | 'reason' | 'networkCode' | 'httpStatus' | 'eresult' | 'elapsedMs' | 'transport'>> = {}
   ): void {
     const context = this.loginDiagnostics.get(session)
     if (!context || context.terminal) return
     if (['completed', 'failed', 'cancelled', 'timeout'].includes(stage)) context.terminal = true
     try {
       this.options.onLoginDiagnostic?.({ attempt: context.attempt, mode: context.mode, stage, outcome,
-        elapsedMs: loginDiagnosticElapsed(context.startedAt, this.now()), ...detail })
+        elapsedMs: loginDiagnosticElapsed(context.startedAt, this.now()),
+        ...(context.transport ? { transport: context.transport } : {}), ...detail })
     } catch { /* Diagnostics must not affect Steam authentication. */ }
   }
 

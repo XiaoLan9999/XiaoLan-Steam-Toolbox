@@ -56,7 +56,7 @@ describe('diagnostic event projection', () => {
       { event: 'native-presence', stage: 'worker-closed', ok: false, elapsedMs: 12, helperPid: 123,
         exitCode: 0, forced: false, retiringCount: 0 },
       { event: 'game-status', stage: 'simulation-submit', connectionKind: 'cm', generation: 3 },
-      login({ endpoint: 'poll', reason: 'network', networkCode: 'ECONNRESET', httpStatus: 502, eresult: 15, elapsedMs: 100 })
+      login({ endpoint: 'poll', reason: 'network', networkCode: 'ECONNRESET', httpStatus: 502, eresult: 15, elapsedMs: 100, transport: 'chromium' })
     ].map(event => ({ at, version: '0.16.7', ...event, ...sensitive }))
     const projected = events.map(sanitizeDiagnosticRecord)
     expect(projected.every(Boolean)).toBe(true)
@@ -64,7 +64,7 @@ describe('diagnostic event projection', () => {
     expect(projected[0]).toMatchObject({ event: 'start', at, version: '0.16.7', main: { rssBytes: 1024 },
       processes: [{ pid: 123, type: 'Tab', workingSetKiB: 4096 }], task: { status: 'paused', total: 10 } })
     expect(projected[4]).toMatchObject({ httpStatus: 403, method: 'POST', responseCode: 15, retryAfterMs: 20_000 })
-    expect(projected[7]).toMatchObject({ attempt: 1, endpoint: 'poll', reason: 'network', networkCode: 'ECONNRESET' })
+    expect(projected[7]).toMatchObject({ attempt: 1, endpoint: 'poll', reason: 'network', networkCode: 'ECONNRESET', transport: 'chromium' })
     expect(events[0]).toHaveProperty('accountId', canary)
   })
 

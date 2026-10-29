@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => ({
   emoticons: vi.fn(),
   sessionOptions: [] as Array<{ platform: number; options: { userAgent?: string; agent?: Agent } }>,
   sessions: [] as Array<{refreshToken: string; emit: (event: string, ...args: unknown[]) => void}>,
-  instances: [] as Array<{ accountId: string; expire: () => void }>
+  instances: [] as Array<{ accountId: string; expire: () => void; fetchImpl?: typeof fetch }>
 }))
 
 vi.mock('steam-session', async () => {
@@ -59,8 +59,8 @@ vi.mock('steam-session', async () => {
 
 vi.mock('../src/main/community-client', () => ({
   SteamCommunityClient: class {
-    constructor(accountId: string, private cookies: string[], expire: () => void) {
-      mocks.instances.push({ accountId, expire })
+    constructor(accountId: string, private cookies: string[], expire: () => void, _diagnostic?: unknown, fetchImpl?: typeof fetch) {
+      mocks.instances.push({ accountId, expire, fetchImpl })
     }
     getCookies(): string[] { return [...this.cookies] }
     getFriendRelationships = mocks.relationships
@@ -813,6 +813,55 @@ describe('read-only comment recovery identity checks', () => {
 })
 
 describe('Steam login diagnostics', () => {
+  it('distinguishes successful authorization from a later Community network failure without losing safe error details', async () => {
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service, events } = await createService(false, { onLoginDiagnostic: event => diagnostics.push(event) })
+    const login = await service.startQrLogin()
+    mocks.webCookies.mockRejectedValueOnce(Object.assign(new Error('Synthetic connection failure'), { code: 'ECONNRESET' }))
+    mocks.sessions.at(-1)!.emit('authenticated')
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'authFailed', loginId: login.loginId,
+      message: expect.stringContaining('Steam 授权已完成，但 Community 网络连接失败') })))
+    expect(diagnostics).toContainEqual(expect.objectContaining({ stage: 'failed', reason: 'network', networkCode: 'ECONNRESET' }))
+    expect(events.some(event => event.type === 'authFinished' && event.loginId === login.loginId)).toBe(false)
+  })
+
+  it('uses the same private network for cookie exchange, Community verification and later renewal', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+    const release = vi.fn()
+    const createNetwork = vi.fn(() => ({ fetch: fetchImpl, dispose: release, transport: 'chromium' as const }))
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service } = await createService(false, { createNetwork, onLoginDiagnostic: event => diagnostics.push(event) })
+    expect(createNetwork).toHaveBeenCalledOnce()
+    expect(mocks.webCookies.mock.calls[0]![2]).toHaveProperty('fetchImpl', fetchImpl)
+    expect(mocks.instances[0]!.fetchImpl).toBe(fetchImpl)
+    await service.getArtworkWebCookies(accountA)
+    expect(createNetwork).toHaveBeenCalledOnce()
+    expect(mocks.webCookies.mock.calls.at(-1)![2]).toHaveProperty('fetchImpl', fetchImpl)
+    expect(mocks.instances.at(-1)!.fetchImpl).toBe(fetchImpl)
+    expect(diagnostics).toContainEqual(expect.objectContaining({ stage: 'completed', transport: 'chromium' }))
+    expect(release).not.toHaveBeenCalled()
+    service.dispose()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('releases only the cancelled login network, retaining the already verified runtime network', async () => {
+    const networks: Array<{ fetch: typeof fetch; dispose: ReturnType<typeof vi.fn>; transport: 'chromium' }> = []
+    const { service } = await createService(false, { createNetwork: () => {
+      const network = { fetch: vi.fn<typeof fetch>(), dispose: vi.fn(), transport: 'chromium' as const }
+      networks.push(network)
+      return network
+    } })
+    const login = await service.startQrLogin()
+    expect(networks).toHaveLength(2)
+    service.cancelLogin(login.loginId)
+    service.cancelLogin(login.loginId)
+    expect(networks[0]!.dispose).not.toHaveBeenCalled()
+    expect(networks[1]!.dispose).toHaveBeenCalledOnce()
+    service.dispose()
+    expect(networks[0]!.dispose).toHaveBeenCalledOnce()
+    expect(networks[1]!.dispose).toHaveBeenCalledOnce()
+  })
+
   it('announces session finalization and ignores repeated Guard codes after authentication', async () => {
     const { service, events } = await createService(false)
     const login = await service.startCredentialsLogin('fixture', 'fixture-only')

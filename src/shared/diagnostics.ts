@@ -2,6 +2,7 @@ export const LOGIN_NETWORK_CODES = [
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
   'ENETUNREACH', 'EHOSTUNREACH', 'ENETDOWN', 'EHOSTDOWN', 'EPIPE', 'EPROTO',
   'ERR_SOCKET_CLOSED', 'ERR_CONNECTION_CLOSED', 'ERR_HTTP_HEADERS_TIMEOUT',
+  'ERR_PROXY_CONNECTION_FAILED', 'ERR_TUNNEL_CONNECTION_FAILED',
   'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
   'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
   'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
@@ -24,6 +25,7 @@ export interface LoginDiagnosticEvent {
   httpStatus?: number
   eresult?: number
   elapsedMs?: number
+  transport?: 'node' | 'chromium'
 }
 
 export interface DiagnosticRecord {
@@ -169,6 +171,7 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
         optionalEnum(output, value, 'endpoint', loginEndpoints)
         optionalEnum(output, value, 'reason', loginReasons)
         optionalEnum(output, value, 'networkCode', LOGIN_NETWORK_CODES)
+        optionalEnum(output, value, 'transport', ['node', 'chromium'])
         optionalInteger(output, value, 'httpStatus', 100, 599)
         optionalInteger(output, value, 'eresult', 0, 255)
         optionalInteger(output, value, 'elapsedMs', 0, 600_000)

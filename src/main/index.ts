@@ -8,6 +8,7 @@ import { CommentScanQueue } from './comment-scan-queue'
 import { SecretCipher, SqliteStore } from './store'
 import { applyPendingDataImport, discardPreparedDataImport, prepareDataImport, queueDataImport, type PreparedDataImport } from './data-import'
 import { SteamService, publicErrorMessage } from './steam-service'
+import { createSteamNetworkSession } from './steam-network-session'
 import { GameStatusService, createGameStatusSteamClient } from './game-status-service'
 import { NativePresenceBroker } from './native-presence-broker'
 import { NativeGameStatusClient } from './native-game-status-client'
@@ -191,7 +192,8 @@ app.whenReady().then(async () => {
     if (artworkBrowser?.getState().accountId === accountId) void artworkBrowser.close()
     queue?.pauseForSessionExpiry(accountId)
     commentScans?.pauseForAccount(accountId)
-  }, { onDiagnostic: (event) => diagnostics?.sessionEvent(event), onLoginDiagnostic: event => diagnostics?.loginEvent(event) })
+  }, { createNetwork: createSteamNetworkSession,
+    onDiagnostic: (event) => diagnostics?.sessionEvent(event), onLoginDiagnostic: event => diagnostics?.loginEvent(event) })
   queue = new BatchQueue(store, steam, emit)
   const nativePresence = new NativePresenceBroker({
     workerDirectory: app.isPackaged ? join(process.resourcesPath, 'native-presence') : join(app.getAppPath(), 'resources', 'native-presence'),
