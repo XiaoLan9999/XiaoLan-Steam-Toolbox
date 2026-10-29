@@ -288,6 +288,16 @@ export class SqliteStore {
     this.setMetaInTransaction('ui_theme', theme)
   }
 
+  getEnergySavingEnabled(): boolean {
+    const row = this.db.prepare("SELECT value FROM app_meta WHERE key = 'background_energy_saving'").get() as { value: string } | undefined
+    return row?.value !== 'false'
+  }
+
+  setEnergySavingEnabled(enabled: boolean): void {
+    if (typeof enabled !== 'boolean') throw new DomainError('INVALID_ENERGY_SAVING', '不支持的后台节能设置')
+    this.setMetaInTransaction('background_energy_saving', String(enabled))
+  }
+
   static createImportedDatabase(sourcePath: string, destinationPath: string): DataImportSummary {
     if (!isAbsolute(sourcePath) || !isAbsolute(destinationPath) || resolve(sourcePath).toLowerCase() === resolve(destinationPath).toLowerCase()) throw dataImportInvalid()
     let source: DatabaseSync | undefined
@@ -327,6 +337,7 @@ export class SqliteStore {
       if (active && !destination.getAccount(active)) throw dataImportInvalid()
       destination.setLanguage(destination.getLanguage())
       destination.setTheme(destination.getTheme())
+      destination.setEnergySavingEnabled(destination.getEnergySavingEnabled())
       destination.setUpdatePreferences(destination.getUpdatePreferences())
       const summary = importSummary(destination.db)
       destination.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE; VACUUM;')
@@ -2141,6 +2152,7 @@ function checkedImportValue(value: unknown, column: ImportColumn): string | numb
 
 function reviewedImportMeta(key: unknown, value: unknown): boolean {
   if (typeof key !== 'string' || typeof value !== 'string') throw dataImportInvalid()
+  if (key === 'background_energy_saving') return value === 'true' || value === 'false'
   return ['active_account_id', 'ui_language', 'ui_theme', 'update_preferences'].includes(key) ||
     /^comment-post-safety:[A-Za-z0-9_-]{1,128}$/.test(key) && value === 'reconciliation-v1'
 }

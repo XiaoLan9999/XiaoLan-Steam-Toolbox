@@ -15,6 +15,8 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
   const [importBackup, setImportBackup] = useState('')
   const [theme, setTheme] = useState<Theme>(() => normalizeTheme(snapshot.theme))
   const [changingTheme, setChangingTheme] = useState(false)
+  const [energySaving, setEnergySaving] = useState(snapshot.energySavingEnabled !== false)
+  const [changingEnergySaving, setChangingEnergySaving] = useState(false)
   const [diagnosticOperation, setDiagnosticOperation] = useState<'export' | 'open' | null>(null)
   const [diagnosticExport, setDiagnosticExport] = useState<{ path: string; records: number } | null>(null)
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null)
@@ -67,6 +69,19 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
       setDiagnosticOperation(null)
     }
   }
+  const changeEnergySaving = async (enabled: boolean): Promise<void> => {
+    if (busy || changingEnergySaving) return
+    setChangingEnergySaving(true)
+    const previous = energySaving
+    setEnergySaving(enabled)
+    try {
+      const result = await runAction(t('保存后台节能设置', 'Saving background energy preferences'), async () => {
+        unwrap(await window.steamCommenter.setEnergySaving(enabled))
+        return true
+      })
+      if (result === null) setEnergySaving(previous)
+    } finally { setChangingEnergySaving(false) }
+  }
   return <div className="modal-backdrop" onMouseDown={() => { if (!busy) onClose() }}>
     <section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-heading" onMouseDown={event => event.stopPropagation()}>
       <button className="modal-close" disabled={busy} onClick={onClose} aria-label={t('关闭', 'Close')}>×</button>
@@ -86,6 +101,13 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
           </select>
         </label>
       </div>
+      <h3>{t('后台节能', 'Background energy saving')}</h3>
+      <label className="update-checkbox"><input type="checkbox" checked={energySaving} disabled={busy || changingEnergySaving}
+        onChange={event => void changeEnergySaving(event.target.checked)} />{t('最小化或隐藏窗口时自动节能', 'Save resources when the window is minimized or hidden')}</label>
+      <p>{t('默认开启：暂停不可见界面的动画、媒体预览与显示倒计时，合并后台界面刷新，并回收闲置的截图转换窗口。恢复窗口后继续显示；留言任务、进度保存、登录保活和更新检查照常运行',
+        'Enabled by default: pause hidden animations, media previews and display timers, coalesce background interface refreshes, and release idle screenshot conversion windows. Display resumes with the window; tasks, saved progress, sign-in keepalive and update checks keep running')}</p>
+      <small>{t('不会结束 Steam、游戏或主界面进程，也不强制清空缓存。实际内存节省取决于已打开的工具和图片',
+        'Steam, games and the main interface stay open; caches are not forcibly cleared. Actual memory savings depend on the tools and images in use')}</small>
       <fieldset className="settings-update-controls" disabled={busy}><UpdatePanel state={snapshot.updater} preferences={snapshot.updatePreferences} runAction={runAction} /></fieldset>
       <h3>{t('数据备份与迁移', 'Backup and migration')}</h3>
       <p>{t('导出为完整的 SQLite 数据备份，包含账号资料、分组、黑名单、好友历史、检查任务、草稿和发送记录，不导出密码或自动登录令牌',

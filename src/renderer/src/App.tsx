@@ -10,6 +10,7 @@ import { SettingsModal } from './components/SettingsModal'
 import ArtworkToolsPanel from './components/ArtworkToolsPanel'
 import { AccountStatusPanel } from './components/AccountStatusPanel'
 import { UpdateNotice } from './components/UpdateNotice'
+import { hasAvailableUpdate } from './update-notification'
 import ScreenshotToolsPanel from './components/ScreenshotToolsPanel'
 import { GameStatusPanel } from './components/GameStatusPanel'
 import { WelcomePanel } from './components/WelcomePanel'
@@ -22,8 +23,10 @@ import { avatarFallback, unwrap } from './ui'
 import { applyBatchProgress, applyProgressUpdates, createSnapshotRefresh, type BatchProgressUpdate } from './snapshot-refresh'
 import { applyFriendPolicy, applyFriendPolicyUpdates, type FriendPolicyUpdate } from './friend-policy-updates'
 import { applyTheme, normalizeTheme, restoreCachedTheme } from './theme'
+import { createRendererEnergySaver, type RendererEnergySaver } from './energy-saving'
 import './task-list.css'
 import './theme.css'
+import './energy-saving.css'
 
 restoreCachedTheme()
 
@@ -69,7 +72,7 @@ interface Toast {
   message: string
 }
 
-interface RefreshValue { snapshot: AppSnapshot; batchRevision: number }
+interface RefreshValue { snapshot: AppSnapshot; batchRevision: number; energyRevision: number }
 
 export default function App(): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null)
@@ -84,6 +87,12 @@ export default function App(): React.JSX.Element {
   const batchRevision = useRef(0)
   const progressUpdates = useRef(new Map<string, BatchProgressUpdate>())
   const friendPolicyUpdates = useRef(new Map<string, FriendPolicyUpdate>())
+  const energySaver = useRef<RendererEnergySaver | null>(null)
+  const backgroundUi = useRef(false)
+  const backgroundDirty = useRef(false)
+  const initialSnapshotLoaded = useRef(false)
+  const energyRevision = useRef(0)
+  const latestEnergy = useRef<{ enabled: boolean; active: boolean } | null>(null)
   const selectedAccountId = useRef(snapshot?.activeAccountId ?? null)
   selectedAccountId.current = snapshot?.activeAccountId ?? null
   const language = snapshot?.language ?? 'zh-CN'
@@ -97,13 +106,48 @@ export default function App(): React.JSX.Element {
     }, 5_000)
   }, [])
 
-  const refresh = useCallback(() => refreshController.current?.refresh() ?? Promise.resolve(), [])
+  const refresh = useCallback(() => {
+    if (backgroundUi.current && initialSnapshotLoaded.current) {
+      backgroundDirty.current = true
+      return Promise.resolve()
+    }
+    return refreshController.current?.refresh() ?? Promise.resolve()
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    const saver = createRendererEnergySaver({ onChange: active => {
+      if (!mounted) return
+      backgroundUi.current = active
+      if (active) backgroundDirty.current = true
+      if (!active && backgroundDirty.current) {
+        backgroundDirty.current = false
+        void refreshController.current?.refresh()
+      }
+    } })
+    energySaver.current = saver
+    return () => { mounted = false; saver.dispose(); if (energySaver.current === saver) energySaver.current = null }
+  }, [])
+
+  useEffect(() => {
+    energySaver.current?.update(snapshot?.energySavingEnabled !== false, snapshot?.energySavingActive === true)
+  }, [snapshot?.energySavingEnabled, snapshot?.energySavingActive])
 
   useEffect(() => {
     const controller = createSnapshotRefresh(async () => {
       const revision = batchRevision.current
-      return { snapshot: unwrap(await window.steamCommenter.getSnapshot()), batchRevision: revision }
-    }, ({ snapshot: next, batchRevision: revision }) => {
+      const loadedEnergyRevision = energyRevision.current
+      return { snapshot: unwrap(await window.steamCommenter.getSnapshot()), batchRevision: revision, energyRevision: loadedEnergyRevision }
+    }, ({ snapshot: loaded, batchRevision: revision, energyRevision: loadedEnergyRevision }) => {
+      const energy = latestEnergy.current
+      const next = energy && loadedEnergyRevision < energyRevision.current
+        ? { ...loaded, energySavingEnabled: energy.enabled, energySavingActive: energy.active } : loaded
+      energySaver.current?.update(next.energySavingEnabled !== false, next.energySavingActive === true)
+      if (backgroundUi.current && initialSnapshotLoaded.current) {
+        backgroundDirty.current = true
+        return
+      }
+      initialSnapshotLoaded.current = true
       document.documentElement.lang = next.language
       document.title = next.language === 'en' ? APP_NAME_EN : APP_NAME_ZH
       applyTheme(normalizeTheme(next.theme))
@@ -119,6 +163,17 @@ export default function App(): React.JSX.Element {
     refreshController.current = controller
     void controller.refresh()
     const unsubscribe = window.steamCommenter.onEvent((event: AppEvent) => {
+      if (event.type === 'energySavingChanged') {
+        energyRevision.current += 1
+        latestEnergy.current = { enabled: event.enabled, active: event.active }
+        energySaver.current?.update(event.enabled, event.active)
+        setSnapshot(current => current ? { ...current, energySavingEnabled: event.enabled, energySavingActive: event.active } : current)
+        return
+      }
+      if (backgroundUi.current && ['snapshotChanged', 'friendPolicyChanged', 'batchProgress', 'updateChanged'].includes(event.type)) {
+        backgroundDirty.current = true
+        return
+      }
       if (event.type === 'snapshotChanged') void controller.refresh()
       if (event.type === 'friendPolicyChanged' && event.policy.accountId === selectedAccountId.current) {
         batchRevision.current += 1
@@ -283,7 +338,7 @@ export default function App(): React.JSX.Element {
             onClick={() => setSettingsOpen(true)}
           >
             {t('设置 / 更新 / 语言 / 数据', 'Settings / Updates / Data')}
-            {(snapshot.updater.phase === 'available' || snapshot.updater.phase === 'ready') && <b className="update-sidebar-badge">NEW</b>}
+            {hasAvailableUpdate(snapshot.updater) && <b className="update-sidebar-badge" aria-label={t('有新版本可更新', 'A new version is available')} title={t(`新版本 v${snapshot.updater.latestVersion}`, `New version v${snapshot.updater.latestVersion}`)}>NEW</b>}
           </button>
           <a
             className="author-watermark"

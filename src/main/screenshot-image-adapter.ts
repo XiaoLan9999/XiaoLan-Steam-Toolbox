@@ -7,6 +7,8 @@ export class ScreenshotBrowserImageAdapter implements ScreenshotImageAdapter {
   private window: BrowserWindow | null = null
   private ready: Promise<void> | null = null
   private disposed = false
+  private activeConversions = 0
+  private releaseWhenIdle = false
 
   async inspect(data: Buffer): Promise<{ width: number; height: number; previewJpeg: Buffer }> {
     const result = await this.convert(data)
@@ -24,13 +26,33 @@ export class ScreenshotBrowserImageAdapter implements ScreenshotImageAdapter {
   }
 
   closeWorker(): void {
+    this.releaseWhenIdle = false
     if (this.window && !this.window.isDestroyed()) this.window.destroy()
     this.window = null
     this.ready = null
   }
 
+  releaseIdleWorker(): boolean {
+    if (this.activeConversions > 0) {
+      this.releaseWhenIdle = true
+      return false
+    }
+    const released = !!this.window && !this.window.isDestroyed()
+    this.closeWorker()
+    return released
+  }
+
   private async convert(data: Buffer, options?: { quality: number; width: number; height: number; thumbnailWidth: number; thumbnailHeight: number }): Promise<{ width: number; height: number; preview: string; jpeg?: string; thumbnail?: string }> {
     if (this.disposed) throw new DomainError('SCREENSHOT_CANCELLED', '截图工具已关闭')
+    this.activeConversions += 1
+    try { return await this.convertInWorker(data, options) }
+    finally {
+      this.activeConversions -= 1
+      if (this.activeConversions === 0 && this.releaseWhenIdle) this.closeWorker()
+    }
+  }
+
+  private async convertInWorker(data: Buffer, options?: { quality: number; width: number; height: number; thumbnailWidth: number; thumbnailHeight: number }): Promise<{ width: number; height: number; preview: string; jpeg?: string; thumbnail?: string }> {
     if (!this.window || this.window.isDestroyed()) {
       const window = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true,
         nodeIntegration: false, webviewTag: false, backgroundThrottling: false, partition: `screenshot-images-${randomUUID()}` } })
@@ -47,7 +69,7 @@ export class ScreenshotBrowserImageAdapter implements ScreenshotImageAdapter {
     if (this.disposed || window.isDestroyed()) throw new DomainError('SCREENSHOT_CANCELLED', '截图工具已关闭')
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      return await Promise.race([
+      const result = await Promise.race([
         window.webContents.executeJavaScript(`(async () => {
           const data = ${JSON.stringify(data.toString('base64'))};
           const options = ${JSON.stringify(options ?? null)};
@@ -80,6 +102,8 @@ export class ScreenshotBrowserImageAdapter implements ScreenshotImageAdapter {
           timer.unref?.()
         })
       ])
+      if (this.disposed || window.isDestroyed()) throw new DomainError('SCREENSHOT_CANCELLED', '截图工具已关闭')
+      return result
     } finally { clearTimeout(timer) }
   }
 }

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
 import type { BatchSummary } from '../../../shared/types'
 import { localizeMessage } from '../../../shared/localization'
 import { useI18n, type Translate } from '../i18n'
 import { retryCountdown } from './BatchRecoveryPanel'
+import { useVisibleTick } from '../use-visible-tick'
 import './batch-verification.css'
 
 export function batchVerificationActive(batch: BatchSummary): boolean {
@@ -51,17 +51,12 @@ export function BatchVerificationPanel({ batch, compact = false, disabled = fals
   onStop?(): void
 }): React.JSX.Element | null {
   const { language, t } = useI18n()
-  const [, tick] = useState(0)
   const verification = batch.verification
   const active = batchVerificationActive(batch)
   const deadline = verification?.state === 'waiting' && verification.nextCheckAt
     && Number.isFinite(Date.parse(verification.nextCheckAt)) ? verification.nextCheckAt : null
   const waiting = active && deadline !== null && Date.parse(deadline) > Date.now()
-  useEffect(() => {
-    if (!waiting) return
-    const timer = window.setInterval(() => tick(value => value + 1), 1000)
-    return () => window.clearInterval(timer)
-  }, [batch.id, verification?.deliveryId, deadline, waiting])
+  useVisibleTick(waiting)
 
   if (!verification && batch.uncertain === 0) return null
   const state = verification?.state

@@ -107,6 +107,7 @@ const api: SteamFriendCommenterApi = {
   openDiagnosticsDirectory: () => invoke<void>('diagnostics:openDirectory'),
   setLanguage: (language) => invoke<void>('settings:language', language),
   setTheme: (theme) => invoke<void>('settings:theme', theme),
+  setEnergySaving: enabled => invoke<void>('settings:energySaving', enabled),
   exportData: () => invoke<{ path: string } | null>('storage:export'),
   importData: () => invoke<{ backupPath: string; restartScheduled: true } | null>('storage:import'),
   createGroup: (accountId, name, color) =>

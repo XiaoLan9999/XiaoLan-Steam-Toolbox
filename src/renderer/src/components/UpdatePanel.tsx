@@ -163,7 +163,9 @@ export function UpdatePanel({ state, preferences, runAction }: {
     </div>
     <label className="update-checkbox"><input type="checkbox" checked={preferences.autoCheck} disabled={disabledPreferences}
       onChange={event => void savePreferences({ ...preferences, autoCheck: event.target.checked })} />
-      {t('启动后自动检查更新', 'Check for updates after startup')}</label>
+      {t('自动检查更新（启动后及运行期间每 30 分钟）', 'Check for updates automatically (after startup and every 30 minutes)')}</label>
+    <p className="update-mirror-note">{t('发现新版会提醒；关闭后同一版本不再自动提示，设置入口仍保留新版本气泡。不会自动下载、安装或重启',
+      'New versions show a notice; dismissed versions stay hidden until a newer release, while the Settings badge remains. No automatic download, installation or restart')}</p>
     <label className="update-checkbox"><input type="checkbox" checked={preferences.useMirrors} disabled={disabledPreferences}
       onChange={event => void savePreferences({ ...preferences, useMirrors: event.target.checked })} />
       {t('启用代理线路（内置及自定义）', 'Enable proxy routes (built-in and custom)')}</label>

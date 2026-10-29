@@ -292,6 +292,8 @@ export interface AppSnapshot {
   dataDirectory: string
   language: 'zh-CN' | 'en'
   theme?: 'light' | 'dark'
+  energySavingEnabled?: boolean
+  energySavingActive?: boolean
   updater: UpdateState
   updatePreferences: UpdatePreferences
   security: {
@@ -342,6 +344,7 @@ export type AppEvent =
   | { type: 'artworkChanged'; state: ArtworkBrowserState }
   | { type: 'updateChanged'; state: UpdateState }
   | { type: 'snapshotChanged' }
+  | { type: 'energySavingChanged'; enabled: boolean; active: boolean }
   | { type: 'friendPolicyChanged'; policy: FriendPolicy }
   | { type: 'notice'; level: 'info' | 'success' | 'warning' | 'error'; message: string }
   | { type: 'authRemoteInteraction'; loginId: string }
@@ -414,6 +417,7 @@ export interface SteamFriendCommenterApi {
   openDiagnosticsDirectory(): Promise<IpcResult<void>>
   setLanguage(language: 'zh-CN' | 'en'): Promise<IpcResult<void>>
   setTheme(theme: 'light' | 'dark'): Promise<IpcResult<void>>
+  setEnergySaving(enabled: boolean): Promise<IpcResult<void>>
   exportData(): Promise<IpcResult<{ path: string } | null>>
   importData(): Promise<IpcResult<{ backupPath: string; restartScheduled: true } | null>>
   createGroup(accountId: string, name: string, color: string): Promise<IpcResult<FriendGroup>>

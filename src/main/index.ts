@@ -2,7 +2,7 @@ import { basename, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { copyFile, lstat, realpath, rename, unlink } from 'node:fs/promises'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, net, powerMonitor, safeStorage, shell } from 'electron'
 import { BatchQueue } from './batch-queue'
 import { CommentScanQueue } from './comment-scan-queue'
 import { SecretCipher, SqliteStore } from './store'
@@ -35,6 +35,9 @@ import type { ArtworkUploadDraft } from '../shared/profile-backgrounds'
 import type { ArtworkBounds, ArtworkTool } from '../shared/artwork-browser'
 import { UpdateService } from './update-service'
 import { createUpdateFetch } from './update-fetch'
+import { createUpdateScheduler } from './update-scheduler'
+import { createWindowEnergySaver } from './window-energy-saver'
+import { BackgroundUiEvents } from './background-ui-events'
 import { RuntimeDiagnostics } from './runtime-diagnostics'
 import { DiagnosticReportError, writeDiagnosticReport } from './diagnostic-report'
 import { SteamScreenshotService } from './steam-screenshots'
@@ -91,13 +94,20 @@ let updater: UpdateService
 let artworkBrowser: ArtworkBrowser | null = null
 let artworkUploads: ArtworkUploadService | null = null
 let backgroundMedia: BackgroundMediaService | null = null
-let startupUpdateTimer: ReturnType<typeof setTimeout> | undefined
-let periodicUpdateTimer: ReturnType<typeof setInterval> | undefined
+let updateScheduler: ReturnType<typeof createUpdateScheduler> | undefined
+let windowEnergySaver: ReturnType<typeof createWindowEnergySaver> | undefined
+let energySavingActive = false
+const backgroundUiEvents = new BackgroundUiEvents()
+const resumeUpdateChecks = (): void => updateScheduler?.resume()
+const stopUpdateChecks = (): void => {
+  updateScheduler?.shutdown()
+  powerMonitor.removeListener('resume', resumeUpdateChecks)
+}
 const updatePackageKind: UpdatePackageKind = process.env.PORTABLE_EXECUTABLE_FILE ? 'portable' : 'setup'
 const quitDrain = new QuitDrain({
   prepare: [
-    () => clearTimeout(startupUpdateTimer),
-    () => clearInterval(periodicUpdateTimer),
+    stopUpdateChecks,
+    () => windowEnergySaver?.shutdown(),
     () => queue?.shutdown(),
     () => commentScans?.shutdown(),
     () => gameStatus?.dispose(),
@@ -165,9 +175,11 @@ app.whenReady().then(async () => {
         }
       }
     }
-    const displayEvent = event.type === 'batchProgress'
-      ? { ...event, summary: store.getBatchSummary(event.batchId) }
-      : 'message' in event ? { ...event, message: localizeMessage(event.message, store.getLanguage()) } : event
+    const projected = backgroundUiEvents.project(event)
+    if (!projected) return
+    const displayEvent = projected.type === 'batchProgress'
+      ? { ...projected, summary: store.getBatchSummary(projected.batchId) }
+      : 'message' in projected ? { ...projected, message: localizeMessage(projected.message, store.getLanguage()) } : projected
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       try { mainWindow.webContents.send('app:event', displayEvent) }
       catch { /* Saved task state is recovered when the interface reconnects. */ }
@@ -314,15 +326,13 @@ app.whenReady().then(async () => {
   void steam.restoreActiveAccount().catch(() => {
     emit({ type: 'notice', level: 'warning', message: '启动时未能恢复账号连接，请查看账号提示后重试；保存的账号未被删除' })
   })
-  const automaticCheck = (): void => {
-    if (app.isPackaged && store.getUpdatePreferences().autoCheck && updater.getState().phase !== 'downloading') {
-      void updater.checkForUpdates()
-    }
-  }
-  startupUpdateTimer = setTimeout(automaticCheck, 8_000)
-  periodicUpdateTimer = setInterval(automaticCheck, 4 * 60 * 60 * 1000)
-  startupUpdateTimer.unref()
-  periodicUpdateTimer.unref()
+  updateScheduler = createUpdateScheduler({
+    enabled: () => app.isPackaged && store.getUpdatePreferences().autoCheck,
+    phase: () => updater.getState().phase,
+    checkedAt: () => updater.getState().checkedAt,
+    check: () => updater.checkForUpdates()
+  })
+  powerMonitor.on('resume', resumeUpdateChecks)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -335,8 +345,8 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   shuttingDown = true
-  clearTimeout(startupUpdateTimer)
-  clearInterval(periodicUpdateTimer)
+  stopUpdateChecks()
+  windowEnergySaver?.shutdown()
   updater?.shutdown()
   artworkBrowser?.shutdown()
   artworkUploads?.invalidate()
@@ -376,6 +386,9 @@ app.on('before-quit', (event) => {
 })
 
 function createWindow(): void {
+  windowEnergySaver?.shutdown()
+  energySavingActive = false
+  backgroundUiEvents.setBackground(false)
   artworkUploads?.invalidate()
   backgroundMedia?.invalidate()
   artworkBrowser?.shutdown()
@@ -393,11 +406,25 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: true,
       sandbox: true
     }
   })
 
   const artworkWindow = mainWindow
+  const energySaver = createWindowEnergySaver({
+    window: artworkWindow,
+    enabled: () => store.getEnergySavingEnabled(),
+    onChange: active => {
+      if (mainWindow !== artworkWindow) return
+      energySavingActive = active
+      backgroundUiEvents.setBackground(active)
+      if (shuttingDown || artworkWindow.isDestroyed()) return
+      artworkWindow.webContents.send('app:event', { type: 'energySavingChanged', enabled: store.getEnergySavingEnabled(), active } satisfies AppEvent)
+    },
+    compact: () => { screenshotImageAdapter?.releaseIdleWorker() }
+  })
+  windowEnergySaver = energySaver
   const browser = new ArtworkBrowser({
     parent: artworkWindow,
     getSessionCookies: (accountId) => steam.getArtworkWebCookies(accountId),
@@ -414,6 +441,8 @@ function createWindow(): void {
     browser: () => browser, isAccountCurrent })
   backgroundMedia = new BackgroundMediaService({ fetchImpl: createUpdateFetch(options => net.request(options)), isAccountCurrent })
   artworkWindow.once('closed', () => {
+    energySaver.shutdown()
+    if (windowEnergySaver === energySaver) windowEnergySaver = undefined
     artworkUploads?.invalidate()
     backgroundMedia?.invalidate()
     browser.shutdown()
@@ -726,6 +755,11 @@ function registerIpcHandlers(): void {
     mainWindow?.setBackgroundColor(theme === 'dark' ? '#101820' : '#f3f6f7')
     mainWindow?.webContents.send('app:event', { type: 'snapshotChanged' })
   })
+  handle('settings:energySaving', (enabled: boolean) => {
+    store.setEnergySavingEnabled(enabled)
+    windowEnergySaver?.refresh()
+    if (!shuttingDown && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:event', { type: 'energySavingChanged', enabled, active: energySavingActive } satisfies AppEvent)
+  })
   handle('storage:import', async () => {
     if (!mainWindow || dataImportInProgress) throw new DomainError('DATA_IMPORT_BUSY', '数据导入正在进行中')
     ensureDataImportIdle()
@@ -929,6 +963,8 @@ function getSnapshot(): AppSnapshot {
     dataDirectory: app.getPath('userData'),
     language,
     theme: store.getTheme(),
+    energySavingEnabled: store.getEnergySavingEnabled(),
+    energySavingActive,
     updater: updater.getState(),
     updatePreferences: store.getUpdatePreferences(),
     security: {

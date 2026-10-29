@@ -1,0 +1,9 @@
+html[data-energy-saving="active"] *,
+html[data-energy-saving="active"] *::before,
+html[data-energy-saving="active"] *::after {
+  animation-play-state: paused !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+  caret-color: transparent !important;
+  scroll-behavior: auto !important;
+}

@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
 import { localizeMessage } from '../../../shared/localization'
 import type { AccountView } from '../../../shared/types'
 import { useI18n } from '../i18n'
+import { useVisibleTick } from '../use-visible-tick'
 import './session-recovery-notice.css'
 
 export function SessionRecoveryNotice({ account, busy = false, onRetry, onSignIn }: {
@@ -11,7 +11,6 @@ export function SessionRecoveryNotice({ account, busy = false, onRetry, onSignIn
   onSignIn(): void
 }): React.JSX.Element | null {
   const { language, t } = useI18n()
-  const [, tick] = useState(0)
   const retryAt = account.sessionRetryAt ? Date.parse(account.sessionRetryAt) : NaN
   const hasPlan = account.sessionState !== 'expired' && Number.isFinite(retryAt) && retryAt > 0
   const waiting = hasPlan && retryAt > Date.now()
@@ -21,11 +20,7 @@ export function SessionRecoveryNotice({ account, busy = false, onRetry, onSignIn
   const attempt = Number.isSafeInteger(account.sessionRetryAttempt) && (account.sessionRetryAttempt ?? 0) > 0
     ? account.sessionRetryAttempt! : null
 
-  useEffect(() => {
-    if (account.sessionState === 'authenticated' || !waiting) return
-    const timer = window.setInterval(() => tick(value => value + 1), 1000)
-    return () => window.clearInterval(timer)
-  }, [account.id, account.sessionState, retryAt, waiting])
+  useVisibleTick(account.sessionState !== 'authenticated' && waiting)
 
   if (account.sessionState === 'authenticated') return null
   const seconds = hasPlan ? Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)) : 0

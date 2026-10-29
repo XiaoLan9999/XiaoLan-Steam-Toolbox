@@ -25,7 +25,7 @@ describe('persistent software update notification', () => {
     expect(html).toContain('当前 v0.9.0')
     expect(html).toContain('查看更新')
     expect(html).toContain('不会自动安装')
-    expect(html).toContain('关闭本次版本提醒')
+    expect(html).toContain('不再提醒此版本')
   })
 
   it('reports a restored verified download without installing or restarting it', () => {
@@ -37,9 +37,10 @@ describe('persistent software update notification', () => {
     expect(html).not.toMatch(/\p{Script=Han}/u)
   })
 
-  it.each(['idle', 'checking', 'upToDate', 'downloading'] as const)('does not falsely notify in %s phase', phase => {
-    expect(render({ ...available, phase })).toBe('')
-    expect(updateNoticeForState({ ...available, phase })).toBeNull()
+  it.each(['idle', 'checking', 'upToDate', 'downloading', 'error'] as const)('retains a verified new version while the phase is %s', phase => {
+    expect(render({ ...available, phase })).toContain('发现新版本 v0.9.1')
+    expect(updateNoticeForState({ ...available, phase })?.version).toBe('0.9.1')
+    expect(render({ ...base, phase })).toBe('')
   })
 
   it.each([null, '0.9.0', '0.8.9', '0.10', 'v0.10.0', '01.0.0', '1.0.0-beta.1', '9007199254740992.0.0', '<script>bad()</script>'])('ignores missing, invalid or non-new version %s', latestVersion => {
@@ -50,48 +51,25 @@ describe('persistent software update notification', () => {
     expect(updateNoticeForState({ ...available, latestVersion })?.version).toBe(latestVersion)
   })
 
-  it('keeps a dismissed version hidden across progress, readiness, refreshes and older-version replays for this run', () => {
-    const first = updateNoticeForState(available)!
-    const dismissed = new Set([first.key])
+  it('keeps a dismissed version and older replays hidden across progress, readiness and refreshes', () => {
+    const dismissed = updateNoticeForState(available)!.version
     expect(updateNoticeForState({ ...available, phase: 'ready' }, dismissed)).toBeNull()
     expect(updateNoticeForState({ ...available, checkedAt: '2026-10-17T01:00:00.000Z' }, dismissed)).toBeNull()
     expect(updateNoticeForState({ ...available, phase: 'checking' }, dismissed)).toBeNull()
     const second = updateNoticeForState({ ...available, latestVersion: '0.9.2' }, dismissed)!
     expect(second.version).toBe('0.9.2')
-    dismissed.add(second.key)
-    expect(updateNoticeForState(available, dismissed)).toBeNull()
+    expect(updateNoticeForState(available, second.version)).toBeNull()
     expect(updateNoticeForState(available)?.version).toBe('0.9.1')
   })
 
-  it('makes route failures visible without claiming sign-in expired or disturbing the task', () => {
-    const html = render({ ...base, phase: 'error', error: 'update.manifestUnavailable' })
-    expect(html).toContain('软件更新遇到问题')
-    expect(html).toContain('到设置重试')
-    expect(html).toContain('不会中断当前任务')
-    expect(html).toContain('关闭本次错误提醒')
-    expect(html).not.toContain('登录失效')
-    expect(html).not.toContain('发现新版本')
-  })
-
-  it('dismisses a repeated error independently of version notifications and allows a different error', () => {
-    const error: UpdateState = { ...base, phase: 'error', error: 'update.timeout' }
-    const dismissed = new Set([updateNoticeForState(error)!.key])
-    expect(updateNoticeForState({ ...error, checkedAt: '2026-10-17T01:00:00.000Z' }, dismissed)).toBeNull()
-    expect(updateNoticeForState({ ...error, error: 'update.manifestSignature' }, dismissed)?.kind).toBe('error')
-    expect(updateNoticeForState(available, dismissed)?.kind).toBe('available')
+  it.each(['update.manifestUnavailable', 'update.timeout', 'update.manifestSignature', '<script>bad()</script>', null])('does not interrupt the user with the automatic check error %s', error => {
+    expect(render({ ...base, phase: 'error', error })).toBe('')
+    expect(updateNoticeForState({ ...base, phase: 'error', error })).toBeNull()
+    expect(updateNoticeForState({ ...available, phase: 'error', error }, available.latestVersion)).toBeNull()
   })
 
   it('does not present a user-cancelled operation as a failed update check', () => {
     expect(render({ ...base, phase: 'error', error: 'update.cancelled' })).toBe('')
-  })
-
-  it('handles an unspecified error without exposing untrusted technical details', () => {
-    expect(render({ ...base, phase: 'error', error: null })).toContain('软件更新遇到问题')
-    const html = render({ ...base, phase: 'error', error: '<script>bad()</script>' }, 'en')
-    expect(html).toContain('Software update needs attention')
-    expect(html).toContain('Retry in Settings')
-    expect(html).not.toContain('bad()')
-    expect(html).not.toMatch(/\p{Script=Han}/u)
   })
 
   it('does not invoke settings, download, install or any bridge while rendering a new version', () => {

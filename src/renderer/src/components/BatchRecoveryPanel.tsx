@@ -4,6 +4,7 @@ import { localizeMessage } from '../../../shared/localization'
 import type { BatchStopCode, BatchSummary, SteamFriendCommenterApi } from '../../../shared/types'
 import { useI18n, type Translate } from '../i18n'
 import { unwrap } from '../ui'
+import { useVisibleTick } from '../use-visible-tick'
 import type { RunAction } from './types'
 import './batch-recovery.css'
 
@@ -30,13 +31,8 @@ export function batchCooldownActive(batch: BatchSummary, now = Date.now()): bool
 }
 
 export function useBatchCooldownActive(batch: BatchSummary): boolean {
-  const [, tick] = useState(0)
   const active = batchCooldownActive(batch)
-  useEffect(() => {
-    if (!active) return
-    const timer = window.setInterval(() => tick(value => value + 1), 1000)
-    return () => window.clearInterval(timer)
-  }, [batch.id, batch.accessDeniedUntil, active])
+  useVisibleTick(active)
   return active
 }
 
@@ -96,7 +92,6 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
   runAction: RunAction
 }): React.JSX.Element {
   const { language, t } = useI18n()
-  const [, tick] = useState(0)
   const now = Date.now()
   const [acting, setActing] = useState(false)
   const lock = useRef(false)
@@ -130,11 +125,7 @@ export function BatchRecoveryPanel({ batch, authenticated, otherTaskActive = fal
     && Number.isFinite(Date.parse(batch.nextRetryAt!)) && !persistentAccessDenied && !unresolvedPost
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
-  useEffect(() => {
-    if (!scheduled || accessCooldown) return
-    const timer = window.setInterval(() => tick(value => value + 1), 1000)
-    return () => window.clearInterval(timer)
-  }, [batch.id, batch.nextRetryAt, accessDeniedUntil, scheduled, accessCooldown])
+  useVisibleTick(scheduled && !accessCooldown)
 
   const perform = async (enabled: boolean, resume = false): Promise<void> => {
     if (lock.current || !mounted.current || disabled || !active || (resume && !canResume)) return
