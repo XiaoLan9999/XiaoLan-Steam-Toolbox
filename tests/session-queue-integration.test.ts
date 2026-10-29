@@ -41,6 +41,10 @@ vi.mock('steam-session', async () => {
   }
 })
 
+vi.mock('../src/main/community-web-session', () => ({
+  getCommunityWebCookies: (accountId: string) => mocks.webCookies(accountId)
+}))
+
 const accountA = '76561198000000001'
 const accountB = '76561198000000002'
 const friendIds = ['76561198000000101', '76561198000000102', '76561198000000103']

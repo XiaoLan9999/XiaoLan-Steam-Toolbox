@@ -56,7 +56,10 @@ describe('safe login diagnostics', () => {
 
   it('maps only fixed finalize and transfer paths on known hosts', () => {
     expect(loginDiagnosticEndpoint({ host: 'login.steampowered.com:443', path: '/jwt/finalizelogin?token=private' })).toBe('finalize')
-    expect(loginDiagnosticEndpoint({ host: 'steamcommunity.com', path: '/login/settoken' })).toBe('transfer')
+    expect(loginDiagnosticEndpoint({ host: 'steamcommunity.com', path: '/login/settoken' })).toBe('community-transfer')
+    expect(loginDiagnosticEndpoint({ host: 'store.steampowered.com', path: '/login/settoken' })).toBe('store-transfer')
+    expect(loginDiagnosticEndpoint({ host: 'help.steampowered.com', path: '/login/settoken' })).toBe('help-transfer')
+    expect(loginDiagnosticEndpoint({ host: 'checkout.steampowered.com', path: '/login/settoken' })).toBe('checkout-transfer')
     expect(loginDiagnosticEndpoint({ host: 'private-user.invalid', path: '/login/settoken' })).toBe('other')
     expect(loginDiagnosticEndpoint({ host: 'api.steampowered.com', path: 'toString' })).toBe('other')
     expect(loginDiagnosticEndpoint({ host: 'api.steampowered.com', path: '/private-token' })).toBe('other')

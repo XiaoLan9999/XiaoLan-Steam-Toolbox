@@ -345,6 +345,7 @@ export type AppEvent =
   | { type: 'friendPolicyChanged'; policy: FriendPolicy }
   | { type: 'notice'; level: 'info' | 'success' | 'warning' | 'error'; message: string }
   | { type: 'authRemoteInteraction'; loginId: string }
+  | { type: 'authCompleting'; loginId: string }
   | { type: 'authFinished'; loginId: string; accountId: string }
   | { type: 'authFailed'; loginId: string; message: string }
   | { type: 'batchProgress'; batchId: string; summary?: BatchSummary | null }

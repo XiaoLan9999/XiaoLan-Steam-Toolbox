@@ -14,10 +14,10 @@ export interface LoginDiagnosticEvent {
   attempt: number
   mode: 'qr' | 'credentials' | 'restore'
   stage: 'requested' | 'qr-ready' | 'remote-interaction' | 'authenticated' | 'web-cookies' |
-    'session-verify' | 'profile' | 'completed' | 'failed' | 'cancelled' | 'timeout' | 'request'
+    'session-verify' | 'profile' | 'completed' | 'failed' | 'cancelled' | 'timeout' | 'request' | 'guard-submit'
   outcome: 'started' | 'success' | 'failed' | 'cancelled' | 'response'
   endpoint?: 'qr-begin' | 'credentials-begin' | 'poll' | 'guard' | 'rsa' | 'access-token' |
-    'finalize' | 'transfer' | 'other'
+    'finalize' | 'transfer' | 'community-transfer' | 'store-transfer' | 'help-transfer' | 'checkout-transfer' | 'other'
   reason?: 'network' | 'tls' | 'dns' | 'timeout' | 'rate-limited' | 'access-denied' |
     'credentials-rejected' | 'invalid-response' | 'cancelled' | 'unknown'
   networkCode?: LoginNetworkCode
@@ -56,10 +56,10 @@ const gameStatusStages = ['connect-requested', 'connect-reused', 'connect-deferr
   'simulation-context-confirmed', 'simulation-context-blocked', 'simulation-context-unavailable', 'unknown']
 const loginModes = ['qr', 'credentials', 'restore']
 const loginStages = ['requested', 'qr-ready', 'remote-interaction', 'authenticated', 'web-cookies',
-  'session-verify', 'profile', 'completed', 'failed', 'cancelled', 'timeout', 'request']
+  'session-verify', 'profile', 'completed', 'failed', 'cancelled', 'timeout', 'request', 'guard-submit']
 const loginOutcomes = ['started', 'success', 'failed', 'cancelled', 'response']
 const loginEndpoints = ['qr-begin', 'credentials-begin', 'poll', 'guard', 'rsa', 'access-token',
-  'finalize', 'transfer', 'other']
+  'finalize', 'transfer', 'community-transfer', 'store-transfer', 'help-transfer', 'checkout-transfer', 'other']
 const loginReasons = ['network', 'tls', 'dns', 'timeout', 'rate-limited', 'access-denied',
   'credentials-rejected', 'invalid-response', 'cancelled', 'unknown']
 

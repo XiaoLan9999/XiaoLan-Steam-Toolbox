@@ -28,6 +28,8 @@ import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
 import type { LoginDiagnosticEvent } from '../shared/diagnostics'
 import { loginDiagnosticElapsed, loginDiagnosticEndpoint, loginDiagnosticFailure } from './login-diagnostic'
+import { getCommunityWebCookies } from './community-web-session'
+import { LoginApiTransport } from './login-api-transport'
 
 interface RuntimeSession {
   accountId: string
@@ -81,6 +83,7 @@ export class SteamService {
   private runtime: RuntimeSession | null = null
   private readonly pendingLogins = new Map<string, LoginSession>()
   private readonly completingLogins = new Set<string>()
+  private readonly guardSubmissions = new Map<string, Promise<void>>()
   private readonly statuses = new Map<string, SessionStatus>()
   private readonly statusChecks = new Map<string, {
     generation: number; state: 'checking' | 'verified' | 'unverified'; checkedAt: string | null;
@@ -90,6 +93,8 @@ export class SteamService {
   private disposed = false
   private keepAliveTimer: ReturnType<typeof setTimeout> | null = null
   private readonly loginAgents = new Map<LoginSession, Agent>()
+  private readonly loginRequests = new Map<LoginSession, AbortController>()
+  private readonly loginTransports = new Map<LoginSession, LoginApiTransport>()
   private loginAttemptSequence = 0
   private readonly loginDiagnostics = new WeakMap<LoginSession, {
     attempt: number; mode: LoginDiagnosticEvent['mode']; startedAt: number; terminal: boolean
@@ -329,7 +334,7 @@ export class SteamService {
     this.attachPendingLogin(loginId, session)
     try {
       const response = await session.startWithQR()
-      if (this.pendingLogins.get(loginId) !== session) {
+      if (this.pendingLogins.get(loginId) !== session && this.runtime?.loginSession !== session) {
         throw new DomainError('LOGIN_NOT_FOUND', '登录请求已失效，请重新开始')
       }
       if (!response.qrChallengeUrl) {
@@ -384,9 +389,26 @@ export class SteamService {
   async submitSteamGuard(loginId: string, code: string): Promise<void> {
     const session = this.pendingLogins.get(loginId)
     if (!session) throw new DomainError('LOGIN_NOT_FOUND', '登录请求已失效，请重新开始')
+    if (this.completingLogins.has(loginId)) return
+    const pending = this.guardSubmissions.get(loginId)
+    if (pending) return pending
     const normalizedCode = code.trim()
     if (!normalizedCode) throw new DomainError('EMPTY_GUARD_CODE', '请输入 Steam Guard 验证码')
-    await session.submitSteamGuardCode(normalizedCode)
+    const operation = (async (): Promise<void> => {
+      this.loginDiagnostic(session, 'guard-submit', 'started')
+      try {
+        await session.submitSteamGuardCode(normalizedCode)
+        this.loginDiagnostic(session, 'guard-submit', 'success')
+      } catch (error) {
+        // The SDK cancels its auth polling after authentication, before web cookies are ready.
+        if (this.pendingLogins.get(loginId) === session && this.completingLogins.has(loginId)) return
+        this.loginDiagnostic(session, 'guard-submit', 'failed', loginDiagnosticFailure(error))
+        throw error
+      }
+    })()
+    this.guardSubmissions.set(loginId, operation)
+    try { await operation }
+    finally { if (this.guardSubmissions.get(loginId) === operation) this.guardSubmissions.delete(loginId) }
   }
 
   cancelLogin(loginId: string): void {
@@ -679,16 +701,38 @@ export class SteamService {
 
   private createLoginSession(mode: LoginDiagnosticEvent['mode']): LoginSession {
     let session: LoginSession | undefined
+    const controller = new AbortController()
+    const transport = new LoginApiTransport({ signal: controller.signal, onDiagnostic: event => {
+      if (session) this.loginDiagnostic(session, 'request', event.outcome, event)
+    } })
     const agent = new BoundedLoginAgent(LOGIN_REQUEST_TIMEOUT_MS, event => {
       if (session) this.loginDiagnostic(session, 'request', event.outcome, event)
     }, () => this.now())
-    session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent, userAgent: STEAM_WEB_USER_AGENT })
+    session = new LoginSession(EAuthTokenPlatformType.WebBrowser, { agent, transport, userAgent: STEAM_WEB_USER_AGENT })
     session.loginTimeout = 5 * 60 * 1000
     this.loginAgents.set(session, agent)
+    this.loginRequests.set(session, controller)
+    this.loginTransports.set(session, transport)
     this.loginAttemptSequence = this.loginAttemptSequence % 0xffff_ffff + 1
     this.loginDiagnostics.set(session, { attempt: this.loginAttemptSequence, mode, startedAt: this.now(), terminal: false })
     this.loginDiagnostic(session, 'requested', 'started')
     return session
+  }
+
+  private async communityWebCookies(session: LoginSession): Promise<string[]> {
+    const owner = this.loginRequests.get(session)
+    if (!owner || owner.signal.aborted) throw new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更')
+    const configured = this.options.loginAttemptTimeoutMs ?? LOGIN_ATTEMPT_TIMEOUT_MS
+    const timeoutMs = Number.isFinite(configured) && configured > 0 && configured <= 2_147_483_647 ? configured : LOGIN_ATTEMPT_TIMEOUT_MS
+    const timeout = new AbortController()
+    const timer = setTimeout(() => timeout.abort(new DomainError('LOGIN_ATTEMPT_TIMEOUT', 'Steam 网页会话建立超时，请重试', true)), timeoutMs)
+    timer.unref?.()
+    try {
+      return await getCommunityWebCookies(session.steamID.getSteamID64(), session.refreshToken, {
+        signal: AbortSignal.any([owner.signal, timeout.signal]),
+        onDiagnostic: event => this.loginDiagnostic(session, 'request', event.outcome, event)
+      })
+    } finally { clearTimeout(timer) }
   }
 
   private startupWebCookies(session: LoginSession): Promise<string[]> {
@@ -711,7 +755,7 @@ export class SteamService {
       timer.unref?.()
       this.startupAttempts.set(session, () => finish(() => reject(new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更'))))
       try {
-        void session.getWebCookies().then(cookies => finish(() => resolve(cookies)), error => finish(() => reject(error)))
+        void this.communityWebCookies(session).then(cookies => finish(() => resolve(cookies)), error => finish(() => reject(error)))
       } catch (error) { finish(() => reject(error)) }
     })
   }
@@ -751,9 +795,10 @@ export class SteamService {
     const current = (): boolean => !this.disposed && this.generation === generation && this.pendingLogins.get(loginId) === session
     try {
       this.loginDiagnostic(session, 'authenticated', 'success')
+      this.emit({ type: 'authCompleting', loginId })
       const accountId = session.steamID.getSteamID64()
       this.loginDiagnostic(session, 'web-cookies', 'started')
-      const cookies = await session.getWebCookies()
+      const cookies = await this.communityWebCookies(session)
       if (!current()) return
       this.loginDiagnostic(session, 'web-cookies', 'success')
       const community = this.createCommunity(accountId, cookies)
@@ -847,7 +892,7 @@ export class SteamService {
     const phase = runtime.recovering ? 'recover' : 'refresh'
     let request: Promise<string[]>
     try {
-      request = runtime.loginSession.getWebCookies()
+      request = this.communityWebCookies(runtime.loginSession)
     } catch (error) {
       request = Promise.reject(error)
     }
@@ -958,6 +1003,10 @@ export class SteamService {
     if (!session) return
     this.loginDiagnostic(session, 'cancelled', 'cancelled', { reason: 'cancelled' })
     this.startupAttempts.get(session)?.()
+    this.loginRequests.get(session)?.abort(new DomainError('SESSION_CHANGED', 'Steam 账号或会话已变更'))
+    this.loginRequests.delete(session)
+    this.loginTransports.get(session)?.close()
+    this.loginTransports.delete(session)
     session.cancelLoginAttempt?.()
     this.loginAgents.get(session)?.destroy()
     this.loginAgents.delete(session)

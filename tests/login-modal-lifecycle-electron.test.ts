@@ -39,14 +39,15 @@ async function fixture(language = 'en', theme = 'light') {
   document.documentElement.dataset.theme = theme;
   document.getElementById('root').replaceChildren();
   root = createRoot(document.getElementById('root'));
-  const requests = [], exports = [], cancellations = [], listeners = new Set();
+  const requests = [], credentialRequests = [], guardRequests = [], exports = [], cancellations = [], listeners = new Set();
   let closeCalls = 0, credentialCalls = 0, directoryCalls = 0, successCalls = 0;
+  let allowCredentials = false, allowGuard = false;
   let open = true, screen = 'login';
   window.fixtureQr = () => Promise.resolve(image);
   window.steamCommenter = {
     startQrLogin: () => { const next = pending(); requests.push(next); return next.promise; },
-    startCredentialsLogin: () => { credentialCalls++; throw new Error('Credential requests are forbidden in this fixture'); },
-    submitSteamGuard: () => { throw new Error('Guard requests are forbidden in this fixture'); },
+    startCredentialsLogin: () => { credentialCalls++; if (!allowCredentials) throw new Error('Credential requests are forbidden in this fixture'); const next = pending(); credentialRequests.push(next); return next.promise; },
+    submitSteamGuard: () => { if (!allowGuard) throw new Error('Guard requests are forbidden in this fixture'); const next = pending(); guardRequests.push(next); return next.promise; },
     cancelLogin: async id => { cancellations.push(id); return ok(undefined); },
     onEvent: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     exportDiagnosticLogs: () => { const next = pending(); exports.push(next); return next.promise; },
@@ -60,8 +61,12 @@ async function fixture(language = 'en', theme = 'light') {
   const emit = async event => { await act(async () => { for (const listener of listeners) listener(event); }); };
   const resolveQr = async (index, id) => { check(requests[index], 'Missing QR request ' + index); await act(async () => requests[index].resolve(qrResult(id))); };
   const resolveExport = async (index, value) => { check(exports[index], 'Missing export request ' + index); await act(async () => exports[index].resolve(value)); };
+  const resolveCredentials = async (index, id) => { check(credentialRequests[index], 'Missing credential request ' + index); await act(async () => credentialRequests[index].resolve(ok({ loginId: id, mode: 'credentials', actionRequired: true, guardTypes: ['deviceCode'] }))); };
+  const submit = async (times = 1) => { const form = document.querySelector('form'); check(form, 'Missing login form'); await act(async () => { for (let i = 0; i < times; i++) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); }); };
+  const enterCode = async () => { const input = document.querySelector('form input'); check(input, 'Missing Guard input'); await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'SYNTHETIC'); input.dispatchEvent(new Event('input', { bubbles: true })); }); };
   await paint();
-  return { requests, exports, cancellations, button, click, emit, resolveQr, resolveExport, text: () => document.body.textContent,
+  return { requests, credentialRequests, guardRequests, exports, cancellations, button, click, emit, resolveQr, resolveExport, resolveCredentials, submit, enterCode, text: () => document.body.textContent,
+    enableCredentials() { allowCredentials = true; }, enableGuard() { allowGuard = true; },
     async setOpen(value) { open = value; await paint(); }, async settings() { open = false; screen = 'settings'; await paint(); },
     counts: () => ({ closeCalls, credentialCalls, directoryCalls, successCalls }),
     hasQr: () => !!document.querySelector('.qr-frame img'),
@@ -137,6 +142,94 @@ window.runFixture = async () => {
   check(!f.hasQr() && f.text().includes('previous QR code is no longer valid'), 'QR rendering completed after authFailed and revived an invalid code');
   checkpoints.push('failure-during-qr-render');
 
+  f = await fixture();
+  const completingPixels = pending(); window.fixtureQr = () => completingPixels.promise;
+  await f.resolveQr(0, 'completing-during-pixels');
+  await f.emit({ type: 'authCompleting', loginId: 'completing-during-pixels' });
+  await act(async () => completingPixels.resolve(image));
+  check(!f.hasQr() && f.button('Refresh QR code').disabled, 'Completing revived QR pixels or left refresh enabled');
+  check(f.text().includes('Steam authorization is complete'), 'Completing progress must be visible');
+  await f.emit({ type: 'authRemoteInteraction', loginId: 'completing-during-pixels' });
+  check(!f.text().includes('Scanned'), 'Late scan status replaced authenticated progress');
+  await f.click('Account & password');
+  check(f.cancellations.includes('completing-during-pixels') && document.querySelector('input[type=password]'), 'Completing must still allow explicit cancellation by mode switch');
+  await f.emit({ type: 'authCompleting', loginId: 'completing-during-pixels' });
+  check(document.querySelector('input[type=password]'), 'A stale completing event contaminated the next mode');
+  checkpoints.push('completing-during-qr-render');
+
+  f = await fixture();
+  const rejectedPixels = pending(); window.fixtureQr = () => rejectedPixels.promise;
+  await f.resolveQr(0, 'completing-before-pixel-error');
+  await f.emit({ type: 'authCompleting', loginId: 'completing-before-pixel-error' });
+  await act(async () => rejectedPixels.reject(new Error('SYNTHETIC_PIXEL_FAILURE')));
+  check(f.text().includes('Steam authorization is complete') && !f.text().includes('SYNTHETIC_PIXEL_FAILURE') && !f.cancellations.includes('completing-before-pixel-error'), 'A late QR render error cancelled an already authenticated login');
+  checkpoints.push('completing-before-qr-render-error');
+
+  for (const terminal of ['authCompleting', 'authFailed', 'authFinished']) {
+    f = await fixture();
+    await f.emit({ type: 'authFailed', loginId: 'unrelated-login', message: 'UNRELATED_FAILURE' });
+    await f.emit({ type: terminal, loginId: 'early-' + terminal, message: 'EARLY_FAILURE', accountId: 'synthetic-account' });
+    await f.resolveQr(0, 'early-' + terminal);
+    check(!f.hasQr() && !f.text().includes('UNRELATED_FAILURE'), 'Early authentication event was lost or matched another login');
+    if (terminal === 'authCompleting') {
+      check(f.text().includes('Steam authorization is complete') && f.button('Refresh QR code').disabled, 'Early completing was overwritten by QR ready');
+      await f.click('Close');
+      check(f.cancellations.includes('early-' + terminal), 'Completing must still allow closing');
+    } else if (terminal === 'authFailed') {
+      check(f.text().includes('EARLY_FAILURE') && !f.button('Refresh QR code').disabled, 'Early failure did not clear the pending QR');
+    } else {
+      check(f.counts().successCalls === 1 && f.counts().closeCalls === 1, 'Early finished did not complete exactly once');
+      check(f.text().includes('Signed in') && f.button('Refresh QR code').disabled, 'Early finished exposed a new sign-in action');
+    }
+  }
+  checkpoints.push('early-qr-authentication-events');
+
+  for (const terminal of ['authCompleting', 'authFailed', 'authFinished']) {
+    f = await fixture();
+    f.enableCredentials();
+    await f.click('Account & password');
+    await f.submit();
+    await f.emit({ type: terminal, loginId: 'early-credentials-' + terminal, message: 'EARLY_CREDENTIALS_FAILURE', accountId: 'synthetic-account' });
+    await f.resolveCredentials(0, 'early-credentials-' + terminal);
+    check(!f.button('Submit code'), 'Early authentication event left a stale Guard form');
+    if (terminal === 'authCompleting') check(f.text().includes('Steam authorization is complete'), 'Early credentials completing was overwritten');
+    else if (terminal === 'authFailed') check(f.text().includes('EARLY_CREDENTIALS_FAILURE') && document.querySelector('input[type=password]'), 'Early credentials failure did not reset the form');
+    else check(f.counts().successCalls === 1 && f.counts().closeCalls === 1 && f.text().includes('Signed in'), 'Early credentials finished was not delivered');
+  }
+  checkpoints.push('early-credentials-authentication-events');
+
+  f = await fixture();
+  f.enableCredentials(); f.enableGuard();
+  await f.click('Account & password');
+  await f.submit();
+  await f.resolveCredentials(0, 'guard-completing');
+  await f.enterCode();
+  await f.submit(2);
+  check(f.guardRequests.length === 1, 'Guard submission must be single flight before React rerenders');
+  await f.emit({ type: 'authCompleting', loginId: 'guard-completing' });
+  check(!f.button('Submit code') && !document.querySelector('form'), 'Authenticated login must not permit another Guard code');
+  await act(async () => f.guardRequests[0].resolve({ ok: false, error: { code: 'SYNTHETIC_SDK_CANCELLED', message: 'Login attempt has been canceled' } }));
+  check(!document.querySelector('.inline-error') && f.text().includes('Steam authorization is complete'), 'Late Guard rejection replaced authenticated progress');
+  await f.emit({ type: 'authFailed', loginId: 'guard-completing', message: 'SYNTHETIC_COMMUNITY_FAILURE' });
+  check(f.text().includes('SYNTHETIC_COMMUNITY_FAILURE') && document.querySelector('input[type=password]'), 'Community failure must reset completing and allow a fresh explicit attempt');
+  await f.submit();
+  await f.resolveCredentials(1, 'guard-retry');
+  check(f.button('Submit code') && !f.button('Submit code').disabled, 'A previous completing attempt blocked the next login');
+  checkpoints.push('guard-completing-single-flight-and-late-rejection');
+
+  f = await fixture();
+  f.enableCredentials(); f.enableGuard();
+  await f.click('Account & password');
+  await f.submit();
+  await f.resolveCredentials(0, 'guard-finished');
+  await f.enterCode();
+  await f.submit();
+  await f.emit({ type: 'authCompleting', loginId: 'guard-finished' });
+  await f.emit({ type: 'authFinished', loginId: 'guard-finished', accountId: 'synthetic-account' });
+  await act(async () => f.guardRequests[0].resolve(ok(undefined)));
+  check(f.counts().successCalls === 1 && f.text().includes('Signed in') && !f.text().includes('Code submitted'), 'Late Guard success replaced finished progress');
+  checkpoints.push('guard-finished-before-submit-response');
+
   for (const language of ['zh-CN', 'en']) for (const theme of ['light', 'dark']) {
     f = await fixture(language, theme);
     await f.settings();
@@ -203,7 +296,9 @@ app.whenReady().then(async () => {
     }
     expect(JSON.parse(await readFile(result, 'utf8'))).toMatchObject({ realReact: true, realDom: true, realAccounts: false,
       automaticRetries: false, externalRequests: 0, checkpoints: ['auth-failure-and-login-export', 'close-reopen-late-ipc',
-        'mode-switch-late-ipc-and-pixels', 'failure-during-qr-render', 'settings-zh-CN-light', 'settings-zh-CN-dark', 'settings-en-light', 'settings-en-dark'] })
+        'mode-switch-late-ipc-and-pixels', 'failure-during-qr-render', 'completing-during-qr-render', 'completing-before-qr-render-error', 'early-qr-authentication-events',
+        'early-credentials-authentication-events', 'guard-completing-single-flight-and-late-rejection', 'guard-finished-before-submit-response',
+        'settings-zh-CN-light', 'settings-zh-CN-dark', 'settings-en-light', 'settings-en-dark'] })
   } finally {
     if (dirname(directory) !== temporary || !basename(directory).startsWith('xiaolan-login-lifecycle-test-') ||
         await realpath(directory) !== directory) throw new Error('Unsafe login fixture cleanup boundary')

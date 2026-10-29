@@ -76,6 +76,10 @@ vi.mock('../src/main/community-client', () => ({
   }
 }))
 
+vi.mock('../src/main/community-web-session', () => ({
+  getCommunityWebCookies: (...args: unknown[]) => mocks.webCookies(...args)
+}))
+
 const accountA = '76561198000000001'
 const accountB = '76561198000000002'
 const friendA = '76561198000000101'
@@ -809,6 +813,71 @@ describe('read-only comment recovery identity checks', () => {
 })
 
 describe('Steam login diagnostics', () => {
+  it('announces session finalization and ignores repeated Guard codes after authentication', async () => {
+    const { service, events } = await createService(false)
+    const login = await service.startCredentialsLogin('fixture', 'fixture-only')
+    const session = mocks.sessions.at(-1)! as typeof mocks.sessions[number] & { submitSteamGuardCode: ReturnType<typeof vi.fn> }
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    session.emit('authenticated')
+    expect(events).toContainEqual({ type: 'authCompleting', loginId: login.loginId })
+    await expect(service.submitSteamGuard(login.loginId, 'fixture-code')).resolves.toBeUndefined()
+    await expect(service.submitSteamGuard(login.loginId, '')).resolves.toBeUndefined()
+    expect(session.submitSteamGuardCode).not.toHaveBeenCalled()
+    expect(events.some(event => event.type === 'authFinished')).toBe(false)
+    pending.resolve(['sessionid=fixture-community'])
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'authFinished', loginId: login.loginId })))
+  })
+
+  it('shares an in-flight Guard submission and tolerates SDK cancellation only after authentication', async () => {
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service, events } = await createService(false, { onLoginDiagnostic: event => diagnostics.push(event) })
+    const login = await service.startCredentialsLogin('fixture', 'fixture-only')
+    const session = mocks.sessions.at(-1)! as typeof mocks.sessions[number] & { submitSteamGuardCode: ReturnType<typeof vi.fn> }
+    const guard = deferred<void>()
+    session.submitSteamGuardCode.mockReturnValueOnce(guard.promise)
+    const first = service.submitSteamGuard(login.loginId, 'fixture-code')
+    const second = service.submitSteamGuard(login.loginId, 'different-code')
+    expect(session.submitSteamGuardCode).toHaveBeenCalledOnce()
+    const cookies = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(cookies.promise)
+    session.emit('authenticated')
+    guard.reject(new Error('Login attempt has been canceled'))
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+    expect(diagnostics.filter(event => event.stage === 'guard-submit' && event.outcome === 'failed')).toEqual([])
+    cookies.resolve(['sessionid=fixture-community'])
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'authFinished', loginId: login.loginId })))
+    expect(JSON.stringify(diagnostics)).not.toMatch(/fixture-code|different-code/)
+  })
+
+  it('does not hide a Guard rejection while authentication is still pending', async () => {
+    const diagnostics: LoginDiagnosticEvent[] = []
+    const { service } = await createService(false, { onLoginDiagnostic: event => diagnostics.push(event) })
+    const login = await service.startCredentialsLogin('fixture', 'fixture-only')
+    const session = mocks.sessions.at(-1)! as typeof mocks.sessions[number] & { submitSteamGuardCode: ReturnType<typeof vi.fn> }
+    session.submitSteamGuardCode.mockRejectedValueOnce(Object.assign(new Error('Synthetic rejection'), { eresult: 88 }))
+    await expect(service.submitSteamGuard(login.loginId, 'fixture-code')).rejects.toMatchObject({ eresult: 88 })
+    expect(diagnostics).toContainEqual(expect.objectContaining({ stage: 'guard-submit', outcome: 'failed', eresult: 88 }))
+  })
+
+  it('aborts only the cancelled Community session and ignores its late cookies', async () => {
+    const { service, events } = await createService(false)
+    const login = await service.startQrLogin()
+    const session = mocks.sessions.at(-1)!
+    const pending = deferred<string[]>()
+    mocks.webCookies.mockReturnValueOnce(pending.promise)
+    session.emit('authenticated')
+    const [steamId, token, options] = mocks.webCookies.mock.calls.at(-1)! as [string, string, { signal: AbortSignal }]
+    expect(steamId).toBe(accountA)
+    expect(token).toBe(session.refreshToken)
+    expect(options.signal.aborted).toBe(false)
+    service.cancelLogin(login.loginId)
+    expect(options.signal.aborted).toBe(true)
+    pending.resolve(['sessionid=cancelled-community'])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(events.some(event => event.type === 'authFinished' && event.loginId === login.loginId)).toBe(false)
+  })
+
   it.each(['qr', 'credentials'] as const)('records the %s lifecycle with local attempt IDs and no login data', async mode => {
     const diagnostics: LoginDiagnosticEvent[] = []
     const { service, events } = await createService(false, { onLoginDiagnostic: event => diagnostics.push(event) })
@@ -1372,8 +1441,9 @@ function notices(events: AppEvent[]): Array<Extract<AppEvent, { type: 'notice' }
   return events.filter((event) => event.type === 'notice')
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
-  return { promise, resolve }
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise })
+  return { promise, resolve, reject }
 }

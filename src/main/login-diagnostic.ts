@@ -84,7 +84,12 @@ export function loginDiagnosticEndpoint(options: RequestOptions): NonNullable<Lo
     return Object.hasOwn(endpoints, path) ? endpoints[path]! : 'other'
   }
   if (hostname === 'login.steampowered.com' && path === '/jwt/finalizelogin') return 'finalize'
-  if (['steamcommunity.com', 'store.steampowered.com', 'help.steampowered.com', 'checkout.steampowered.com'].includes(hostname)
-    && ['/login/settoken', '/login/transfer'].includes(path)) return 'transfer'
+  if (['/login/settoken', '/login/transfer'].includes(path)) {
+    const targets: Record<string, NonNullable<LoginDiagnosticEvent['endpoint']>> = {
+      'steamcommunity.com': 'community-transfer', 'store.steampowered.com': 'store-transfer',
+      'help.steampowered.com': 'help-transfer', 'checkout.steampowered.com': 'checkout-transfer'
+    }
+    if (Object.hasOwn(targets, hostname)) return targets[hostname]!
+  }
   return 'other'
 }
