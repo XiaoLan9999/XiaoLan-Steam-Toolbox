@@ -40,6 +40,20 @@ const login = (fields: Record<string, unknown> = {}): Record<string, unknown> =>
   attempt: 1, mode: 'qr', stage: 'request', outcome: 'response', ...fields })
 
 describe('diagnostic event projection', () => {
+  it('projects only reviewed Community request stages and bounded safe network metadata at export', () => {
+    const source = { event: 'session', phase: 'community-request', outcome: 'request-failed', reason: 'response-read-error',
+      method: 'POST', endpoint: 'profile-comment', requestStage: 'body', networkCode: 'ECONNRESET', httpStatus: 200, elapsedMs: 123,
+      error: canary, body: canary, cause: { token: canary }, url: canary }
+    const safe = sanitizeDiagnosticRecord(source)
+    expect(safe).toEqual({ event: 'session', phase: 'community-request', outcome: 'request-failed', reason: 'response-read-error',
+      method: 'POST', endpoint: 'profile-comment', requestStage: 'body', networkCode: 'ECONNRESET', httpStatus: 200, elapsedMs: 123 })
+    expect(JSON.stringify(safe)).not.toContain(canary)
+    for (const elapsedMs of [-1, 1.5, Infinity, NaN, 600_001, '100']) {
+      const malformed = sanitizeDiagnosticRecord({ ...source, requestStage: canary, networkCode: canary, elapsedMs })
+      for (const field of ['requestStage', 'networkCode', 'elapsedMs']) expect(malformed).not.toHaveProperty(field)
+    }
+  })
+
   it('projects every supported event without retaining nested private fields', () => {
     const sensitive = { accountId: canary, steamId: canary, accountName: canary, friend: canary, body: canary,
       qr: canary, token: canary, cookie: canary, path: canary, message: canary, stack: canary }

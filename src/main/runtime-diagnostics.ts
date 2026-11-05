@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { sanitizeDiagnosticRecord, type LoginDiagnosticEvent } from '../shared/diagnostics'
+import { COMMUNITY_REQUEST_STAGES, LOGIN_NETWORK_CODES, sanitizeDiagnosticRecord, type LoginDiagnosticEvent } from '../shared/diagnostics'
 
 interface Metric {
   pid: number
@@ -35,7 +35,10 @@ const sessionReasons = new Set(['http-401', 'login-redirect', 'not-logged-on', '
   'identity-mismatch', 'identity-guest', 'identity-missing', 'transport-error', 'network', 'timeout', 'token-rejected',
   'token-missing', 'session-changed', 'scheduled', 'on-demand', 'cookie-expired', 'unknown', 'verified',
   'credentials_rejected', 'network_or_service', 'rate_limited', 'community_access_denied', 'session_check_failed', 'session_changed', 'comment-reconciled',
-  'baseline-missing', 'baseline-incomplete', 'baseline-unreadable', 'target-unavailable'])
+  'baseline-missing', 'baseline-incomplete', 'baseline-unreadable', 'target-unavailable',
+  'http-error', 'response-read-error', 'response-processing-error', 'invalid-json'])
+const communityRequestStages = new Set<string>(COMMUNITY_REQUEST_STAGES)
+const communityNetworkCodes = new Set<string>(LOGIN_NETWORK_CODES)
 const communityEndpoints = new Set(['profile-comment', 'session-verify', 'other'])
 const responseKinds = new Set(['json', 'html', 'empty', 'other'])
 const nativeStages = new Set(['worker-started', 'stop-requested', 'forced-kill', 'worker-closed', 'retire-timeout',
@@ -97,7 +100,7 @@ export class RuntimeDiagnostics {
 
   sessionEvent(event: { phase: string; outcome: string; reason: string; httpStatus?: number; method?: string;
     endpoint?: string; responseKind?: string; denialKind?: string; responseCode?: number; retryAfterMs?: number;
-    commentDenialReason?: string; errorPresent?: boolean }): void {
+    commentDenialReason?: string; errorPresent?: boolean; requestStage?: string; networkCode?: string; elapsedMs?: number }): void {
     if (this.stopped) return
     this.write({ event: 'session', phase: sessionPhases.has(event.phase) ? event.phase : 'unknown',
       outcome: sessionOutcomes.has(event.outcome) ? event.outcome : 'unknown',
@@ -105,6 +108,9 @@ export class RuntimeDiagnostics {
       ...(Number.isInteger(event.httpStatus) && event.httpStatus! >= 100 && event.httpStatus! <= 599 ? { httpStatus: event.httpStatus } : {}),
       ...(event.method === 'GET' || event.method === 'POST' ? { method: event.method } : {}),
       ...(event.endpoint && communityEndpoints.has(event.endpoint) ? { endpoint: event.endpoint } : {}),
+      ...(event.requestStage && communityRequestStages.has(event.requestStage) ? { requestStage: event.requestStage } : {}),
+      ...(event.networkCode && communityNetworkCodes.has(event.networkCode) ? { networkCode: event.networkCode } : {}),
+      ...(Number.isSafeInteger(event.elapsedMs) && event.elapsedMs! >= 0 && event.elapsedMs! <= 600_000 ? { elapsedMs: event.elapsedMs } : {}),
       ...(event.responseKind && responseKinds.has(event.responseKind) ? { responseKind: event.responseKind } : {}),
       ...(event.denialKind && denialKinds.has(event.denialKind) ? { denialKind: event.denialKind } : {}),
       ...(event.commentDenialReason && commentDenialReasons.has(event.commentDenialReason) ? { commentDenialReason: event.commentDenialReason } : {}),

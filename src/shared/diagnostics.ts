@@ -11,6 +11,9 @@ export const LOGIN_NETWORK_CODES = [
 
 export type LoginNetworkCode = typeof LOGIN_NETWORK_CODES[number]
 
+export const COMMUNITY_REQUEST_STAGES = ['request', 'headers', 'body', 'validation', 'parse-response'] as const
+export type CommunityRequestStage = typeof COMMUNITY_REQUEST_STAGES[number]
+
 export interface LoginDiagnosticEvent {
   attempt: number
   mode: 'qr' | 'credentials' | 'restore'
@@ -48,7 +51,8 @@ const sessionReasons = ['http-401', 'login-redirect', 'not-logged-on', 'http-403
   'timeout', 'token-rejected', 'token-missing', 'session-changed', 'scheduled', 'on-demand', 'cookie-expired',
   'unknown', 'verified', 'credentials_rejected', 'network_or_service', 'rate_limited',
   'community_access_denied', 'session_check_failed', 'session_changed', 'comment-reconciled',
-  'baseline-missing', 'baseline-incomplete', 'baseline-unreadable', 'target-unavailable']
+  'baseline-missing', 'baseline-incomplete', 'baseline-unreadable', 'target-unavailable',
+  'http-error', 'response-read-error', 'response-processing-error', 'invalid-json']
 const nativeStages = ['worker-started', 'stop-requested', 'forced-kill', 'worker-closed', 'retire-timeout',
   'release-user-start', 'release-user-returned', 'release-pipe-start', 'release-pipe-returned',
   'free-api-library', 'free-client-library', 'cleanup-complete', 'unknown']
@@ -139,6 +143,9 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
         optionalInteger(output, value, 'httpStatus', 100, 599)
         optionalEnum(output, value, 'method', ['GET', 'POST'])
         optionalEnum(output, value, 'endpoint', ['profile-comment', 'session-verify', 'other'])
+        optionalEnum(output, value, 'requestStage', COMMUNITY_REQUEST_STAGES)
+        optionalEnum(output, value, 'networkCode', LOGIN_NETWORK_CODES)
+        optionalInteger(output, value, 'elapsedMs', 0, 600_000)
         optionalEnum(output, value, 'responseKind', ['json', 'html', 'empty', 'other'])
         optionalEnum(output, value, 'denialKind', ['access-denied', 'challenge', 'unknown'])
         optionalEnum(output, value, 'commentDenialReason', ['unknown', 'csrf-sessionid', 'posting-too-frequently',

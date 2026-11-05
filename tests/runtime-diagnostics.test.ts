@@ -23,6 +23,22 @@ function fixture(maxBytes?: number) {
 }
 
 describe('bounded local runtime diagnostics', () => {
+  it('records safe Community failure stages and network metadata without private request fields', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.sessionEvent({ phase: 'community-request', outcome: 'request-failed', reason: 'response-read-error',
+      method: 'POST', endpoint: 'profile-comment', requestStage: 'body', networkCode: 'ECONNRESET', httpStatus: 200, elapsedMs: 123,
+      url: 'synthetic-private-url', message: 'synthetic-private-message', cookie: 'synthetic-private-cookie', cause: { token: 'synthetic-private-token' } } as never)
+    diagnostics.sessionEvent({ phase: 'community-request', outcome: 'request-failed', reason: 'http-error',
+      requestStage: 'synthetic-private-stage', networkCode: 'synthetic-private-code', httpStatus: 502, elapsedMs: 600_001 })
+    const contents = readFileSync(join(directory, 'runtime-current.jsonl'), 'utf8')
+    const entries = contents.trim().split('\n').map(line => JSON.parse(line))
+    expect(contents).not.toContain('synthetic-private')
+    expect(entries[0]).toMatchObject({ event: 'session', reason: 'response-read-error', requestStage: 'body',
+      networkCode: 'ECONNRESET', elapsedMs: 123, httpStatus: 200, endpoint: 'profile-comment', method: 'POST' })
+    expect(entries[1]).toMatchObject({ reason: 'http-error', httpStatus: 502 })
+    for (const field of ['requestStage', 'networkCode', 'elapsedMs']) expect(entries[1]).not.toHaveProperty(field)
+  })
+
   it('records safe login stages and strips request secrets even from malformed diagnostic fields', () => {
     const { directory, diagnostics } = fixture()
     diagnostics.loginEvent({ attempt: 1, mode: 'qr', stage: 'request', outcome: 'failed', endpoint: 'poll',

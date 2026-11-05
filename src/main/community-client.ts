@@ -8,12 +8,15 @@ import type { ProfileBackgroundCatalog } from '../shared/profile-backgrounds'
 import { STEAM_WEB_USER_AGENT } from './steam-user-agent'
 import { CommentPreflightError } from '../shared/comment-preflight'
 import { CommentPermissionDeniedError } from '../shared/comment-permission'
+import type { CommunityRequestStage, LoginNetworkCode } from '../shared/diagnostics'
+import { loginDiagnosticElapsed, loginDiagnosticFailure } from './login-diagnostic'
 import { batchInterruption } from '../shared/batch-retry-policy'
 import { parseCommentSnapshot, reconcileCommentSnapshots, verifyCommentAttempt,
   type CommentAttemptEvidence, type CommentServerWindow, type CommentSnapshot,
   type CommentVerificationResult } from './comment-reconciliation'
 
 interface CommunityResponseMetadata {
+  httpStatus?: number
   requestStartedAt: number
   receivedAt: number
   serverDate: number | null
@@ -63,6 +66,7 @@ export interface CommunityDiagnosticEvent {
   outcome: 'success' | 'auth-rejected' | 'access-denied' | 'rate-limited' | 'unverified' | 'request-failed' | 'stale-response'
   reason: 'http-401' | 'login-redirect' | 'not-logged-on' | 'http-403' | 'http-429' | 'identity-match' | 'identity-mismatch' | 'identity-guest' | 'identity-missing' | 'transport-error' | 'comment-reconciled'
     | 'baseline-missing' | 'baseline-incomplete' | 'baseline-unreadable' | 'target-unavailable'
+    | 'timeout' | 'http-error' | 'response-read-error' | 'response-processing-error' | 'invalid-json'
   httpStatus?: number
   method?: 'GET' | 'POST'
   endpoint?: 'profile-comment' | 'session-verify' | 'other'
@@ -72,6 +76,9 @@ export interface CommunityDiagnosticEvent {
   retryAfterMs?: number
   commentDenialReason?: CommentDenialReason
   errorPresent?: boolean
+  requestStage?: CommunityRequestStage
+  networkCode?: LoginNetworkCode
+  elapsedMs?: number
 }
 
 export type CommentDenialReason = 'unknown' | 'csrf-sessionid' | 'posting-too-frequently'
@@ -377,6 +384,7 @@ export class SteamCommunityClient {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
             Origin: COMMUNITY_ORIGIN,
             Referer: `${COMMUNITY_ORIGIN}/profiles/${friendSteamId}/`
           },
@@ -567,10 +575,19 @@ export class SteamCommunityClient {
   }
 
   private async requestJson<T>(path: string, init?: RequestInit, onResponse?: (metadata: CommunityResponseMetadata) => void): Promise<T> {
-    const text = await this.requestText(path, init, 0, () => undefined, () => undefined, onResponse)
+    const startedAt = performance.now()
+    let httpStatus: number | undefined
+    const text = await this.requestText(path, init, 0, () => undefined, () => undefined, metadata => {
+      httpStatus = metadata.httpStatus
+      onResponse?.(metadata)
+    })
     try {
       return JSON.parse(text) as T
     } catch {
+      this.diagnostic({ phase: 'community-request', outcome: 'request-failed', reason: 'invalid-json',
+        method: init?.method === 'POST' ? 'POST' : 'GET', endpoint: communityEndpoint(new URL(path, COMMUNITY_ORIGIN).pathname),
+        requestStage: 'parse-response', ...(httpStatus !== undefined ? { httpStatus } : {}),
+        elapsedMs: loginDiagnosticElapsed(startedAt, performance.now()) })
       throw new Error('Steam returned invalid JSON')
     }
   }
@@ -589,8 +606,14 @@ export class SteamCommunityClient {
     const version = this.cookieVersion
     const method = init.method === 'POST' ? 'POST' : 'GET'
     const cookieHeader = matchingCookies(this.cookies, url.pathname).map(cookie => `${cookie.name}=${cookie.value}`).join('; ')
+    const startedAt = performance.now()
+    let requestStage: CommunityRequestStage = 'request'
+    let httpStatus: number | undefined
+    let delegatedRedirect = false
+    let requestSignal: AbortSignal | undefined
     try {
       return await withRequestTimeout(50_000, async signal => {
+        requestSignal = signal
         const requestStartedAt = Date.now()
         const requestStartedMonotonic = performance.now()
         const response = await (this.fetchImpl ?? fetch)(url, {
@@ -605,12 +628,14 @@ export class SteamCommunityClient {
             ...(init.headers as Record<string, string> | undefined)
           }
         })
+        requestStage = 'headers'
+        if (Number.isInteger(response.status) && response.status >= 100 && response.status <= 599) httpStatus = response.status
         try {
           const rawDate = response.headers.get('date')
           const parsedDate = rawDate && /GMT$/i.test(rawDate) ? Date.parse(rawDate) : NaN
           const receivedMonotonic = performance.now()
           onResponse({ requestStartedAt, receivedAt: Date.now(), serverDate: Number.isFinite(parsedDate) ? parsedDate : null,
-            elapsedMs: receivedMonotonic - requestStartedMonotonic, receivedMonotonic })
+            elapsedMs: receivedMonotonic - requestStartedMonotonic, receivedMonotonic, ...(httpStatus !== undefined ? { httpStatus } : {}) })
           assertCurrent()
           const location = response.headers.get('location') ?? ''
           const redirectedToLogin =
@@ -637,12 +662,15 @@ export class SteamCommunityClient {
               await cancelUnusedBody(response)
               assertCurrent()
               if (version === this.cookieVersion) this.acceptResponseCookies(response, url)
+              delegatedRedirect = true
               return this.requestText(`${target.pathname}${target.search}`, init, redirectsRemaining - 1, assertCurrent, validateText, onResponse)
             }
             throw new Error('Steam 好友页面重定向到了不受信任的地址')
           }
 
+          requestStage = 'body'
           const text = await readLimitedResponse(response, assertCurrent)
+          requestStage = 'validation'
           assertCurrent()
           if (isNotLoggedOnResponse(text)) {
             this.rejectExpired(version, { phase: 'community-request', outcome: 'auth-rejected',
@@ -679,8 +707,19 @@ export class SteamCommunityClient {
         }
       })
     } catch (error) {
-      if (!(error instanceof DomainError)) {
-        this.diagnostic({ phase: 'community-request', outcome: 'request-failed', reason: 'transport-error', method })
+      if (!(error instanceof DomainError) && !delegatedRedirect) {
+        const failure = loginDiagnosticFailure(error)
+        const stage = requestStage as CommunityRequestStage
+        const timedOut = requestSignal?.aborted && requestSignal.reason instanceof DOMException && requestSignal.reason.name === 'TimeoutError'
+        const reason = timedOut || failure.reason === 'timeout' ? 'timeout'
+          : httpStatus !== undefined && httpStatus >= 300 && stage !== 'body' ? 'http-error'
+            : stage === 'body' ? 'response-read-error'
+              : stage === 'request' ? 'transport-error' : 'response-processing-error'
+        this.diagnostic({ phase: 'community-request', outcome: 'request-failed', reason, method,
+          endpoint: communityEndpoint(url.pathname), requestStage: stage,
+          ...(httpStatus !== undefined ? { httpStatus } : {}),
+          ...(timedOut ? { networkCode: 'ETIMEDOUT' as const } : failure.networkCode ? { networkCode: failure.networkCode } : {}),
+          elapsedMs: loginDiagnosticElapsed(startedAt, performance.now()) })
       }
       throw error
     }
