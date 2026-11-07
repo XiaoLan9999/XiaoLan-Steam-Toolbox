@@ -4,7 +4,7 @@ import type { GameStatusAction, GameStatusApi, GameStatusAppInfo, GameStatusDraf
 import type { LocalAppSimulationApi } from '../../../shared/local-app-simulation'
 import { LocalAppSimulationPanel } from './LocalAppSimulationPanel'
 import { validateGameStatusPresence, isSafeGameStatusIconUrl, gameStatusPresenceParameterHints } from '../../../shared/game-status-presence'
-import { gameStatusFailureMessage, gameStatusFailureStageMessage, isGameStatusFailureCode } from '../../../shared/game-status-errors'
+import { gameStatusFailureMessage, gameStatusFailureStageMessage, isGameStatusFailureCode, nativeGameStatusFailureCode } from '../../../shared/game-status-errors'
 import { useI18n, type Translate } from '../i18n'
 import { GROUP_SIZE_KEY, MAX_GROUP_SIZE, readGroupSize } from '../../../shared/game-status-group'
 import type { StatusCopyApi } from '../../../shared/status-copy'
@@ -26,6 +26,7 @@ export function gameStatusError(error: unknown, t: Translate): string {
 export function GameStatusFailureNotice({ failure }: { failure: unknown }): React.JSX.Element {
   const { language, t } = useI18n()
   const value = failure && typeof failure === 'object' ? failure as Record<string, unknown> : {}
+  const nativeCode = nativeGameStatusFailureCode(value)
   const at = typeof value.at === 'string' && value.at.length <= 40 ? Date.parse(value.at) : NaN
   const time = Number.isFinite(at) ? new Date(at).toLocaleString(language === 'en' ? 'en-US' : 'zh-CN') : t('时间不可用', 'Time unavailable')
   const submitted = value.submitted === 'no'
@@ -37,7 +38,7 @@ export function GameStatusFailureNotice({ failure }: { failure: unknown }): Reac
     <strong>{gameStatusFailureMessage(value.code, t)}</strong>
     <p>{gameStatusFailureStageMessage(value.stage, t)} · {time}</p>
     <p>{submitted}</p>
-    {isGameStatusFailureCode(value.code) && <code>{value.code}</code>}
+    {isGameStatusFailureCode(value.code) && <code>{value.code}{nativeCode ? ` · ${nativeCode}` : ''}</code>}
     {typeof value.appId === 'number' && Number.isInteger(value.appId) && value.appId > 0 && value.appId <= 0xffffff && <span> · AppID {value.appId}</span>}
   </section>
 }

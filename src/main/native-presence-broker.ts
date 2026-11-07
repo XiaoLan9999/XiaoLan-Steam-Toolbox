@@ -10,8 +10,19 @@ import { richPresenceContract as contract, isRichPresenceParameter, isWellFormed
 import { findDefaultSteamPaths } from './steam-screenshots'
 import { parseScreenshotVdf, vdfChild } from './steam-screenshot-vdf'
 
-export interface NativePresenceContext { appId: number; steamId: string; accountId?: string; steamPid?: number; steamStartTicks?: string }
+export interface NativePresenceContext {
+  appId: number
+  steamId: string
+  accountId?: string
+  identitySource?: 'native-user'
+  steamPid?: number
+  steamStartTicks?: string
+  gamePid?: number
+  gameStartTicks?: string
+  gameExe?: string
+}
 export interface NativePresenceBinding {
+  identitySource?: 'native-user'
   gamePid: number
   gameStartTicks: string
   gameExe: string
@@ -74,8 +85,9 @@ export interface NativePresenceDiscoveryOptions {
   platform?: NodeJS.Platform
   parentPid?: number
   steamRoots?: () => Promise<string[]>
-  queryProcesses?: (directories: string[], parentPid: number) => Promise<NativePresenceProcessList>
+  queryProcesses?: (directories: string[], parentPid: number, expected?: NativePresenceExpectedSteam) => Promise<NativePresenceProcessList>
 }
+export interface NativePresenceExpectedSteam { steamPid: number; steamStartTicks: string }
 export interface NativePresenceBrokerOptions extends NativePresenceDiscoveryOptions {
   workerDirectory?: string
   discover?: (context: NativePresenceContext) => Promise<NativePresenceBinding>
@@ -143,7 +155,13 @@ export class NativePresenceError extends DomainError {
 
 function validContext(context: NativePresenceContext): void {
   if (!context || !Number.isInteger(context.appId) || context.appId < 1 || context.appId > 0xffffff || typeof context.steamId !== 'string' || !/^[0-9]{17}$/.test(context.steamId)) throw new NativePresenceError('NATIVE_ARGUMENTS_INVALID')
+  if (context.identitySource !== undefined && context.identitySource !== 'native-user') throw new NativePresenceError('NATIVE_ARGUMENTS_INVALID')
   if ((context.steamPid !== undefined || context.steamStartTicks !== undefined) && (!pid(context.steamPid) || !ticks(context.steamStartTicks))) throw new NativePresenceError('NATIVE_ARGUMENTS_INVALID')
+  if (context.identitySource === 'native-user' && context.steamPid === undefined) throw new NativePresenceError('NATIVE_ARGUMENTS_INVALID')
+  if ((context.gamePid !== undefined || context.gameStartTicks !== undefined || context.gameExe !== undefined) && (!pid(context.gamePid) || !ticks(context.gameStartTicks) || typeof context.gameExe !== 'string' || !isAbsolute(context.gameExe) || !/\.exe$/i.test(context.gameExe))) throw new NativePresenceError('NATIVE_ARGUMENTS_INVALID')
+}
+function sameGame(context: NativePresenceContext, binding: NativePresenceBinding): boolean {
+  return context.gamePid === undefined || context.gamePid === binding.gamePid && context.gameStartTicks === binding.gameStartTicks && context.gameExe!.toLowerCase() === binding.gameExe.toLowerCase()
 }
 function contained(root: string, path: string): boolean {
   const part = relative(resolve(root), resolve(path))
@@ -173,12 +191,14 @@ async function optionalVdf(path: string) {
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error }
 }
 
-async function windowsProcesses(directories: string[], parentPid: number): Promise<NativePresenceProcessList> {
+async function windowsProcesses(directories: string[], parentPid: number, expected?: NativePresenceExpectedSteam): Promise<NativePresenceProcessList> {
   const encoded = Buffer.from(JSON.stringify(directories), 'utf8').toString('base64')
+  const encodedExpected = Buffer.from(JSON.stringify(expected ?? null), 'utf8').toString('base64')
   const script = `$ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $dirs = @(ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))))
+$expected = ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedExpected}')))
 Add-Type -TypeDefinition @'
 using System;
 using System.Text;
@@ -196,11 +216,19 @@ public static class PresenceProcessImage {
 }
 '@
 $parent = Get-Process -Id ${parentPid}
-$active = Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Valve\\Steam\\ActiveProcess'
-$steam = Get-Process -Id ([int]$active.pid)
-if ($steam.ProcessName -ine 'steam') { throw 'Steam process unavailable' }
-$steamImage = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $steam.Id)).ExecutablePath
-if (!$steamImage) { throw 'Steam image unavailable' }
+$configuration = Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Valve\\Steam'
+$registeredImage = [string]$configuration.SteamExe
+if (!$registeredImage -or ![IO.Path]::IsPathRooted($registeredImage) -or [IO.Path]::GetFileName($registeredImage) -ine 'steam.exe') { throw 'Steam registration unavailable' }
+$registeredImage = [IO.Path]::GetFullPath($registeredImage)
+$steamMatches = @(foreach ($candidate in @(Get-Process -Name steam -ErrorAction SilentlyContinue)) {
+  $candidateImage = [PresenceProcessImage]::Read($candidate.Id)
+  if ($candidateImage -and [IO.Path]::GetFullPath($candidateImage).Equals($registeredImage, [StringComparison]::OrdinalIgnoreCase)) { $candidate }
+})
+if ($steamMatches.Count -ne 1) { throw 'Steam process ambiguous or unavailable' }
+$steam = $steamMatches[0]
+$steamImage = [PresenceProcessImage]::Read($steam.Id)
+$steamStartTicks = $steam.StartTime.ToUniversalTime().Ticks.ToString()
+if (!$steamImage -or ($expected -and ($steam.Id -ne $expected.steamPid -or $steamStartTicks -cne $expected.steamStartTicks))) { throw 'Steam context changed' }
 $items = @()
 foreach ($item in Get-Process) {
   try {
@@ -225,7 +253,7 @@ foreach ($item in Get-Process) {
     $items += @{pid=$item.Id;startTicks=$item.StartTime.ToUniversalTime().Ticks.ToString();exe=$image;modules=$modules;modulesUnavailable=$modulesUnavailable}
   } catch { }
 }
-@{parentPid=$parent.Id;parentStartTicks=$parent.StartTime.ToUniversalTime().Ticks.ToString();steamProcess=@{pid=$steam.Id;startTicks=$steam.StartTime.ToUniversalTime().Ticks.ToString();exe=$steamImage};processes=$items} | ConvertTo-Json -Compress -Depth 5`
+@{parentPid=$parent.Id;parentStartTicks=$parent.StartTime.ToUniversalTime().Ticks.ToString();steamProcess=@{pid=$steam.Id;startTicks=$steamStartTicks;exe=$steamImage};processes=$items} | ConvertTo-Json -Compress -Depth 5`
   const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]
   // Framework Process.Modules omits x86 modules from a 64-bit host. Query both
   // fixed system hosts; never replace a missing loaded module with a disk search.
@@ -267,6 +295,7 @@ export function mergeNativePresenceProcessLists(lists: NativePresenceProcessList
 
 export async function discoverNativePresenceBinding(context: NativePresenceContext, options: NativePresenceDiscoveryOptions = {}): Promise<NativePresenceBinding> {
   validContext(context)
+  context = { ...context }
   if ((options.platform ?? process.platform) !== 'win32') throw new NativePresenceError('NATIVE_UNSUPPORTED')
   const parentPid = options.parentPid ?? process.pid
   if (!pid(parentPid)) throw new NativePresenceError('NATIVE_ARGUMENTS_INVALID')
@@ -302,10 +331,14 @@ export async function discoverNativePresenceBinding(context: NativePresenceConte
       installations.add(installed)
     }
     if (!installations.size) throw new NativePresenceError('NATIVE_GAME_NOT_FOUND')
-    const processes = await (options.queryProcesses ?? windowsProcesses)([...installations], parentPid)
+    const query = options.queryProcesses ?? windowsProcesses
+    const processes = await (context.steamPid === undefined
+      ? query([...installations], parentPid)
+      : query([...installations], parentPid, { steamPid: context.steamPid, steamStartTicks: context.steamStartTicks! }))
     if (!processes || processes.parentPid !== parentPid || !ticks(processes.parentStartTicks) || !Array.isArray(processes.processes) || processes.processes.length > 128) throw new NativePresenceError('NATIVE_DISCOVERY_FAILED')
     const steam = processes.steamProcess
     if (!steam || !pid(steam.pid) || !ticks(steam.startTicks) || !isAbsolute(steam.exe)) throw new NativePresenceError('NATIVE_DISCOVERY_FAILED')
+    if (context.steamPid !== undefined && (steam.pid !== context.steamPid || steam.startTicks !== context.steamStartTicks)) throw new NativePresenceError('NATIVE_CONTEXT_CHANGED')
     const steamExe = await realpath(steam.exe)
     if (basename(steamExe).toLowerCase() !== 'steam.exe' || ![...steamRoots].some(root => dirname(steamExe).toLowerCase() === root.toLowerCase())) throw new NativePresenceError('NATIVE_DISCOVERY_FAILED')
     const activeSteamRoot = dirname(steamExe)
@@ -318,6 +351,7 @@ export async function discoverNativePresenceBinding(context: NativePresenceConte
       if (item.modules.some(value => typeof value !== 'string' || !isAbsolute(value) || !/^(steam_api(?:64)?|steamclient(?:64)?)\.dll$/i.test(basename(value)))) throw new NativePresenceError('NATIVE_DLL_INVALID')
       const apiModules = [...new Map(item.modules.filter(value => /^steam_api(?:64)?\.dll$/i.test(basename(value))).map(value => [value.toLowerCase(), value])).values()]
       const clientModules = [...new Map(item.modules.filter(value => /^steamclient(?:64)?\.dll$/i.test(basename(value))).map(value => [value.toLowerCase(), value])).values()]
+      const identity = context.identitySource === 'native-user' ? { identitySource: context.identitySource } : {}
       if (!apiModules.length) {
         if (!item.modulesUnavailable) continue
         const imageContent = await boundedFile(image, 256 * 1024 * 1024)
@@ -327,24 +361,34 @@ export async function discoverNativePresenceBinding(context: NativePresenceConte
         const clientContent = await boundedFile(clientDllPath, 64 * 1024 * 1024)
         const clientDllSha256 = createHash('sha256').update(clientContent).digest('hex')
         if (nativePresencePeArchitecture(clientContent) !== 'x64' || !PUBLIC_CLIENT_SHA256S.has(clientDllSha256)) throw new NativePresenceError('NATIVE_DLL_INVALID')
-        candidates.push({ transport: 'public-client', gamePid: item.pid, gameStartTicks: item.startTicks, gameExe: image, clientDllPath, clientDllSha256, arch: 'x64', parentPid, parentStartTicks: processes.parentStartTicks, steamPid: steam.pid, steamStartTicks: steam.startTicks })
+        candidates.push({ ...identity, transport: 'public-client', gamePid: item.pid, gameStartTicks: item.startTicks, gameExe: image, clientDllPath, clientDllSha256, arch: 'x64', parentPid, parentStartTicks: processes.parentStartTicks, steamPid: steam.pid, steamStartTicks: steam.startTicks })
         continue
       }
-      if (apiModules.length !== 1 || clientModules.length !== 1) throw new NativePresenceError('NATIVE_GAME_AMBIGUOUS')
+      const internalApis = new Map<string, string>()
       for (const modulePath of apiModules) {
-        const dllPath = await realpath(modulePath)
-        if (!contained(installation, dllPath)) throw new NativePresenceError('NATIVE_DLL_INVALID')
+        // Inspect only path metadata for external instrumentation modules, never their contents.
+        const canonical = await realpath(modulePath).catch(() => null)
+        if (!canonical) {
+          if (contained(installation, modulePath)) throw new NativePresenceError('NATIVE_DLL_INVALID')
+          continue
+        }
+        if (contained(installation, canonical)) internalApis.set(canonical.toLowerCase(), canonical)
+      }
+      if (!internalApis.size) throw new NativePresenceError('NATIVE_DLL_INVALID')
+      if (internalApis.size !== 1 || clientModules.length !== 1) throw new NativePresenceError('NATIVE_GAME_AMBIGUOUS')
+      for (const dllPath of internalApis.values()) {
         const content = await boundedFile(dllPath, 32 * 1024 * 1024)
         const arch = nativePresencePeArchitecture(content)
         const clientDllPath = await realpath(clientModules[0]!)
         if (!contained(activeSteamRoot, clientDllPath) || basename(clientDllPath).toLowerCase() !== (arch === 'x86' ? 'steamclient.dll' : 'steamclient64.dll')) throw new NativePresenceError('NATIVE_DLL_INVALID')
         const clientContent = await boundedFile(clientDllPath, 64 * 1024 * 1024)
         if (nativePresencePeArchitecture(clientContent) !== arch) throw new NativePresenceError('NATIVE_DLL_INVALID')
-        candidates.push({ gamePid: item.pid, gameStartTicks: item.startTicks, gameExe: image, dllPath, dllSha256: createHash('sha256').update(content).digest('hex'), clientDllPath, clientDllSha256: createHash('sha256').update(clientContent).digest('hex'), arch, parentPid, parentStartTicks: processes.parentStartTicks, steamPid: steam.pid, steamStartTicks: steam.startTicks })
+        candidates.push({ ...identity, gamePid: item.pid, gameStartTicks: item.startTicks, gameExe: image, dllPath, dllSha256: createHash('sha256').update(content).digest('hex'), clientDllPath, clientDllSha256: createHash('sha256').update(clientContent).digest('hex'), arch, parentPid, parentStartTicks: processes.parentStartTicks, steamPid: steam.pid, steamStartTicks: steam.startTicks })
       }
     }
     if (!candidates.length) throw new NativePresenceError('NATIVE_GAME_NOT_FOUND')
     if (candidates.length !== 1) throw new NativePresenceError('NATIVE_GAME_AMBIGUOUS')
+    if (!sameGame(context, candidates[0]!)) throw new NativePresenceError('NATIVE_CONTEXT_CHANGED')
     return candidates[0]!
   } catch (error) {
     if (error instanceof NativePresenceError) throw error
@@ -391,6 +435,14 @@ export class NativePresenceBroker {
   private lastCleanup: NativePresenceCleanupSummary | null = null
   private shutdownFlight: Promise<void> | null = null
   constructor(private readonly options: NativePresenceBrokerOptions = {}) {}
+
+  private boundContext(context: NativePresenceContext): NativePresenceContext {
+    const anchor = this.anchor
+    const minimal = context.identitySource === undefined && context.steamPid === undefined && context.steamStartTicks === undefined && context.gamePid === undefined && context.gameStartTicks === undefined && context.gameExe === undefined
+    if (!anchor || !minimal || anchor.context.appId !== context.appId || anchor.context.steamId !== context.steamId || anchor.context.accountId !== context.accountId) return { ...context }
+    const binding = anchor.binding
+    return { ...context, ...(binding.identitySource ? { identitySource: binding.identitySource } : {}), steamPid: binding.steamPid, steamStartTicks: binding.steamStartTicks, gamePid: binding.gamePid, gameStartTicks: binding.gameStartTicks, gameExe: binding.gameExe }
+  }
 
   diagnostics(): NativePresenceDiagnostics {
     const session = this.session
@@ -558,6 +610,8 @@ export class NativePresenceBroker {
     }
   }
   private async start(context: NativePresenceContext, generation: number, canSubmit: () => boolean | void): Promise<Session> {
+    // Native-user identity needs the resolver's exact game proof before any helper can attach.
+    if (context.identitySource === 'native-user' && context.gamePid === undefined) throw this.error('NATIVE_ARGUMENTS_INVALID')
     while (this.retiring.size) {
       await Promise.all([...this.retiring].map(value => value.promise))
       this.guard(generation, canSubmit, false, [])
@@ -569,13 +623,15 @@ export class NativePresenceBroker {
       ? binding.arch === 'x64' && binding.dllPath === undefined && binding.dllSha256 === undefined && PUBLIC_CLIENT_SHA256S.has(binding.clientDllSha256)
       : (binding?.transport === undefined || binding.transport === 'loaded-api') && typeof binding.dllPath === 'string' && isAbsolute(binding.dllPath) && typeof binding.dllSha256 === 'string' && /^[a-f0-9]{64}$/.test(binding.dllSha256)
     if (!binding || !apiValid || !pid(binding.gamePid) || !pid(binding.parentPid) || !pid(binding.steamPid) || binding.parentPid !== (this.options.parentPid ?? process.pid) || binding.gamePid === binding.parentPid || binding.steamPid === binding.gamePid || binding.steamPid === binding.parentPid || !ticks(binding.gameStartTicks) || !ticks(binding.parentStartTicks) || !ticks(binding.steamStartTicks) || typeof binding.clientDllPath !== 'string' || !isAbsolute(binding.clientDllPath) || typeof binding.gameExe !== 'string' || !isAbsolute(binding.gameExe) || !/^[a-f0-9]{64}$/.test(binding.clientDllSha256) || !['x86', 'x64'].includes(binding.arch)) throw this.error('NATIVE_DISCOVERY_FAILED')
-    if (context.steamPid !== undefined && (binding.steamPid !== context.steamPid || binding.steamStartTicks !== context.steamStartTicks)) throw this.error('NATIVE_CONTEXT_CHANGED')
+    if (binding.identitySource !== undefined && binding.identitySource !== 'native-user') throw this.error('NATIVE_DISCOVERY_FAILED')
     const anchored = this.anchor
-    if (anchored && anchored.context.appId === context.appId && anchored.context.steamId === context.steamId && anchored.context.accountId === context.accountId && (anchored.binding.transport !== binding.transport || anchored.binding.steamPid !== binding.steamPid || anchored.binding.steamStartTicks !== binding.steamStartTicks || anchored.binding.gamePid !== binding.gamePid || anchored.binding.gameStartTicks !== binding.gameStartTicks || anchored.binding.gameExe.toLowerCase() !== binding.gameExe.toLowerCase() || anchored.binding.dllPath?.toLowerCase() !== binding.dllPath?.toLowerCase() || anchored.binding.dllSha256 !== binding.dllSha256 || anchored.binding.clientDllPath.toLowerCase() !== binding.clientDllPath.toLowerCase() || anchored.binding.clientDllSha256 !== binding.clientDllSha256)) {
+    if (anchored && anchored.context.appId === context.appId && anchored.context.steamId === context.steamId && anchored.context.accountId === context.accountId && (anchored.binding.identitySource !== binding.identitySource || anchored.binding.transport !== binding.transport || anchored.binding.steamPid !== binding.steamPid || anchored.binding.steamStartTicks !== binding.steamStartTicks || anchored.binding.gamePid !== binding.gamePid || anchored.binding.gameStartTicks !== binding.gameStartTicks || anchored.binding.gameExe.toLowerCase() !== binding.gameExe.toLowerCase() || anchored.binding.dllPath?.toLowerCase() !== binding.dllPath?.toLowerCase() || anchored.binding.dllSha256 !== binding.dllSha256 || anchored.binding.clientDllPath.toLowerCase() !== binding.clientDllPath.toLowerCase() || anchored.binding.clientDllSha256 !== binding.clientDllSha256)) {
       const error = this.error('NATIVE_CONTEXT_CHANGED')
       this.notifyContextLost(error)
       throw error
     }
+    if (binding.identitySource !== context.identitySource || !sameGame(context, binding)) throw this.error('NATIVE_CONTEXT_CHANGED')
+    if (context.steamPid !== undefined && (binding.steamPid !== context.steamPid || binding.steamStartTicks !== context.steamStartTicks)) throw this.error('NATIVE_CONTEXT_CHANGED')
     const workerDirectory = this.options.workerDirectory ?? fileURLToPath(new URL('../../resources/native-presence/', import.meta.url))
     let worker: string
     try {
@@ -587,6 +643,7 @@ export class NativePresenceBroker {
     const args = publicClient
       ? ['--public-client', binding.clientDllPath, binding.clientDllSha256, String(context.appId), context.steamId, String(binding.gamePid), binding.gameStartTicks, binding.gameExe, String(binding.parentPid), binding.parentStartTicks, String(binding.steamPid), binding.steamStartTicks]
       : [binding.dllPath!, binding.dllSha256!, binding.clientDllPath, binding.clientDllSha256, String(context.appId), context.steamId, String(binding.gamePid), binding.gameStartTicks, String(binding.parentPid), binding.parentStartTicks, String(binding.steamPid), binding.steamStartTicks]
+    if (context.identitySource === 'native-user') args.push('--native-user')
     let child: ChildProcessWithoutNullStreams
     try { child = (this.options.spawn ?? ((file, values) => spawnProcess(file, values, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, SteamAppId: String(context.appId), SteamGameId: String(context.appId) } })))(worker, args) } catch { throw this.error('NATIVE_LOAD_FAILED') }
     const session: Session = { context: { ...context }, binding: { ...binding }, child, generation, ready: Promise.resolve({}), pending: new Map(), buffer: Buffer.alloc(0), noiseBytes: 0, closing: false, closed: false, readyConfirmed: false, contextLostNotified: false, startedAt: Date.now(), completedRequests: 0,
@@ -608,7 +665,8 @@ export class NativePresenceBroker {
   private async currentSession(context: NativePresenceContext, generation: number, canSubmit: () => boolean | void): Promise<Session> {
     this.guard(generation, canSubmit, false, [])
     let session = this.session
-    if (session && context.steamPid !== undefined && (session.binding.steamPid !== context.steamPid || session.binding.steamStartTicks !== context.steamStartTicks)) {
+    const sameAccount = session && session.context.appId === context.appId && session.context.steamId === context.steamId && session.context.accountId === context.accountId
+    if (session && (context.steamPid !== undefined && (session.binding.steamPid !== context.steamPid || session.binding.steamStartTicks !== context.steamStartTicks) || sameAccount && (session.binding.identitySource !== context.identitySource || !sameGame(context, session.binding)))) {
       const error = this.error('NATIVE_CONTEXT_CHANGED')
       this.close(session, error)
       throw error
@@ -628,6 +686,8 @@ export class NativePresenceBroker {
   }
   async read(context: NativePresenceContext, canSubmit: () => boolean | void): Promise<NativePresenceRead> {
     validContext(context)
+    context = this.boundContext(context)
+    if (context.identitySource === 'native-user' && context.gamePid === undefined) throw this.error('NATIVE_ARGUMENTS_INVALID')
     if ((this.options.platform ?? process.platform) !== 'win32') throw this.error('NATIVE_UNSUPPORTED')
     if (this.busy) throw this.error('NATIVE_BUSY')
     const token = {}; const generation = this.generation; this.busy = token
@@ -655,6 +715,8 @@ export class NativePresenceBroker {
   }
   async apply(context: NativePresenceContext, changes: Record<string, string | null>, canSubmit: () => boolean | void): Promise<void> {
     validContext(context)
+    context = this.boundContext(context)
+    if (context.identitySource === 'native-user' && context.gamePid === undefined) throw this.error('NATIVE_ARGUMENTS_INVALID')
     if ((this.options.platform ?? process.platform) !== 'win32') throw this.error('NATIVE_UNSUPPORTED')
     if (this.busy) throw this.error('NATIVE_BUSY')
     const entries = changes && typeof changes === 'object' && !Array.isArray(changes) ? Object.entries(changes) : []

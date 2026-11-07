@@ -10,8 +10,9 @@ internal static partial class NativePresenceWorker
 {
     private static Binding ParsePublicBindingArguments(string[] args)
     {
+        bool nativeUser = NativeUserArgumentMode(args);
         Binding value = new Binding();
-        if (args == null || args.Length != 12 || args[0] != "--public-client" || IntPtr.Size != 8
+        if (args[0] != "--public-client" || IntPtr.Size != 8
             || !Path.IsPathRooted(args[1]) || args[1].StartsWith(@"\\", StringComparison.Ordinal)
             || !String.Equals(Path.GetFileName(args[1]), "steamclient64.dll", StringComparison.OrdinalIgnoreCase)
             || !Regex.IsMatch(args[2], "^[a-f0-9]{64}$", RegexOptions.CultureInvariant)
@@ -30,6 +31,7 @@ internal static partial class NativePresenceWorker
             throw new Failure("NATIVE_ARGUMENTS_INVALID");
         if (!SteamPublicProfile.IsSupported(args[2])) throw new Failure("NATIVE_EXPORT_MISSING");
         value.PublicClient = true;
+        value.NativeUserIdentity = nativeUser;
         value.Dll = null; value.Hash = null;
         value.ClientDll = Path.GetFullPath(args[1]); value.ClientHash = args[2];
         value.GameImage = Path.GetFullPath(args[7]);
@@ -189,8 +191,7 @@ internal static partial class NativePresenceWorker
             }
             finally { Marshal.FreeHGlobal(result); }
             Bound(); uint app = getAppId(utils); Bound();
-            if (self == 0 || app == 0) throw new Failure("NATIVE_CONTEXT_UNAVAILABLE");
-            return self == binding.Self && app == binding.App;
+            return NativeIdentityMatches(online, self, app, binding.Self, binding.App);
         }
 
         public PresenceRead Read() { return ReadPublic(this, Guard); }

@@ -11,7 +11,9 @@ import { SteamService, publicErrorMessage } from './steam-service'
 import { createSteamNetworkSession } from './steam-network-session'
 import { GameStatusService, createGameStatusSteamClient } from './game-status-service'
 import { NativePresenceBroker } from './native-presence-broker'
-import { NativeGameStatusClient } from './native-game-status-client'
+import { NativeGameStatusClient, detectNativeGameStatusContext } from './native-game-status-client'
+import { createLiveNativeContextDetector } from './native-context-strategy'
+import { createVerifiedNativeContextDetector } from './native-context-resolver'
 import { readLocalSimulationContext } from './simulation-local-context'
 import { LocalAppSimulationService } from './local-app-simulation'
 import { StatusCopyService } from './status-copy-service'
@@ -204,7 +206,15 @@ app.whenReady().then(async () => {
   nativePresenceForQuit = nativePresence
   gameStatus = new GameStatusService({
     nativeWriter: nativePresence,
-    createLocalClient: steamId => new NativeGameStatusClient({ broker: nativePresence, steamId, createMetadataClient: () => createGameStatusSteamClient() }),
+    createLocalClient: steamId => {
+      const verified = createVerifiedNativeContextDetector(steamId,
+        app.isPackaged ? join(process.resourcesPath, 'screenshot-import', 'screenshot-import-host-x64.exe')
+          : join(app.getAppPath(), 'resources', 'screenshot-import', 'screenshot-import-host-x64.exe'))
+      return new NativeGameStatusClient({ broker: nativePresence, steamId,
+        detectContext: createLiveNativeContextDetector(detectNativeGameStatusContext, verified),
+        cancelContextDetection: () => verified.cancel(),
+        createMetadataClient: () => createGameStatusSteamClient() })
+    },
     checkSimulationContext: () => readLocalSimulationContext(),
     onDiagnostic: event => diagnostics?.gameStatusEvent(event),
     getActiveAccount: () => {

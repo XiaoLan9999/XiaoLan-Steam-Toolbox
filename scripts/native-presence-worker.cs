@@ -159,6 +159,7 @@ internal static partial class NativePresenceWorker
     private sealed class Binding
     {
         public bool PublicClient;
+        public bool NativeUserIdentity;
         public string Dll;
         public string Hash;
         public string ClientDll;
@@ -176,9 +177,23 @@ internal static partial class NativePresenceWorker
 
         public static Binding Parse(string[] args)
         {
-            if (args.Length > 0 && args[0] == "--public-client") return ParsePublicBinding(args);
+            if (args != null && args.Length > 0 && args[0] == "--public-client") return ParsePublicBinding(args);
+            Binding value = ParseArguments(args);
+            value.AssertAlive();
+            try
+            {
+                value.GameImage = ProcessImage(value.GamePid);
+            }
+            catch { value.AssertAlive(); throw new Failure("NATIVE_CONTEXT_UNAVAILABLE"); }
+            value.AssertAlive();
+            return value;
+        }
+
+        public static Binding ParseArguments(string[] args)
+        {
+            bool nativeUser = NativeUserArgumentMode(args);
             Binding value = new Binding();
-            if (args.Length != 12 || !Path.IsPathRooted(args[0]) || args[0].StartsWith(@"\\", StringComparison.Ordinal)
+            if (!Path.IsPathRooted(args[0]) || args[0].StartsWith(@"\\", StringComparison.Ordinal)
                 || !Regex.IsMatch(args[1], "^[a-f0-9]{64}$", RegexOptions.CultureInvariant)
                 || !Path.IsPathRooted(args[2]) || args[2].StartsWith(@"\\", StringComparison.Ordinal)
                 || !Regex.IsMatch(args[3], "^[a-f0-9]{64}$", RegexOptions.CultureInvariant)
@@ -197,14 +212,11 @@ internal static partial class NativePresenceWorker
             value.ClientHash = args[3];
             if (String.Equals(value.Dll, value.ClientDll, StringComparison.OrdinalIgnoreCase)) throw new Failure("NATIVE_ARGUMENTS_INVALID");
             if (!String.Equals(Path.GetFileName(value.ClientDll), IntPtr.Size == 4 ? "steamclient.dll" : "steamclient64.dll", StringComparison.OrdinalIgnoreCase)) throw new Failure("NATIVE_ARGUMENTS_INVALID");
+            if (nativeUser && (IntPtr.Size != 8 || value.App > 0xffffff || value.Self <= 76561197960265728UL
+                || value.Self - 76561197960265728UL > UInt32.MaxValue)) throw new Failure("NATIVE_ARGUMENTS_INVALID");
+            if (nativeUser && !SteamPublicProfile.IsSupported(value.ClientHash)) throw new Failure("NATIVE_EXPORT_MISSING");
+            value.NativeUserIdentity = nativeUser;
             value.SteamImage = Path.Combine(Path.GetDirectoryName(value.ClientDll), "steam.exe");
-            value.AssertAlive();
-            try
-            {
-                value.GameImage = ProcessImage(value.GamePid);
-            }
-            catch { value.AssertAlive(); throw new Failure("NATIVE_CONTEXT_UNAVAILABLE"); }
-            value.AssertAlive();
             return value;
         }
 
@@ -239,6 +251,13 @@ internal static partial class NativePresenceWorker
             if (hasUser && unchecked((uint)(int)activeUser) != (uint)(expectedSelf & 0xffffffffUL)) return 70;
             return hasPid && hasUser ? 0 : 73;
         }
+        public static int NativeIdentityHintState(object activePid, object activeUser, int expectedPid, ulong expectedSelf)
+        {
+            // Stale hints never authenticate a user; Guard still reads the actual native identity.
+            bool currentPid = activePid is int && unchecked((uint)(int)activePid) == (uint)expectedPid;
+            bool hasUser = activeUser is int && unchecked((uint)(int)activeUser) != 0;
+            return currentPid && hasUser && unchecked((uint)(int)activeUser) != (uint)(expectedSelf & 0xffffffffUL) ? 70 : 0;
+        }
         public int ContextCode()
         {
             int alive = LivenessCode();
@@ -247,15 +266,29 @@ internal static partial class NativePresenceWorker
             {
                 using (RegistryKey active = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam\ActiveProcess", false))
                 {
-                    if (active == null) return 73;
-                    int identity = RegistryIdentityState(active.GetValue("pid", null, RegistryValueOptions.DoNotExpandEnvironmentNames),
-                        active.GetValue("ActiveUser", null, RegistryValueOptions.DoNotExpandEnvironmentNames), SteamPid, Self);
+                    if (active == null) return NativeUserIdentity ? 0 : 73;
+                    object activePid = active.GetValue("pid", null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                    object activeUser = active.GetValue("ActiveUser", null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+                    if (NativeUserIdentity) return NativeIdentityHintState(activePid, activeUser, SteamPid, Self);
+                    int identity = RegistryIdentityState(activePid, activeUser, SteamPid, Self);
                     return identity != 0 ? identity : PublicClient ? PublicRunningAppContextCode(App) : 0;
                 }
             }
-            catch { return 73; }
+            catch { return NativeUserIdentity ? 0 : 73; }
         }
         public void AssertAlive() { int code = ContextCode(); if (code != 0) throw new Failure(code == 70 ? "NATIVE_CONTEXT_CHANGED" : "NATIVE_CONTEXT_UNAVAILABLE"); }
+    }
+
+    private static bool NativeUserArgumentMode(string[] args)
+    {
+        if (args == null || (args.Length != 12 && (args.Length != 13 || args[12] != "--native-user"))) throw new Failure("NATIVE_ARGUMENTS_INVALID");
+        return args.Length == 13;
+    }
+
+    private static bool NativeIdentityMatches(bool online, ulong actualSelf, uint actualApp, ulong expectedSelf, uint expectedApp)
+    {
+        if (!online || actualSelf == 0 || actualApp == 0) throw new Failure("NATIVE_CONTEXT_UNAVAILABLE");
+        return actualSelf == expectedSelf && actualApp == expectedApp;
     }
 
     private interface IPresence : IDisposable
@@ -505,8 +538,7 @@ internal static partial class NativePresenceWorker
             if (!online) throw new Failure("NATIVE_CONTEXT_UNAVAILABLE");
             ulong self = getSteamId(user); Bound();
             uint app = getAppId(utils); Bound();
-            if (self == 0 || app == 0) throw new Failure("NATIVE_CONTEXT_UNAVAILABLE");
-            return self == binding.Self && app == binding.App;
+            return NativeIdentityMatches(online, self, app, binding.Self, binding.App);
         }
         public PresenceRead Read() { return ReadPublic(this, Guard); }
         public void Preflight(SortedDictionary<string, string> changes) { PreflightRealGroupChanges(this, Guard, changes); }

@@ -43,6 +43,22 @@ export interface GameStatusFailure {
   at: string
   appId?: number
   submitted: 'no' | 'yes' | 'unknown'
+  nativeCode?: NativeGameStatusFailureCode
+}
+
+export const NATIVE_GAME_STATUS_FAILURE_CODES = [
+  'NATIVE_UNSUPPORTED', 'NATIVE_GAME_NOT_FOUND', 'NATIVE_GAME_AMBIGUOUS', 'NATIVE_DISCOVERY_FAILED',
+  'NATIVE_WORKER_MISSING', 'NATIVE_ARGUMENTS_INVALID', 'NATIVE_DLL_INVALID', 'NATIVE_LOAD_FAILED',
+  'NATIVE_EXPORT_MISSING', 'NATIVE_INIT_FAILED', 'NATIVE_CONTEXT_CHANGED', 'NATIVE_CONTEXT_UNAVAILABLE',
+  'NATIVE_PROTOCOL_INVALID', 'NATIVE_PUBLIC_READ_INVALID', 'NATIVE_SET_REJECTED', 'NATIVE_INTERNAL_ERROR',
+  'NATIVE_BUSY', 'NATIVE_CANCELLED', 'NATIVE_TIMEOUT', 'NATIVE_EXITED'
+] as const
+export type NativeGameStatusFailureCode = typeof NATIVE_GAME_STATUS_FAILURE_CODES[number]
+export function nativeGameStatusFailureCode(error: unknown): NativeGameStatusFailureCode | undefined {
+  try {
+    const value = error && typeof error === 'object' ? (error as { nativeCode?: unknown }).nativeCode : undefined
+    return NATIVE_GAME_STATUS_FAILURE_CODES.includes(value as NativeGameStatusFailureCode) ? value as NativeGameStatusFailureCode : undefined
+  } catch { return undefined }
 }
 
 const stageMessages: Record<GameStatusFailureStage, readonly [string, string]> = {

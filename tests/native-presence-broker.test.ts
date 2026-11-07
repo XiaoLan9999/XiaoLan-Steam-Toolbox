@@ -83,6 +83,9 @@ class FakeWorker extends EventEmitter {
   child() { return this as unknown as ChildProcessWithoutNullStreams }
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
+function nativeContext(binding: NativePresenceBinding): NativePresenceContext {
+  return { ...context, identitySource: 'native-user', steamPid: binding.steamPid, steamStartTicks: binding.steamStartTicks, gamePid: binding.gamePid, gameStartTicks: binding.gameStartTicks, gameExe: binding.gameExe }
+}
 const lifecycle = (stage: string, ok: boolean | null = true, elapsedMs = 0): Record<string, unknown> => ({ v: 1, requestId: 'lifecycle', op: 'lifecycle', stage, ok, elapsedMs })
 
 afterEach(async () => {
@@ -157,6 +160,93 @@ describe('scoped native game discovery', () => {
     ]) {
       await expect(discoverNativePresenceBinding(context, { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses: async () => ({ ...f.processes, processes }) })).rejects.toBeInstanceOf(NativePresenceError)
     }
+  })
+
+  it('selects the unique official loaded API while ignoring an external instrumentation API', async () => {
+    const f = await fixture('x64')
+    const external = join(f.root, 'Replay', 'steam_api64.dll')
+    await mkdir(external, { recursive: true })
+    // A directory cannot be read as a PE DLL; only its canonical path may be inspected.
+    const processList = { ...f.processes, processes: [{ ...f.processes.processes[0]!, modules: [external, ...f.processes.processes[0]!.modules] }] }
+    const result = await discoverNativePresenceBinding(context, { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses: async () => processList })
+    expect(result).toEqual(f.binding)
+    expect(result.dllPath).not.toBe(external)
+  })
+
+  it('rejects only-external loaded APIs without falling back to the public-client transport', async () => {
+    const f = await fixture('x64')
+    const external = join(f.root, 'Replay', 'steam_api64.dll')
+    await mkdir(external, { recursive: true })
+    const processList = { ...f.processes, processes: [{ ...f.processes.processes[0]!, modules: [external, f.binding.clientDllPath], modulesUnavailable: true }] }
+    await expect(discoverNativePresenceBinding(context, { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses: async () => processList })).rejects.toMatchObject({ nativeCode: 'NATIVE_DLL_INVALID' })
+  })
+
+  it('rejects two distinct loaded APIs inside the manifest installation', async () => {
+    const f = await fixture('x64')
+    const second = join(f.installed, 'SecondRuntime', 'steam_api64.dll')
+    await mkdir(join(f.installed, 'SecondRuntime')); await writeFile(second, pe('x64'))
+    const processList = { ...f.processes, processes: [{ ...f.processes.processes[0]!, modules: [...f.processes.processes[0]!.modules, second] }] }
+    await expect(discoverNativePresenceBinding(context, { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses: async () => processList })).rejects.toMatchObject({ nativeCode: 'NATIVE_GAME_AMBIGUOUS' })
+  })
+
+  it('deduplicates loaded API evidence by canonical path rather than textual module spelling', async () => {
+    const f = await fixture('x64')
+    await mkdir(join(f.installed, 'Runtime'))
+    const sameApi = f.installed + sep + 'Runtime' + sep + '..' + sep + 'steam_api64.dll'
+    const processList = { ...f.processes, processes: [{ ...f.processes.processes[0]!, modules: [sameApi, ...f.processes.processes[0]!.modules] }] }
+    expect(await discoverNativePresenceBinding(context, { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses: async () => processList })).toEqual(f.binding)
+  })
+
+  it('keeps Windows discovery independent of the registry ActiveProcess PID shortcut', async () => {
+    const source = await readFile(new URL('../src/main/native-presence-broker.ts', import.meta.url), 'utf8')
+    expect(source).not.toContain('Steam\\\\ActiveProcess')
+    expect(source).toContain('$configuration.SteamExe')
+    expect(source).toContain('Get-Process -Name steam')
+    expect(source).toContain('$steamMatches.Count -ne 1')
+    expect(source).toContain('$steam.Id -ne $expected.steamPid')
+    expect(source).toContain('$steamStartTicks -cne $expected.steamStartTicks')
+  })
+
+  it('permits a native-user static preprobe and binds the separately verified Steam instance', async () => {
+    const f = await fixture()
+    const queryProcesses = vi.fn(async () => f.processes)
+    const expected = { steamPid: f.binding.steamPid, steamStartTicks: f.binding.steamStartTicks }
+    const result = await discoverNativePresenceBinding({ ...context, ...expected, identitySource: 'native-user' }, { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses })
+    expect(result).toEqual({ ...f.binding, identitySource: 'native-user' })
+    expect(queryProcesses).toHaveBeenCalledExactlyOnceWith([f.installed], process.pid, expected)
+  })
+
+  it.each([{ steamPid: GAME_PID - 3 }, { steamStartTicks: '638964000000000002' }])('refuses static discovery of a different Steam instance %#', async changed => {
+    const f = await fixture()
+    await expect(discoverNativePresenceBinding({ ...nativeContext(f.binding), ...changed }, { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses: async () => f.processes })).rejects.toMatchObject({ nativeCode: 'NATIVE_CONTEXT_CHANGED' })
+  })
+
+  it.each(['pid', 'ticks', 'exe'] as const)('refuses static discovery that differs from the resolver game %s proof', async field => {
+    const f = await fixture()
+    const expected = nativeContext(f.binding)
+    if (field === 'pid') expected.gamePid = GAME_PID - 1
+    if (field === 'ticks') expected.gameStartTicks = '638965000000000002'
+    if (field === 'exe') expected.gameExe = join(f.installed, 'AnotherGame.exe')
+    await expect(discoverNativePresenceBinding(expected, { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses: async () => f.processes })).rejects.toMatchObject({ nativeCode: 'NATIVE_CONTEXT_CHANGED' })
+  })
+
+  it('does not hide multiple running game candidates by filtering to the caller game proof', async () => {
+    const f = await fixture()
+    const processList = { ...f.processes, processes: [f.processes.processes[0]!, { ...f.processes.processes[0]!, pid: GAME_PID - 1 }] }
+    await expect(discoverNativePresenceBinding(nativeContext(f.binding), { platform: 'win32', steamRoots: async () => [f.steam], queryProcesses: async () => processList })).rejects.toMatchObject({ nativeCode: 'NATIVE_GAME_AMBIGUOUS' })
+  })
+
+  it.each([
+    { identitySource: 'native-user' },
+    { identitySource: 'another-user' },
+    { gamePid: GAME_PID },
+    { gameStartTicks: START },
+    { gameExe: 'FixtureGame.exe' },
+    { gamePid: GAME_PID, gameStartTicks: START, gameExe: 'FixtureGame.exe' }
+  ])('rejects incomplete or unknown identity proof before querying processes %#', async invalid => {
+    const queryProcesses = vi.fn()
+    await expect(discoverNativePresenceBinding({ ...context, ...invalid } as NativePresenceContext, { platform: 'win32', queryProcesses })).rejects.toMatchObject({ nativeCode: 'NATIVE_ARGUMENTS_INVALID' })
+    expect(queryProcesses).not.toHaveBeenCalled()
   })
 
   it('validates parent identity and ticks as strings, never rounded JavaScript timestamps', async () => {
@@ -237,6 +327,112 @@ describe('owned native worker lifecycle and local acceptance protocol', () => {
     expect(f.children[0]!.requests.every(request => request.v === 1 && typeof request.requestId === 'string')).toBe(true)
   })
 
+  it('adds the native-user flag only for an explicitly matching identity binding', async () => {
+    const f = await setup()
+    const expected = nativeContext(f.binding)
+    f.discover.mockResolvedValue({ ...f.binding, identitySource: 'native-user' })
+    await f.broker.read(expected, () => true)
+    expect(f.discover).toHaveBeenCalledExactlyOnceWith(expected)
+    expect(f.spawn.mock.calls[0]![1]).toEqual([f.binding.dllPath, f.binding.dllSha256, f.binding.clientDllPath, f.binding.clientDllSha256, String(context.appId), context.steamId, String(GAME_PID), START, String(process.pid), PARENT_START, String(f.binding.steamPid), f.binding.steamStartTicks, '--native-user'])
+  })
+
+  it('does not spawn from a native-user preprobe without complete game proof', async () => {
+    const f = await setup()
+    await expect(f.broker.read({ ...context, identitySource: 'native-user', steamPid: f.binding.steamPid, steamStartTicks: f.binding.steamStartTicks }, () => true)).rejects.toMatchObject({ nativeCode: 'NATIVE_ARGUMENTS_INVALID', mayHaveWritten: false })
+    expect(f.discover).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled()
+  })
+
+  it('does not accept an explicit proof downgrade merely because a native-user helper is already active', async () => {
+    const f = await setup()
+    f.discover.mockResolvedValue({ ...f.binding, identitySource: 'native-user' })
+    await f.broker.read(nativeContext(f.binding), () => true)
+    const preprobe: NativePresenceContext = { ...context, identitySource: 'native-user', steamPid: f.binding.steamPid, steamStartTicks: f.binding.steamStartTicks }
+    await expect(f.broker.apply(preprobe, { desc: 'Never submitted' }, () => true)).rejects.toMatchObject({ nativeCode: 'NATIVE_ARGUMENTS_INVALID', mayHaveWritten: false })
+    expect(f.children[0]!.requests.map(value => value.op)).toEqual(['read'])
+    expect(f.spawn).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['unmarked', 'unexpected', 'unknown'] as const)('rejects a %s binding identity mode before spawning', async variant => {
+    const f = await setup()
+    const expected = variant === 'unexpected' ? context : nativeContext(f.binding)
+    if (variant !== 'unmarked') f.discover.mockResolvedValue({ ...f.binding, identitySource: variant === 'unknown' ? 'unknown' as 'native-user' : 'native-user' })
+    await expect(f.broker.read(expected, () => true)).rejects.toMatchObject({ nativeCode: variant === 'unknown' ? 'NATIVE_DISCOVERY_FAILED' : 'NATIVE_CONTEXT_CHANGED' })
+    expect(f.spawn).not.toHaveBeenCalled()
+  })
+
+  it.each(['pid', 'ticks', 'exe'] as const)('does not silently attach to a different game %s proof', async field => {
+    const f = await setup()
+    f.discover.mockResolvedValue({ ...f.binding, identitySource: 'native-user' })
+    const expected = nativeContext(f.binding)
+    if (field === 'pid') expected.gamePid = GAME_PID - 1
+    if (field === 'ticks') expected.gameStartTicks = '638965000000000002'
+    if (field === 'exe') expected.gameExe = join(f.installed, 'AnotherGame.exe')
+    await expect(f.broker.read(expected, () => true)).rejects.toMatchObject({ nativeCode: 'NATIVE_CONTEXT_CHANGED', mayHaveWritten: false })
+    expect(f.spawn).not.toHaveBeenCalled()
+  })
+
+  it('inherits all verified native-user proof for minimal apply and worker rotation', async () => {
+    const f = await setup()
+    const expected = nativeContext(f.binding)
+    f.discover.mockResolvedValue({ ...f.binding, identitySource: 'native-user' })
+    await f.broker.read(expected, () => true)
+    await f.broker.apply(context, { desc: 'Same verified game' }, () => true)
+    expect(f.spawn).toHaveBeenCalledTimes(1)
+    f.broker.stop()
+    await f.broker.apply(context, { desc: 'Same proof after rotation' }, () => true)
+    expect(f.discover).toHaveBeenLastCalledWith(expected)
+    expect(f.spawn).toHaveBeenCalledTimes(2)
+    expect(f.spawn.mock.calls.every(([, args]) => args.length === 13 && args.at(-1) === '--native-user')).toBe(true)
+  })
+
+  it('does not inherit native-user proof across a different account binding', async () => {
+    const f = await setup()
+    f.discover.mockResolvedValue({ ...f.binding, identitySource: 'native-user' })
+    await f.broker.read({ ...nativeContext(f.binding), accountId: 'first-account' }, () => true)
+    f.broker.stop()
+    await expect(f.broker.apply({ ...context, accountId: 'another-account' }, { desc: 'Never submitted' }, () => true)).rejects.toMatchObject({ nativeCode: 'NATIVE_CONTEXT_CHANGED', mayHaveWritten: false })
+    expect(f.discover).toHaveBeenLastCalledWith({ ...context, accountId: 'another-account' })
+    expect(f.spawn).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not upgrade an explicit Steam proof with an omitted native-user mode', async () => {
+    const f = await setup()
+    f.discover.mockResolvedValue({ ...f.binding, identitySource: 'native-user' })
+    await f.broker.read(nativeContext(f.binding), () => true)
+    await expect(f.broker.apply({ ...context, steamPid: f.binding.steamPid, steamStartTicks: f.binding.steamStartTicks }, { desc: 'Never submitted' }, () => true)).rejects.toMatchObject({ nativeCode: 'NATIVE_CONTEXT_CHANGED', mayHaveWritten: false })
+    expect(f.children[0]!.requests.map(value => value.op)).toEqual(['read', 'stop'])
+    expect(f.spawn).toHaveBeenCalledTimes(1)
+  })
+
+  it('retains the identity mode anchor until an explicit new context begins', async () => {
+    const f = await setup()
+    f.discover.mockResolvedValue({ ...f.binding, identitySource: 'native-user' })
+    const expected = nativeContext(f.binding)
+    await f.broker.read(expected, () => true); f.broker.stop()
+    f.discover.mockResolvedValue(f.binding)
+    const { identitySource: _source, ...legacy } = expected
+    await expect(f.broker.read(legacy, () => true)).rejects.toMatchObject({ nativeCode: 'NATIVE_CONTEXT_CHANGED' })
+    expect(f.spawn).toHaveBeenCalledTimes(1)
+    f.broker.beginContext()
+    await f.broker.read(legacy, () => true)
+    expect(f.spawn).toHaveBeenCalledTimes(2)
+    expect(f.spawn.mock.calls[1]![1]).toHaveLength(12)
+  })
+
+  it('never replaces a retiring native-user worker before confirmed exit', async () => {
+    const f = await setup({ stopTimeoutMs: 1000 })
+    f.discover.mockResolvedValue({ ...f.binding, identitySource: 'native-user' })
+    await f.broker.read(nativeContext(f.binding), () => true)
+    const child = f.children[0]!; child.stopCloses = false; f.broker.stop()
+    const next = f.broker.apply(context, { desc: 'After confirmed exit only' }, () => true)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(f.spawn).toHaveBeenCalledTimes(1); expect(f.discover).toHaveBeenCalledTimes(1)
+    child.finish()
+    await next
+    expect(f.spawn).toHaveBeenCalledTimes(2)
+    expect(f.spawn.mock.calls[1]![1].at(-1)).toBe('--native-user')
+  })
+
   it.each(['e9045710ec7ee47d7b7488d1c5dda2d933dec7e251e965967a5c48f4df68eb4e', '253e0a11a4415b38c78a42f7bdd6ecc426455f06c1ba6453a48090df3142dbbc'])('uses the audited public-client transport %s without pretending to load a game API DLL', async clientDllSha256 => {
     const f = await setup({ arch: 'x64' })
     const { dllPath: _dll, dllSha256: _sha, ...base } = f.binding
@@ -245,6 +441,14 @@ describe('owned native worker lifecycle and local acceptance protocol', () => {
     await f.broker.read(context, () => true)
     expect(f.spawn.mock.calls[0]![1]).toEqual(['--public-client', binding.clientDllPath, binding.clientDllSha256, String(context.appId), context.steamId, String(binding.gamePid), binding.gameStartTicks, binding.gameExe, String(binding.parentPid), binding.parentStartTicks, String(binding.steamPid), binding.steamStartTicks])
     expect(f.spawn.mock.calls[0]![1]).not.toContain(_dll)
+  })
+  it('adds the native-user flag to the unchanged public-client argument layout', async () => {
+    const f = await setup({ arch: 'x64' })
+    const { dllPath: _dll, dllSha256: _sha, ...base } = f.binding
+    const binding: NativePresenceBinding = { ...base, identitySource: 'native-user', transport: 'public-client', clientDllSha256: 'e9045710ec7ee47d7b7488d1c5dda2d933dec7e251e965967a5c48f4df68eb4e' }
+    f.discover.mockResolvedValue(binding)
+    await f.broker.read(nativeContext(binding), () => true)
+    expect(f.spawn.mock.calls[0]![1]).toEqual(['--public-client', binding.clientDllPath, binding.clientDllSha256, String(context.appId), context.steamId, String(binding.gamePid), binding.gameStartTicks, binding.gameExe, String(binding.parentPid), binding.parentStartTicks, String(binding.steamPid), binding.steamStartTicks, '--native-user'])
   })
   it('does not spawn the public-client worker for an unknown client hash', async () => {
     const f = await setup({ arch: 'x64' })

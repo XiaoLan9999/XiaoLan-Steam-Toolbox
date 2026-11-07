@@ -4,6 +4,7 @@ import { realpath } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 import { DomainError } from '../shared/domain'
+import { isGameStatusFailureCode } from '../shared/game-status-errors'
 import type { GameStatusSteamClient } from './game-status-service'
 import type { NativePresenceContext, NativePresenceError, NativePresenceRead } from './native-presence-broker'
 
@@ -13,6 +14,10 @@ export interface NativeGameStatusContext {
   steamPid: number
   steamStartTicks: string
   steamExe: string
+  identitySource?: 'native-user'
+  gamePid?: number
+  gameStartTicks?: string
+  gameExe?: string
 }
 export interface NativeGameStatusBroker {
   read(context: NativePresenceContext, permitted: () => boolean): Promise<NativePresenceRead>
@@ -24,6 +29,7 @@ export interface NativeGameStatusClientOptions {
   broker: NativeGameStatusBroker
   steamId: string
   detectContext?: () => Promise<NativeGameStatusContext>
+  cancelContextDetection?: () => void
   createMetadataClient?: () => GameStatusSteamClient
   pollIntervalMs?: number
   metadataTimeoutMs?: number
@@ -66,12 +72,18 @@ if ($user -eq 0 -or $user -gt [uint32]::MaxValue) { throw 'Steam user unavailabl
 
 function validateContext(value: NativeGameStatusContext): void {
   if (!value || !Number.isInteger(value.appId) || value.appId < 0 || value.appId > 0xffffff || !safeId(value.steamId) || !safePid(value.steamPid) || !safeTicks(value.steamStartTicks) || typeof value.steamExe !== 'string' || !isAbsolute(value.steamExe) || basename(value.steamExe).toLowerCase() !== 'steam.exe') throw detectionUnavailable()
+  if (value.identitySource !== undefined && value.identitySource !== 'native-user') throw detectionUnavailable()
+  if (value.identitySource === 'native-user' || value.gamePid !== undefined || value.gameStartTicks !== undefined || value.gameExe !== undefined) {
+    if (!safePid(value.gamePid) || !safeTicks(value.gameStartTicks) || typeof value.gameExe !== 'string' || !isAbsolute(value.gameExe) || !/\.exe$/i.test(value.gameExe)) throw detectionUnavailable()
+  }
 }
 function sameContext(a: NativeGameStatusContext, b: NativeGameStatusContext): boolean {
-  return a.appId === b.appId && a.steamId === b.steamId && a.steamPid === b.steamPid && a.steamStartTicks === b.steamStartTicks && a.steamExe.toLowerCase() === b.steamExe.toLowerCase()
+  return a.appId === b.appId && a.steamId === b.steamId && a.steamPid === b.steamPid && a.steamStartTicks === b.steamStartTicks && a.steamExe.toLowerCase() === b.steamExe.toLowerCase() && a.identitySource === b.identitySource && a.gamePid === b.gamePid && a.gameStartTicks === b.gameStartTicks && a.gameExe?.toLowerCase() === b.gameExe?.toLowerCase()
 }
 function brokerContext(context: NativeGameStatusContext): NativePresenceContext {
-  return { appId: context.appId, steamId: context.steamId, steamPid: context.steamPid, steamStartTicks: context.steamStartTicks }
+  return { appId: context.appId, steamId: context.steamId, steamPid: context.steamPid, steamStartTicks: context.steamStartTicks,
+    ...(context.identitySource ? { identitySource: context.identitySource } : {}),
+    ...(context.gamePid !== undefined ? { gamePid: context.gamePid, gameStartTicks: context.gameStartTicks, gameExe: context.gameExe } : {}) }
 }
 
 export class NativeGameStatusClient extends EventEmitter implements GameStatusSteamClient {
@@ -96,7 +108,10 @@ export class NativeGameStatusClient extends EventEmitter implements GameStatusSt
   private current(generation: number): boolean { return this.generation === generation }
   private detect(): Promise<NativeGameStatusContext> {
     if (this.detecting) return this.detecting
-    const pending = Promise.resolve().then(() => (this.options.detectContext ?? detectNativeGameStatusContext)()).then(value => { validateContext(value); return { ...value } }).catch(() => { throw detectionUnavailable() })
+    const pending = Promise.resolve().then(() => (this.options.detectContext ?? detectNativeGameStatusContext)()).then(value => { validateContext(value); return { ...value } }).catch(error => {
+      if (error instanceof DomainError && isGameStatusFailureCode(error.code)) throw error
+      throw detectionUnavailable()
+    })
     this.detecting = pending
     void pending.finally(() => { if (this.detecting === pending) this.detecting = null }).catch(() => {})
     return pending
@@ -108,6 +123,7 @@ export class NativeGameStatusClient extends EventEmitter implements GameStatusSt
   private verifyAttached(value: NativeGameStatusContext, expected: NativeGameStatusContext): boolean {
     if (value.steamId !== expected.steamId) throw new DomainError('GAME_STATUS_IDENTITY_MISMATCH', '本机 Steam 与工具箱账号不一致，未继续操作。')
     if (value.steamPid !== expected.steamPid || value.steamStartTicks !== expected.steamStartTicks || value.steamExe.toLowerCase() !== expected.steamExe.toLowerCase() || (value.appId !== 0 && value.appId !== expected.appId)) throw contextError()
+    if (value.identitySource !== expected.identitySource || value.gamePid !== expected.gamePid || value.gameStartTicks !== expected.gameStartTicks || value.gameExe?.toLowerCase() !== expected.gameExe?.toLowerCase()) throw contextError()
     return value.appId !== 0
   }
   private assertCurrent(generation: number, expected: NativeGameStatusContext): void {
@@ -176,6 +192,7 @@ export class NativeGameStatusClient extends EventEmitter implements GameStatusSt
   }
   logOff(): void {
     this.generation++
+    try { this.options.cancelContextDetection?.() } catch { /* Retiring a detector must not keep a native session alive. */ }
     this.connecting = false
     this.suspended = false
     if (this.timer) clearTimeout(this.timer)

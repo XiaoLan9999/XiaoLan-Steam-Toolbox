@@ -42,6 +42,7 @@ export interface ScreenshotActiveUserDependencies {
   spawn(worker: string, args: string[]): ChildProcessWithoutNullStreams
   timeoutMs: number
   exitTimeoutMs: number
+  signal?: AbortSignal
 }
 
 async function inspectProcess(): Promise<unknown> {
@@ -78,6 +79,7 @@ function isX64Pe(bytes: Buffer): boolean {
 
 function readIdentity(worker: string, context: ScreenshotActiveProcess, dll: string, deps: ScreenshotActiveUserDependencies): Promise<string> {
   return new Promise((accept, decline) => {
+    if (deps.signal?.aborted) { decline(unavailable()); return }
     const child = deps.spawn(worker, ['--read-current-user', dll, CLIENT_HASH, String(context.steamPid), context.steamStartTicks, String(context.ownerPid), context.ownerStartTicks])
     activeReads.add(child)
     let text = '', stdoutBytes = 0, stderrBytes = 0, identity: string | undefined, cleanup = false, failed = false, settled = false
@@ -85,6 +87,7 @@ function readIdentity(worker: string, context: ScreenshotActiveProcess, dll: str
     const settle = (value?: string): void => {
       if (settled) return
       settled = true; clearTimeout(timer); clearTimeout(exitTimer)
+      deps.signal?.removeEventListener('abort', fault)
       if (value) accept(value); else decline(unavailable())
     }
     const fault = (): void => {
@@ -125,6 +128,8 @@ function readIdentity(worker: string, context: ScreenshotActiveProcess, dll: str
       activeReads.delete(child)
       settle(!failed && code === 0 && !text.trim() && cleanup ? identity : undefined)
     })
+    deps.signal?.addEventListener('abort', fault, { once: true })
+    if (deps.signal?.aborted) { fault(); return }
     child.stdin.end()
   })
 }
@@ -150,27 +155,42 @@ export async function readScreenshotActiveUser(steamPath: string, workerPath: st
   const deps: ScreenshotActiveUserDependencies = { platform: process.platform, arch: process.arch, ownerPid: process.pid,
     inspect: inspectProcess, lstat, realpath, readFile, digest: bytes => createHash('sha256').update(bytes).digest('hex'),
     spawn: (worker, args) => spawn(worker, args, { windowsHide: true, stdio: 'pipe', shell: false }), timeoutMs: 8000, exitTimeoutMs: 4000, ...overrides }
+  const checkCurrent = (): void => { if (generation !== revision || deps.signal?.aborted) throw unavailable() }
   try {
+    checkCurrent()
     if (deps.platform !== 'win32' || deps.arch !== 'x64' || !pid(deps.ownerPid) || typeof steamPath !== 'string' || !win32.isAbsolute(steamPath) || steamPath.startsWith('\\\\') || steamPath.includes('\0') ||
       typeof workerPath !== 'string' || !isAbsolute(workerPath) || workerPath.includes('\0')) throw unavailable()
     const root = win32.normalize(steamPath)
     const context = checkedProcess(await deps.inspect(), root, deps.ownerPid)
+    checkCurrent()
     const steamExe = win32.normalize(context.steamExe), dll = win32.join(root, 'steamclient64.dll'), worker = resolve(workerPath)
     for (const [path, directory] of [[root, true], [steamExe, false], [dll, false], [worker, false]] as const) {
       const info = await deps.lstat(path)
+      checkCurrent()
       if (info.isSymbolicLink() || (directory ? !info.isDirectory() : !info.isFile()) || !samePath(await deps.realpath(path), path)) throw unavailable()
+      checkCurrent()
     }
     const before = await deps.lstat(dll)
+    checkCurrent()
     if (before.size < 256 || before.size > 128 * 1024 * 1024) throw unavailable()
-    const bytes = await deps.readFile(dll), after = await deps.lstat(dll)
+    const bytes = await deps.readFile(dll)
+    checkCurrent()
+    const after = await deps.lstat(dll)
+    checkCurrent()
     if (bytes.length !== before.size || before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.size !== after.size || !isX64Pe(bytes) || deps.digest(bytes) !== CLIENT_HASH) throw unavailable()
     const workerInfo = await deps.lstat(worker)
+    checkCurrent()
     if (workerInfo.size < 256 || workerInfo.size > 2 * 1024 * 1024) throw unavailable()
-    const workerBytes = await deps.readFile(worker), currentWorker = await deps.lstat(worker)
+    const workerBytes = await deps.readFile(worker)
+    checkCurrent()
+    const currentWorker = await deps.lstat(worker)
+    checkCurrent()
     if (workerBytes.length !== workerInfo.size || workerInfo.dev !== currentWorker.dev || workerInfo.ino !== currentWorker.ino || workerInfo.mtimeMs !== currentWorker.mtimeMs || workerInfo.size !== currentWorker.size || !isX64Pe(workerBytes)) throw unavailable()
-    if (generation !== revision) throw unavailable()
+    checkCurrent()
     const steamId = await readIdentity(worker, context, dll, deps)
+    checkCurrent()
     const current = checkedProcess(await deps.inspect(), root, deps.ownerPid)
+    checkCurrent()
     if (generation !== revision || current.steamPid !== context.steamPid || current.steamStartTicks !== context.steamStartTicks || !samePath(current.steamExe, steamExe) || current.ownerStartTicks !== context.ownerStartTicks) throw unavailable()
     return { steamPath: root, steamExe, steamPid: context.steamPid, steamStartTicks: context.steamStartTicks, steamId, clientSha256: CLIENT_HASH }
   } catch { throw unavailable() }

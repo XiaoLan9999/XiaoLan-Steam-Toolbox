@@ -4,6 +4,7 @@ import { COMMUNITY_REQUEST_STAGES, LOGIN_NETWORK_CODES, sanitizeDiagnosticRecord
 import { sanitizeLocalAppDiagnostic, type LocalAppDiagnosticEvent } from '../shared/local-app-diagnostics'
 import { sanitizeRendererDiagnostic, type RendererDiagnosticEvent } from '../shared/renderer-diagnostics'
 import { sanitizeSteamNetworkDiagnostic, type SteamNetworkDiagnostic } from '../shared/steam-network-diagnostics'
+import { nativeGameStatusFailureCode } from '../shared/game-status-errors'
 
 interface Metric {
   pid: number
@@ -47,7 +48,7 @@ const responseKinds = new Set(['json', 'html', 'empty', 'other'])
 const nativeStages = new Set(['worker-started', 'stop-requested', 'forced-kill', 'worker-closed', 'retire-timeout',
   'release-user-start', 'release-user-returned', 'release-pipe-start', 'release-pipe-returned',
   'free-api-library', 'free-client-library', 'cleanup-complete'])
-const gameStatusStages = new Set(['connect-requested', 'connect-reused', 'connect-deferred', 'cm-logon-started',
+const gameStatusStages = new Set(['connect-requested', 'connect-reused', 'connect-deferred', 'local-connected', 'local-connect-failed', 'cm-logon-started',
   'cm-logged-on', 'cm-retiring', 'cm-retired', 'cm-retire-timeout', 'cm-retire-failed', 'simulation-submit', 'simulation-noop',
   'simulation-stop', 'playing-state-confirmed', 'simulation-context-checking', 'simulation-context-confirmed',
   'simulation-context-blocked', 'simulation-context-unavailable'])
@@ -151,9 +152,11 @@ export class RuntimeDiagnostics {
       ...(Number.isSafeInteger(event.retiringCount) && event.retiringCount! >= 0 && event.retiringCount! <= 128 ? { retiringCount: event.retiringCount } : {}) })
   }
 
-  gameStatusEvent(event: { stage: string; connectionKind?: string; generation?: number }): void {
+  gameStatusEvent(event: { stage: string; connectionKind?: string; generation?: number; nativeCode?: string }): void {
     if (this.stopped) return
+    const nativeCode = nativeGameStatusFailureCode(event)
     this.write({ event: 'game-status', stage: gameStatusStages.has(event.stage) ? event.stage : 'unknown',
+      ...(nativeCode ? { nativeCode } : {}),
       ...(event.connectionKind === 'local' || event.connectionKind === 'cm' ? { connectionKind: event.connectionKind } : {}),
       ...(Number.isSafeInteger(event.generation) && event.generation! >= 0 && event.generation! <= 0xffffffff ? { generation: event.generation } : {}) })
   }

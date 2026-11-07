@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { DomainError } from '../shared/domain'
-import { gameStatusFailureMessage, isGameStatusFailureCode, type GameStatusFailureCode, type GameStatusFailureStage } from '../shared/game-status-errors'
+import { gameStatusFailureMessage, isGameStatusFailureCode, nativeGameStatusFailureCode, type NativeGameStatusFailureCode, type GameStatusFailureCode, type GameStatusFailureStage } from '../shared/game-status-errors'
 import { summarizeRichPresencePacket } from './steam-presence-wire'
 import type { GameStatusAction, GameStatusAppInfo, GameStatusAppInput, GameStatusConnectInput, GameStatusDraft, GameStatusGuardInput, GameStatusLiveDisplayInput, GameStatusOperation, GameStatusPatchInput, GameStatusPlayInput, GameStatusSaveDraftInput, GameStatusSnapshot, GameStatusUnlockInput } from '../shared/game-status'
 import { gameStatusPresenceParameterHints, isGameStatusPresenceParameter, sanitizeGameStatusPresence, validateGameStatusPresence } from '../shared/game-status-presence'
@@ -45,8 +45,8 @@ export interface GameStatusServiceOptions {
   }
 }
 
-export type GameStatusDiagnosticStage = 'connect-requested' | 'connect-reused' | 'connect-deferred' | 'cm-logon-started' | 'cm-logged-on' | 'cm-retiring' | 'cm-retired' | 'cm-retire-timeout' | 'cm-retire-failed' | 'simulation-submit' | 'simulation-noop' | 'simulation-stop' | 'playing-state-confirmed' | 'simulation-context-checking' | 'simulation-context-confirmed' | 'simulation-context-blocked' | 'simulation-context-unavailable'
-export interface GameStatusDiagnosticEvent { stage: GameStatusDiagnosticStage; connectionKind: 'local' | 'cm'; generation: number }
+export type GameStatusDiagnosticStage = 'connect-requested' | 'connect-reused' | 'connect-deferred' | 'local-connected' | 'local-connect-failed' | 'cm-logon-started' | 'cm-logged-on' | 'cm-retiring' | 'cm-retired' | 'cm-retire-timeout' | 'cm-retire-failed' | 'simulation-submit' | 'simulation-noop' | 'simulation-stop' | 'playing-state-confirmed' | 'simulation-context-checking' | 'simulation-context-confirmed' | 'simulation-context-blocked' | 'simulation-context-unavailable'
+export interface GameStatusDiagnosticEvent { stage: GameStatusDiagnosticStage; connectionKind: 'local' | 'cm'; generation: number; nativeCode?: NativeGameStatusFailureCode }
 
 export const GAME_STATUS_CLIENT_OPTIONS = Object.freeze({ dataDirectory: null, autoRelogin: false, saveAppTickets: false, enablePicsCache: false, changelistUpdateInterval: 0, renewRefreshTokens: false })
 export const LIVE_OBSERVATION_TTL_MS = 120000
@@ -323,10 +323,10 @@ export class GameStatusService {
       else this.operationFailure(code, 'context')
     }
   }
-  private fail(message: string, code: GameStatusFailureCode = 'GAME_STATUS_CM_CONNECT_FAILED', stage: GameStatusFailureStage = 'cm_connect'): void {
+  private fail(message: string, code: GameStatusFailureCode = 'GAME_STATUS_CM_CONNECT_FAILED', stage: GameStatusFailureStage = 'cm_connect', nativeCode?: NativeGameStatusFailureCode): void {
     this.retire(false)
     Object.assign(this.value, { status: 'error', connected: false, steamId: null, guard: null, blocked: false, blockingAppId: null, playing: null, live: null, busy: false, error: message })
-    this.value.failure = { code, stage, at: new Date().toISOString(), submitted: 'no' }
+    this.value.failure = { code, stage, at: new Date().toISOString(), submitted: 'no', ...(nativeCode ? { nativeCode } : {}) }
     this.emit()
   }
 
@@ -444,6 +444,7 @@ export class GameStatusService {
       if (steamId !== this.bound?.steamId) { this.fail(toolboxLogin ? '工具箱登录身份与当前账号不一致，请回到工具箱账号页面重新登录。' : '登录的 Steam 账号与当前工具箱账号不一致，已退出本机会话。', 'GAME_STATUS_IDENTITY_MISMATCH', 'identity'); return }
       this.clearTimer(); this.challenge = null
       this.value.status = 'logged_on'; this.value.connected = true; this.value.steamId = steamId; this.value.guard = null
+      if (local) this.diagnostic('local-connected', 'local', generation)
       this.value.failure = null; this.value.error = null
       if (!this.seenPlayingState) { this.value.blocked = !!client.playingState?.blocked; this.value.blockingAppId = this.value.blocked ? client.playingState?.appid || null : null }
       // Login and real-game inspection never force a persona change.
@@ -473,7 +474,9 @@ export class GameStatusService {
     const failed = (error?: unknown) => {
       if (!this.current(client, generation)) return
       const code = local && error && typeof error === 'object' && 'code' in error && isGameStatusFailureCode(error.code) ? error.code : local ? 'GAME_STATUS_NATIVE_UNAVAILABLE' : 'GAME_STATUS_CM_CONNECT_FAILED'
-      this.fail(local ? gameStatusFailureMessage(code, zh => zh) : toolboxLogin ? toolboxLoginMessage : 'Steam 登录或连接失败，请检查账号、安全验证和网络。', code, local ? 'context' : 'cm_connect')
+      const nativeCode = local ? nativeGameStatusFailureCode(error) : undefined
+      if (local) { try { this.options.onDiagnostic?.({ stage: 'local-connect-failed', connectionKind: 'local', generation, ...(nativeCode ? { nativeCode } : {}) }) } catch { /* Diagnostics must not affect session retirement. */ } }
+      this.fail(local ? gameStatusFailureMessage(code, zh => zh) : toolboxLogin ? toolboxLoginMessage : 'Steam 登录或连接失败，请检查账号、安全验证和网络。', code, local ? 'context' : 'cm_connect', nativeCode)
     }
     this.bind(client, 'error', failed)
     this.bind(client, 'nativeContextUnavailable', () => { if (local && this.current(client, generation)) this.invalidateLiveContext('GAME_STATUS_NATIVE_DETECTION_UNAVAILABLE') })

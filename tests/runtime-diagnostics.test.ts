@@ -23,6 +23,20 @@ function fixture(maxBytes?: number) {
 }
 
 describe('bounded local runtime diagnostics', () => {
+  it('retains only reviewed native connection subcodes at write and export', async () => {
+    const { sanitizeDiagnosticRecord } = await import('../src/shared/diagnostics')
+    const { directory, diagnostics } = fixture()
+    diagnostics.gameStatusEvent({ stage: 'local-connect-failed', connectionKind: 'local', generation: 2,
+      nativeCode: 'NATIVE_GAME_AMBIGUOUS', path: 'synthetic-private-path', identity: 'synthetic-private-identity' } as never)
+    diagnostics.gameStatusEvent({ stage: 'local-connected', connectionKind: 'local', generation: 3, nativeCode: 'synthetic-private-code' })
+    const contents = readFileSync(join(directory, 'runtime-current.jsonl'), 'utf8')
+    expect(contents).not.toContain('synthetic-private')
+    const entries = contents.trim().split('\n').map(line => sanitizeDiagnosticRecord(JSON.parse(line)))
+    expect(entries[0]).toMatchObject({ stage: 'local-connect-failed', nativeCode: 'NATIVE_GAME_AMBIGUOUS' })
+    expect(entries[1]).toMatchObject({ stage: 'local-connected' })
+    expect(entries[1]).not.toHaveProperty('nativeCode')
+    diagnostics.shutdown()
+  })
   it('writes and reprojects only fixed interface and network recovery facts', async () => {
     const { sanitizeDiagnosticRecord } = await import('../src/shared/diagnostics')
     const { directory, diagnostics } = fixture()

@@ -1,6 +1,7 @@
 import { sanitizeLocalAppDiagnostic } from './local-app-diagnostics'
 import { sanitizeRendererDiagnostic } from './renderer-diagnostics'
 import { sanitizeSteamNetworkDiagnostic } from './steam-network-diagnostics'
+import { NATIVE_GAME_STATUS_FAILURE_CODES } from './game-status-errors'
 
 export const LOGIN_NETWORK_CODES = [
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
@@ -60,7 +61,7 @@ const sessionReasons = ['http-401', 'login-redirect', 'not-logged-on', 'http-403
 const nativeStages = ['worker-started', 'stop-requested', 'forced-kill', 'worker-closed', 'retire-timeout',
   'release-user-start', 'release-user-returned', 'release-pipe-start', 'release-pipe-returned',
   'free-api-library', 'free-client-library', 'cleanup-complete', 'unknown']
-const gameStatusStages = ['connect-requested', 'connect-reused', 'connect-deferred', 'cm-logon-started',
+const gameStatusStages = ['connect-requested', 'connect-reused', 'connect-deferred', 'local-connected', 'local-connect-failed', 'cm-logon-started',
   'cm-logged-on', 'cm-retiring', 'cm-retired', 'cm-retire-timeout', 'cm-retire-failed', 'simulation-submit',
   'simulation-noop', 'simulation-stop', 'playing-state-confirmed', 'simulation-context-checking',
   'simulation-context-confirmed', 'simulation-context-blocked', 'simulation-context-unavailable', 'unknown']
@@ -183,6 +184,7 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
         output.stage = member(value.stage, gameStatusStages) ? value.stage : 'unknown'
         optionalEnum(output, value, 'connectionKind', ['local', 'cm'])
         optionalInteger(output, value, 'generation', 0, 0xffffffff)
+        optionalEnum(output, value, 'nativeCode', NATIVE_GAME_STATUS_FAILURE_CODES)
         break
       case 'local-app': {
         const diagnostic = sanitizeLocalAppDiagnostic(value)
