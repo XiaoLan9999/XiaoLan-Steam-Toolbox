@@ -1,4 +1,6 @@
 import { sanitizeLocalAppDiagnostic } from './local-app-diagnostics'
+import { sanitizeRendererDiagnostic } from './renderer-diagnostics'
+import { sanitizeSteamNetworkDiagnostic } from './steam-network-diagnostics'
 
 export const LOGIN_NETWORK_CODES = [
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
@@ -30,11 +32,11 @@ export interface LoginDiagnosticEvent {
   httpStatus?: number
   eresult?: number
   elapsedMs?: number
-  transport?: 'node' | 'chromium'
+  transport?: 'node' | 'chromium' | 'adaptive'
 }
 
 export interface DiagnosticRecord {
-  event: 'start' | 'memory' | 'stop' | 'process-gone' | 'session' | 'native-presence' | 'game-status' | 'login' | 'local-app'
+  event: 'start' | 'memory' | 'stop' | 'process-gone' | 'session' | 'native-presence' | 'game-status' | 'login' | 'local-app' | 'renderer-ui' | 'steam-network'
   at?: string
   version?: string
   [key: string]: unknown
@@ -105,7 +107,7 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
     const value = object(input)
     if (!value) return null
     const event = value.event
-    if (!member(event, ['start', 'memory', 'stop', 'process-gone', 'session', 'native-presence', 'game-status', 'login', 'local-app'])) return null
+    if (!member(event, ['start', 'memory', 'stop', 'process-gone', 'session', 'native-presence', 'game-status', 'login', 'local-app', 'renderer-ui', 'steam-network'])) return null
     const output: DiagnosticRecord = { event: event as DiagnosticRecord['event'] }
     const at = timestamp(value.at)
     const version = sanitizeDiagnosticVersion(value.version)
@@ -113,6 +115,18 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
     if (version) output.version = version
 
     switch (event) {
+      case 'renderer-ui': {
+        const safe = sanitizeRendererDiagnostic(value)
+        if (!safe) return null
+        Object.assign(output, safe)
+        break
+      }
+      case 'steam-network': {
+        const safe = sanitizeSteamNetworkDiagnostic(value)
+        if (!safe) return null
+        Object.assign(output, safe)
+        break
+      }
       case 'start':
       case 'memory':
       case 'stop': {
@@ -186,7 +200,7 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
         optionalEnum(output, value, 'endpoint', loginEndpoints)
         optionalEnum(output, value, 'reason', loginReasons)
         optionalEnum(output, value, 'networkCode', LOGIN_NETWORK_CODES)
-        optionalEnum(output, value, 'transport', ['node', 'chromium'])
+        optionalEnum(output, value, 'transport', ['node', 'chromium', 'adaptive'])
         optionalInteger(output, value, 'httpStatus', 100, 599)
         optionalInteger(output, value, 'eresult', 0, 255)
         optionalInteger(output, value, 'elapsedMs', 0, 600_000)

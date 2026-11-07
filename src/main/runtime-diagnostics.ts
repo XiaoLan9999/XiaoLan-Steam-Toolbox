@@ -2,6 +2,8 @@ import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync
 import { join } from 'node:path'
 import { COMMUNITY_REQUEST_STAGES, LOGIN_NETWORK_CODES, sanitizeDiagnosticRecord, type LoginDiagnosticEvent } from '../shared/diagnostics'
 import { sanitizeLocalAppDiagnostic, type LocalAppDiagnosticEvent } from '../shared/local-app-diagnostics'
+import { sanitizeRendererDiagnostic, type RendererDiagnosticEvent } from '../shared/renderer-diagnostics'
+import { sanitizeSteamNetworkDiagnostic, type SteamNetworkDiagnostic } from '../shared/steam-network-diagnostics'
 
 interface Metric {
   pid: number
@@ -124,6 +126,18 @@ export class RuntimeDiagnostics {
     if (this.stopped) return
     const diagnostic = sanitizeLocalAppDiagnostic(event)
     if (diagnostic) this.write({ event: 'local-app', ...diagnostic })
+  }
+
+  rendererEvent(event: RendererDiagnosticEvent): void {
+    if (this.stopped) return
+    const safe = sanitizeRendererDiagnostic(event)
+    if (safe) this.write({ event: 'renderer-ui', ...safe })
+  }
+
+  networkEvent(event: SteamNetworkDiagnostic): void {
+    if (this.stopped) return
+    const safe = sanitizeSteamNetworkDiagnostic(event)
+    if (safe) this.write({ event: 'steam-network', ...safe })
   }
 
   nativePresenceEvent(event: { stage: string; ok?: boolean | null; elapsedMs?: number; helperPid?: number; exitCode?: number | null; forced?: boolean; retiringCount?: number }): void {

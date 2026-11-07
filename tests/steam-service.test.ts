@@ -77,7 +77,8 @@ vi.mock('../src/main/community-client', () => ({
 }))
 
 vi.mock('../src/main/community-web-session', () => ({
-  getCommunityWebCookies: (...args: unknown[]) => mocks.webCookies(...args)
+  getCommunityWebCookies: (...args: unknown[]) => mocks.webCookies(...args),
+  isCommunityTransferError: () => false
 }))
 
 const accountA = '76561198000000001'

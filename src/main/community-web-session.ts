@@ -33,6 +33,17 @@ type JsonObject = Record<string, unknown>
 interface Transfer { url: string; params: Record<string, string> }
 interface JsonResponse { body: JsonObject; cookies: string[] }
 
+export class CommunityWebSessionResultError extends Error {
+  constructor(readonly endpoint: CommunityWebSessionDiagnostic['endpoint'], readonly eresult: number) {
+    super('Steam rejected the Community login request')
+    this.name = 'CommunityWebSessionResultError'
+  }
+}
+
+export function isCommunityTransferError(error: unknown): boolean {
+  return error instanceof CommunityWebSessionResultError && error.endpoint === 'community-transfer'
+}
+
 const object = (value: unknown): JsonObject | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null
 
@@ -96,11 +107,11 @@ function statusError(status: number): Error {
   return Object.assign(new DomainError(code, `Steam Community login HTTP error ${status}`), { statusCode: status })
 }
 
-function resultError(value: unknown, errorField = false): void {
+function resultError(value: unknown, endpoint: CommunityWebSessionDiagnostic['endpoint'], errorField = false): void {
   if (value === undefined) return
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 255) throw invalidResponse()
   if (value !== (errorField ? 0 : 1)) {
-    throw Object.assign(new Error('Steam rejected the Community login request'), { eresult: value })
+    throw new CommunityWebSessionResultError(endpoint, value)
   }
 }
 
@@ -158,8 +169,8 @@ async function requestJson(url: string, form: FormData, endpoint: CommunityWebSe
     event('response', { httpStatus: response.status })
     if (response.status < 200 || response.status >= 300) throw statusError(response.status)
     const body = await readJson(response, signal)
-    resultError(body.error, true)
-    resultError(body.result)
+    resultError(body.error, endpoint, true)
+    resultError(body.result, endpoint)
     const cookies = response.headers.getSetCookie()
     if (cookies.length > 100 || cookies.some(cookie => cookie.length > 16_384)) throw invalidResponse()
     return { body, cookies }

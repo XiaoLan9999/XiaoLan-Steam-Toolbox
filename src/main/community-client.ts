@@ -10,6 +10,7 @@ import { CommentPreflightError } from '../shared/comment-preflight'
 import { CommentPermissionDeniedError } from '../shared/comment-permission'
 import type { CommunityRequestStage, LoginNetworkCode } from '../shared/diagnostics'
 import { loginDiagnosticElapsed, loginDiagnosticFailure } from './login-diagnostic'
+import { getSteamNetworkResponseTiming } from './steam-network-recovery'
 import { batchInterruption } from '../shared/batch-retry-policy'
 import { parseCommentSnapshot, reconcileCommentSnapshots, verifyCommentAttempt,
   type CommentAttemptEvidence, type CommentServerWindow, type CommentSnapshot,
@@ -175,8 +176,8 @@ export class SteamCommunityClient {
       }`)
   }
 
-  async verifySession(): Promise<void> {
-    await this.requestText(`/profiles/${this.accountId}/edit/info?l=english`, {}, 3, () => undefined, (html, version) => {
+  async verifySession(signal?: AbortSignal): Promise<void> {
+    await this.requestText(`/profiles/${this.accountId}/edit/info?l=english`, { signal }, 3, () => undefined, (html, version) => {
       const identity = extractCommunityPageIdentity(html)
       if (identity === this.accountId) {
         this.diagnostic({ phase: 'session-probe', outcome: 'success', reason: 'identity-match', method: 'GET' })
@@ -600,7 +601,8 @@ export class SteamCommunityClient {
     validateText: (text: string, version: number) => void = () => undefined,
     onResponse: (metadata: CommunityResponseMetadata) => void = () => undefined
   ): Promise<string> {
-    assertCurrent()
+    const checkCurrent = (): void => { assertCurrent(); init.signal?.throwIfAborted() }
+    checkCurrent()
     const url = new URL(path, COMMUNITY_ORIGIN)
     if (url.origin !== COMMUNITY_ORIGIN || url.username || url.password) throw new Error('Untrusted Community request URL')
     const version = this.cookieVersion
@@ -609,6 +611,7 @@ export class SteamCommunityClient {
     const startedAt = performance.now()
     let requestStage: CommunityRequestStage = 'request'
     let httpStatus: number | undefined
+    let responseRetryAfterMs: number | undefined
     let delegatedRedirect = false
     let requestSignal: AbortSignal | undefined
     try {
@@ -619,7 +622,7 @@ export class SteamCommunityClient {
         const response = await (this.fetchImpl ?? fetch)(url, {
           ...init,
           redirect: 'manual',
-          signal,
+          signal: init.signal ? AbortSignal.any([signal, init.signal]) : signal,
           headers: {
             Accept: 'application/json, text/plain, */*',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
@@ -631,12 +634,19 @@ export class SteamCommunityClient {
         requestStage = 'headers'
         if (Number.isInteger(response.status) && response.status >= 100 && response.status <= 599) httpStatus = response.status
         try {
+          if (response.status >= 400) responseRetryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
           const rawDate = response.headers.get('date')
           const parsedDate = rawDate && /GMT$/i.test(rawDate) ? Date.parse(rawDate) : NaN
-          const receivedMonotonic = performance.now()
-          onResponse({ requestStartedAt, receivedAt: Date.now(), serverDate: Number.isFinite(parsedDate) ? parsedDate : null,
+          const observedMonotonic = performance.now()
+          const headerTiming = getSteamNetworkResponseTiming(response)
+          const validTiming = headerTiming && Number.isFinite(headerTiming.receivedAt) && headerTiming.receivedAt > 0 &&
+            Number.isFinite(headerTiming.receivedMonotonic) && headerTiming.receivedMonotonic >= requestStartedMonotonic &&
+            headerTiming.receivedMonotonic <= observedMonotonic
+          // Safe-read recovery buffers the body; evidence must retain the original header clock.
+          const receivedMonotonic = validTiming ? headerTiming.receivedMonotonic : observedMonotonic
+          onResponse({ requestStartedAt, receivedAt: validTiming ? headerTiming.receivedAt : Date.now(), serverDate: Number.isFinite(parsedDate) ? parsedDate : null,
             elapsedMs: receivedMonotonic - requestStartedMonotonic, receivedMonotonic, ...(httpStatus !== undefined ? { httpStatus } : {}) })
-          assertCurrent()
+          checkCurrent()
           const location = response.headers.get('location') ?? ''
           const redirectedToLogin =
             response.status >= 300 &&
@@ -660,7 +670,7 @@ export class SteamCommunityClient {
               !target.username && !target.password
             ) {
               await cancelUnusedBody(response)
-              assertCurrent()
+              checkCurrent()
               if (version === this.cookieVersion) this.acceptResponseCookies(response, url)
               delegatedRedirect = true
               return this.requestText(`${target.pathname}${target.search}`, init, redirectsRemaining - 1, assertCurrent, validateText, onResponse)
@@ -669,9 +679,9 @@ export class SteamCommunityClient {
           }
 
           requestStage = 'body'
-          const text = await readLimitedResponse(response, assertCurrent)
+          const text = await readLimitedResponse(response, checkCurrent)
           requestStage = 'validation'
-          assertCurrent()
+          checkCurrent()
           if (isNotLoggedOnResponse(text)) {
             this.rejectExpired(version, { phase: 'community-request', outcome: 'auth-rejected',
               reason: 'not-logged-on', httpStatus: response.status, method })
@@ -695,7 +705,9 @@ export class SteamCommunityClient {
               }
               throw new DomainError('COMMUNITY_ACCESS_DENIED', message, true, retryAfterMs)
             }
-            throw new Error(`Steam HTTP error ${response.status}`)
+            const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'))
+            throw Object.assign(new Error(`Steam HTTP error ${response.status}`), { statusCode: response.status,
+              ...(retryAfterMs === undefined ? {} : { retryAfterMs }) })
           }
           validateText(text, version)
           // Commit rotated cookies only after classifying this response. A rejected response
@@ -720,6 +732,12 @@ export class SteamCommunityClient {
           ...(httpStatus !== undefined ? { httpStatus } : {}),
           ...(timedOut ? { networkCode: 'ETIMEDOUT' as const } : failure.networkCode ? { networkCode: failure.networkCode } : {}),
           elapsedMs: loginDiagnosticElapsed(startedAt, performance.now()) })
+      }
+      if (!(error instanceof DomainError) && method === 'GET' && communityEndpoint(url.pathname) === 'session-verify' &&
+          httpStatus !== undefined && httpStatus >= 400 && (requestStage as CommunityRequestStage) === 'body') {
+        // A broken error body must not hide an already observed refusal or its server cooldown.
+        throw Object.assign(new Error('Steam session verification response failed', { cause: error }), { statusCode: httpStatus,
+          ...(responseRetryAfterMs === undefined ? {} : { retryAfterMs: responseRetryAfterMs }) })
       }
       throw error
     }

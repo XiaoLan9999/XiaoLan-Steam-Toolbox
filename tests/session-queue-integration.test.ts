@@ -42,7 +42,8 @@ vi.mock('steam-session', async () => {
 })
 
 vi.mock('../src/main/community-web-session', () => ({
-  getCommunityWebCookies: (accountId: string) => mocks.webCookies(accountId)
+  getCommunityWebCookies: (accountId: string) => mocks.webCookies(accountId),
+  isCommunityTransferError: () => false
 }))
 
 const accountA = '76561198000000001'

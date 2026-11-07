@@ -40,6 +40,7 @@ import { createUpdateScheduler } from './update-scheduler'
 import { createWindowEnergySaver } from './window-energy-saver'
 import { BackgroundUiEvents } from './background-ui-events'
 import { RuntimeDiagnostics } from './runtime-diagnostics'
+import { observeRendererHealth } from './renderer-health'
 import { DiagnosticReportError, writeDiagnosticReport } from './diagnostic-report'
 import { SteamScreenshotService } from './steam-screenshots'
 import { ScreenshotNameService } from './steam-screenshot-names'
@@ -192,7 +193,7 @@ app.whenReady().then(async () => {
     if (artworkBrowser?.getState().accountId === accountId) void artworkBrowser.close()
     queue?.pauseForSessionExpiry(accountId)
     commentScans?.pauseForAccount(accountId)
-  }, { createNetwork: createSteamNetworkSession,
+  }, { createNetwork: () => createSteamNetworkSession(event => diagnostics?.networkEvent(event)),
     onDiagnostic: (event) => diagnostics?.sessionEvent(event), onLoginDiagnostic: event => diagnostics?.loginEvent(event) })
   queue = new BatchQueue(store, steam, emit)
   const nativePresence = new NativePresenceBroker({
@@ -415,6 +416,10 @@ function createWindow(): void {
   })
 
   const artworkWindow = mainWindow
+  observeRendererHealth(artworkWindow, {
+    record: event => diagnostics?.rendererEvent(event),
+    hideEmbeddedView: () => { if (mainWindow === artworkWindow) artworkBrowser?.setBounds(null) }
+  })
   const energySaver = createWindowEnergySaver({
     window: artworkWindow,
     enabled: () => store.getEnergySavingEnabled(),

@@ -1,0 +1,47 @@
+.renderer-failure-screen {
+  --failure-bg: #f3f6f7;
+  --failure-panel: #ffffff;
+  --failure-text: #2d414d;
+  --failure-muted: #60727d;
+  --failure-line: #dce5e9;
+  --failure-accent: #247499;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 100%;
+  max-height: 100%;
+  overflow: auto;
+  padding: 32px;
+  background: var(--failure-bg);
+  color: var(--failure-text);
+  font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+
+:root[data-theme="dark"] .renderer-failure-screen {
+  --failure-bg: #0e1923;
+  --failure-panel: #162631;
+  --failure-text: #e0edf5;
+  --failure-muted: #a1b8c8;
+  --failure-line: #314b5c;
+  --failure-accent: #80cef4;
+}
+
+.renderer-failure-card {
+  width: min(100%, 720px);
+  padding: clamp(24px, 4vw, 44px);
+  border: 1px solid var(--failure-line);
+  border-radius: 18px;
+  background: var(--failure-panel);
+  line-height: 1.8;
+}
+
+.renderer-failure-eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.12em; color: var(--failure-accent); }
+.renderer-failure-card h1 { margin: 14px 0 16px; font-size: clamp(24px, 3vw, 32px); line-height: 1.4; }
+.renderer-failure-card p { margin: 12px 0; }
+.renderer-failure-warning, .renderer-failure-card small { color: var(--failure-muted); }
+.renderer-failure-code { display: block; margin: 18px 0; color: var(--failure-muted); }
+.renderer-failure-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 12px; }
+.renderer-failure-actions button { padding: 10px 16px; border: 1px solid var(--failure-line); background: var(--failure-bg); color: var(--failure-text); font: inherit; cursor: pointer; border-radius: 8px; }
+.renderer-failure-actions button:first-child { border-color: var(--failure-accent); }
+.renderer-failure-actions button:disabled { cursor: not-allowed; opacity: 0.5; }
+.renderer-failure-actions button:focus-visible { outline: 2px solid var(--failure-accent); outline-offset: 3px; }

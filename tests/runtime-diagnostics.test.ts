@@ -23,6 +23,23 @@ function fixture(maxBytes?: number) {
 }
 
 describe('bounded local runtime diagnostics', () => {
+  it('writes and reprojects only fixed interface and network recovery facts', async () => {
+    const { sanitizeDiagnosticRecord } = await import('../src/shared/diagnostics')
+    const { directory, diagnostics } = fixture()
+    diagnostics.rendererEvent({ stage: 'render-error', message: 'synthetic-private-message', stack: 'synthetic-private-stack' } as never)
+    diagnostics.networkEvent({ stage: 'route-failed', route: 'node-direct', endpoint: 'community-transfer', attempt: 4,
+      networkCode: 'ECONNRESET', elapsedMs: 123, proxyMode: 'direct', url: 'synthetic-private-url',
+      proxy: 'synthetic-private-address', cookie: 'synthetic-private-cookie' } as never)
+    const contents = readFileSync(join(directory, 'runtime-current.jsonl'), 'utf8')
+    expect(contents).not.toContain('synthetic-private')
+    const events = contents.trim().split('\n').map(line => sanitizeDiagnosticRecord(JSON.parse(line)))
+    expect(events).toEqual([
+      { event: 'renderer-ui', at: expect.any(String), version: '0.7.0', stage: 'render-error' },
+      { event: 'steam-network', at: expect.any(String), version: '0.7.0', stage: 'route-failed', route: 'node-direct',
+        endpoint: 'community-transfer', attempt: 4, networkCode: 'ECONNRESET', elapsedMs: 123, proxyMode: 'direct' }
+    ])
+    diagnostics.shutdown()
+  })
   it('writes only reviewed local simulation lifecycle facts and ignores unknown stages and shutdown', () => {
     const { directory, diagnostics } = fixture()
     diagnostics.localAppEvent({ stage: 'worker-terminal', code: 'LOCAL_APP_TIMEOUT', reason: 'worker',

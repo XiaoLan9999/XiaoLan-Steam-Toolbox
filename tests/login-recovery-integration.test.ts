@@ -9,6 +9,8 @@ import { SteamService } from '../src/main/steam-service'
 import { SqliteStore, type SecretCipher } from '../src/main/store'
 import type { AppEvent } from '../src/shared/types'
 import type { LoginDiagnosticEvent } from '../src/shared/diagnostics'
+import { createSteamNetworkRecovery, type SteamNetworkRouteKind } from '../src/main/steam-network-recovery'
+import type { SteamNetworkDiagnostic } from '../src/shared/steam-network-diagnostics'
 
 const ACCOUNT = '76561198000000001'
 const OTHER_ACCOUNT = '76561198000000002'
@@ -63,15 +65,20 @@ function pending<T>(): { promise: Promise<T>; resolve(value: T): void } {
 
 type Fault = 'transfer-http' | 'missing-cookie' | 'cookie-mismatch' | 'page-mismatch'
 
-function fixture(options: { retryPoll?: boolean; fault?: Fault; verification?: Promise<Response> } = {}) {
+function fixture(options: { retryPoll?: boolean; fault?: Fault; verification?: Promise<Response>; multiRoute?: boolean } = {}) {
   const directory = realpathSync(mkdtempSync(join(TEMPORARY, 'xiaolan-login-recovery-')))
   const store = new SqliteStore(join(directory, 'synthetic.sqlite3'), cipher)
   const events: AppEvent[] = []
   const diagnostics: LoginDiagnosticEvent[] = []
   const requests: Array<{ url: URL; init?: RequestInit }> = []
+  const routes: Array<{ route: SteamNetworkRouteKind; path: string }> = []
+  const networkEvents: SteamNetworkDiagnostic[] = []
   let polls = 0
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+    if (init?.body && !(init.body instanceof FormData) && new Headers(init.headers).get('content-type')?.startsWith('multipart/form-data')) {
+      init = { ...init, body: await new Request(url, init).formData() }
+    }
     requests.push({ url, init })
     if (url.hostname === 'api.steampowered.com') {
       if (url.pathname === '/IAuthenticationService/BeginAuthSessionViaQR/v1/') return qrResponse()
@@ -118,9 +125,25 @@ function fixture(options: { retryPoll?: boolean; fault?: Fault; verification?: P
   vi.spyOn(https, 'request').mockImplementation(() => { throw new Error('Real HTTPS is forbidden in login fixtures') })
   vi.spyOn(http, 'request').mockImplementation(() => { throw new Error('Real HTTP is forbidden in login fixtures') })
   const service = new SteamService(store, event => events.push(event), () => undefined,
-    { onLoginDiagnostic: event => diagnostics.push(event) })
+    { onLoginDiagnostic: event => diagnostics.push(event), ...(options.multiRoute ? {
+      createNetwork: () => ({ transport: 'adaptive' as const, ...createSteamNetworkRecovery({
+        onDiagnostic: event => networkEvents.push(event),
+        createRoute: route => ({
+          fetch: async (input, init) => {
+            const url = new URL(input instanceof Request ? input.url : String(input))
+            routes.push({ route, path: url.pathname })
+            if (route === 'system' && url.pathname === '/login/settoken' ||
+                route === 'fresh-system' && url.pathname.endsWith('/edit/info')) {
+              throw Object.assign(new Error('synthetic connection closed'), { code: 'ERR_CONNECTION_CLOSED' })
+            }
+            return fetchMock(input, init)
+          },
+          resolveProxy: async () => 'DIRECT', dispose: () => undefined
+        })
+      }) })
+    } : {}) })
   fixtures.push({ directory, store, service })
-  return { service, store, events, diagnostics, requests, fetchMock }
+  return { service, store, events, diagnostics, requests, fetchMock, routes, networkEvents }
 }
 
 afterEach(() => {
@@ -137,6 +160,23 @@ afterEach(() => {
 })
 
 describe('actual SDK and Community login recovery integration', () => {
+  it('recovers Community exchange and identity through different routes without restarting QR authorization', async () => {
+    const f = fixture({ multiRoute: true })
+    const login = await f.service.startQrLogin()
+    await vi.waitFor(() => expect(f.events).toContainEqual({ type: 'authFinished', loginId: login.loginId, accountId: ACCOUNT }))
+    expect(f.service.isAuthenticated(ACCOUNT)).toBe(true)
+    expect(f.requests.filter(({ url }) => url.pathname.includes('/BeginAuthSessionViaQR/'))).toHaveLength(1)
+    expect(f.requests.filter(({ url }) => url.pathname === '/jwt/finalizelogin')).toHaveLength(1)
+    expect(f.routes.filter(({ path }) => path === '/login/settoken').map(({ route }) => route)).toEqual(['system', 'fresh-system'])
+    expect(f.routes.filter(({ path }) => path.endsWith('/edit/info')).map(({ route }) => route)).toEqual(['fresh-system', 'direct'])
+    expect(f.networkEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ route: 'system', endpoint: 'community-transfer', stage: 'route-failed' }),
+      expect.objectContaining({ route: 'fresh-system', endpoint: 'community-transfer', stage: 'route-success' }),
+      expect.objectContaining({ route: 'direct', endpoint: 'community-read', stage: 'route-success' })
+    ]))
+    expect(f.diagnostics.some(event => event.transport === 'adaptive')).toBe(true)
+    expect(JSON.stringify(f.networkEvents)).not.toMatch(/7656119|synthetic-cookie|synthetic-community-auth/)
+  })
   it('recovers the same QR poll, skips optional sites, and only commits after actual Community identity verification', async () => {
     const verification = pending<Response>()
     const f = fixture({ retryPoll: true, verification: verification.promise })
