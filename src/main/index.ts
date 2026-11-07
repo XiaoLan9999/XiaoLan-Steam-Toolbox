@@ -112,7 +112,7 @@ const quitDrain = new QuitDrain({
     () => queue?.shutdown(),
     () => commentScans?.shutdown(),
     () => gameStatus?.dispose(),
-    () => { void localAppSimulation?.invalidate().catch(() => {}) },
+    () => { void localAppSimulation?.invalidate('toolbox-exit').catch(() => {}) },
     () => { void statusCopy?.invalidate().catch(() => {}) }
   ],
   drain: async () => {
@@ -161,7 +161,7 @@ app.whenReady().then(async () => {
     if (shuttingDown) return
     if (event.type === 'authFinished') {
       gameStatus?.invalidate()
-      void localAppSimulation?.invalidate().catch(() => {})
+      void localAppSimulation?.invalidate('web-login').catch(() => {})
       void statusCopy?.invalidate().catch(() => {})
       artworkUploads?.invalidate()
       backgroundMedia?.invalidate()
@@ -233,7 +233,8 @@ app.whenReady().then(async () => {
       await statusCopy?.invalidate()
       await gameStatus.retireConnection()
     },
-    onChange: state => emit({ type: 'localAppSimulationChanged', state })
+    onChange: state => emit({ type: 'localAppSimulationChanged', state }),
+    onDiagnostic: event => diagnostics?.localAppEvent(event)
   })
   statusCopy = new StatusCopyService({
     getActiveAccount: () => {
@@ -251,7 +252,7 @@ app.whenReady().then(async () => {
       if (state.live?.patchActive || state.liveLock && state.liveLock.status !== 'stopped') {
         throw new DomainError('COPY_LIVE_RESTORE_REQUIRED', '请先解除真实游戏锁定并安全恢复。')
       }
-      await localAppSimulation?.invalidate()
+      await localAppSimulation?.invalidate('mode-change')
       await gameStatus.retireConnection()
     },
     preferencesPath: join(app.getPath('userData'), 'status-copy-preferences.json'),
@@ -486,7 +487,7 @@ function createWindow(): void {
     diagnostics?.processGone('renderer', details.reason, details.exitCode)
     if (details.reason === 'clean-exit' || shuttingDown || rendererWindow.isDestroyed() || recoveringRenderer) return
     gameStatus.invalidateForRendererLoss()
-    void localAppSimulation?.invalidate().catch(() => {})
+    void localAppSimulation?.invalidate('renderer-loss').catch(() => {})
     void statusCopy?.invalidate().catch(() => {})
     for (const account of store.getAccounts()) {
       const batch = store.getActiveBatchSummary(account.id)
@@ -634,7 +635,7 @@ function registerIpcHandlers(): void {
     if (input?.accountId !== store.getActiveAccountId() || input?.sessionId !== gameStatus.snapshot().sessionId) {
       throw new DomainError('GAME_STATUS_CONTEXT_CHANGED', '账号或游戏状态会话已变化，请刷新后重试。')
     }
-    await localAppSimulation?.invalidate()
+    await localAppSimulation?.invalidate('native-state')
     await statusCopy?.invalidate()
     return gameStatus.connectLocal(input)
   })
@@ -674,7 +675,7 @@ function registerIpcHandlers(): void {
     const previousId = store.getActiveAccountId()
     if (previousId && previousId !== accountId) {
       gameStatus.invalidate()
-      await localAppSimulation?.invalidate()
+      await localAppSimulation?.invalidate('account-change')
       await statusCopy?.invalidate()
       commentScans.pauseForAccount(previousId)
       queue.pauseForAccountChange(previousId)
@@ -687,7 +688,7 @@ function registerIpcHandlers(): void {
     if (batch) {
       throw new DomainError('ACCOUNT_HAS_ACTIVE_BATCH', '请先取消这个账号的未完成批次')
     }
-    if (store.getActiveAccountId() === accountId) { gameStatus.invalidate(); await localAppSimulation?.invalidate(); await statusCopy?.invalidate() }
+    if (store.getActiveAccountId() === accountId) { gameStatus.invalidate(); await localAppSimulation?.invalidate('account-change'); await statusCopy?.invalidate() }
     artworkUploads?.invalidate()
     backgroundMedia?.invalidate()
     if (artworkBrowser?.getState().accountId === accountId) await artworkBrowser.close()

@@ -23,6 +23,32 @@ function fixture(maxBytes?: number) {
 }
 
 describe('bounded local runtime diagnostics', () => {
+  it('writes only reviewed local simulation lifecycle facts and ignores unknown stages and shutdown', () => {
+    const { directory, diagnostics } = fixture()
+    diagnostics.localAppEvent({ stage: 'worker-terminal', code: 'LOCAL_APP_TIMEOUT', reason: 'worker',
+      helperPid: 123, elapsedMs: 9000, operation: 'ping', generation: 2,
+      steamId: '76561198000000001', accountId: 'synthetic-private-account', appId: 4000,
+      fields: { status: 'synthetic-private-status' }, stdout: 'synthetic-private-output',
+      stderr: 'synthetic-private-output', error: new Error('synthetic-private-error') } as never)
+    diagnostics.localAppEvent({ stage: 'synthetic-private-stage', code: 'synthetic-private-code' } as never)
+    diagnostics.localAppEvent({ stage: 'worker-exited', exitCode: 70, signal: null,
+      helperPid: -1, count: Infinity, noiseBytes: 1_073_741_825, reason: 'synthetic-private-reason' } as never)
+    const path = join(directory, 'runtime-current.jsonl')
+    const contents = readFileSync(path, 'utf8')
+    expect(contents).not.toMatch(/synthetic-private|7656119|4000/)
+    const events = contents.trim().split('\n').map(line => JSON.parse(line))
+    expect(events).toHaveLength(2)
+    expect(events[0]).toEqual({ event: 'local-app', at: expect.any(String), version: '0.7.0',
+      stage: 'worker-terminal', code: 'LOCAL_APP_TIMEOUT', reason: 'worker', helperPid: 123,
+      elapsedMs: 9000, operation: 'ping', generation: 2 })
+    expect(events[1]).toEqual({ event: 'local-app', at: expect.any(String), version: '0.7.0',
+      stage: 'worker-exited', exitCode: 70, signal: null })
+    diagnostics.shutdown()
+    const stopped = readFileSync(path, 'utf8')
+    diagnostics.localAppEvent({ stage: 'worker-ready' })
+    expect(readFileSync(path, 'utf8')).toBe(stopped)
+  })
+
   it('records safe Community failure stages and network metadata without private request fields', () => {
     const { directory, diagnostics } = fixture()
     diagnostics.sessionEvent({ phase: 'community-request', outcome: 'request-failed', reason: 'response-read-error',

@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { COMMUNITY_REQUEST_STAGES, LOGIN_NETWORK_CODES, sanitizeDiagnosticRecord, type LoginDiagnosticEvent } from '../shared/diagnostics'
+import { sanitizeLocalAppDiagnostic, type LocalAppDiagnosticEvent } from '../shared/local-app-diagnostics'
 
 interface Metric {
   pid: number
@@ -117,6 +118,12 @@ export class RuntimeDiagnostics {
       ...(typeof event.errorPresent === 'boolean' ? { errorPresent: event.errorPresent } : {}),
       ...(Number.isInteger(event.responseCode) && event.responseCode! >= 0 && event.responseCode! <= 255 ? { responseCode: event.responseCode } : {}),
       ...(typeof event.retryAfterMs === 'number' && Number.isFinite(event.retryAfterMs) && event.retryAfterMs >= 0 ? { retryAfterMs: event.retryAfterMs } : {}) })
+  }
+
+  localAppEvent(event: LocalAppDiagnosticEvent): void {
+    if (this.stopped) return
+    const diagnostic = sanitizeLocalAppDiagnostic(event)
+    if (diagnostic) this.write({ event: 'local-app', ...diagnostic })
   }
 
   nativePresenceEvent(event: { stage: string; ok?: boolean | null; elapsedMs?: number; helperPid?: number; exitCode?: number | null; forced?: boolean; retiringCount?: number }): void {

@@ -1,3 +1,5 @@
+import { sanitizeLocalAppDiagnostic } from './local-app-diagnostics'
+
 export const LOGIN_NETWORK_CODES = [
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
   'ENETUNREACH', 'EHOSTUNREACH', 'ENETDOWN', 'EHOSTDOWN', 'EPIPE', 'EPROTO',
@@ -32,7 +34,7 @@ export interface LoginDiagnosticEvent {
 }
 
 export interface DiagnosticRecord {
-  event: 'start' | 'memory' | 'stop' | 'process-gone' | 'session' | 'native-presence' | 'game-status' | 'login'
+  event: 'start' | 'memory' | 'stop' | 'process-gone' | 'session' | 'native-presence' | 'game-status' | 'login' | 'local-app'
   at?: string
   version?: string
   [key: string]: unknown
@@ -103,7 +105,7 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
     const value = object(input)
     if (!value) return null
     const event = value.event
-    if (!member(event, ['start', 'memory', 'stop', 'process-gone', 'session', 'native-presence', 'game-status', 'login'])) return null
+    if (!member(event, ['start', 'memory', 'stop', 'process-gone', 'session', 'native-presence', 'game-status', 'login', 'local-app'])) return null
     const output: DiagnosticRecord = { event: event as DiagnosticRecord['event'] }
     const at = timestamp(value.at)
     const version = sanitizeDiagnosticVersion(value.version)
@@ -168,6 +170,12 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
         optionalEnum(output, value, 'connectionKind', ['local', 'cm'])
         optionalInteger(output, value, 'generation', 0, 0xffffffff)
         break
+      case 'local-app': {
+        const diagnostic = sanitizeLocalAppDiagnostic(value)
+        if (!diagnostic) return null
+        Object.assign(output, diagnostic)
+        break
+      }
       case 'login':
         if (!integer(value.attempt, 1, 0xffffffff) || !member(value.mode, loginModes) ||
             !member(value.stage, loginStages) || !member(value.outcome, loginOutcomes)) return null

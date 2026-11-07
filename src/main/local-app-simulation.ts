@@ -13,6 +13,7 @@ import { readGameStatusAppInfo } from './game-status-apps'
 import type { LocalAppSimulationAction, LocalAppSimulationErrorCode, LocalAppSimulationInspectInput, LocalAppSimulationSnapshot, LocalAppSimulationStartInput } from '../shared/local-app-simulation'
 import { readLocalAppMetadata } from './local-app-simulation-metadata'
 import { readLocalAppSimulationContext, sameLocalAppSteam, validLocalAppContext, type LocalAppSimulationContext } from './local-app-simulation-context'
+import type { LocalAppDiagnosticEvent, LocalAppDiagnosticReason } from '../shared/local-app-diagnostics'
 
 const messages: Record<LocalAppSimulationErrorCode, string> = {
   LOCAL_APP_CONTEXT_CHANGED: '工具箱账号、本机 Steam 或模拟任务已变化，已停止旧操作。',
@@ -68,6 +69,8 @@ export interface LocalAppHostBrokerOptions {
   requestTimeoutMs?: number
   stopTimeoutMs?: number
   retireTimeoutMs?: number
+  now?(): number
+  onDiagnostic?(event: LocalAppDiagnosticEvent): void
 }
 interface Pending { op: string; keys: string[]; promise: Promise<Record<string, unknown>>; resolve(value: Record<string, unknown>): void; reject(error: DomainError): void; timer: ReturnType<typeof setTimeout> }
 interface Session {
@@ -76,9 +79,14 @@ interface Session {
   decoder: StringDecoder
   buffer: string
   noise: number
+  noiseSamples: Array<{ at: number; bytes: number }>
+  noiseHead: number
+  noiseClock: number
+  startedAt: number
   closing: boolean
   closed: boolean
   ready: boolean
+  failure?: DomainError
   lease: ReturnType<typeof setInterval> | null
   stopTimer?: ReturnType<typeof setTimeout>
   retirement?: { promise: Promise<void>; resolve(): void; reject(error: DomainError): void; timer: ReturnType<typeof setTimeout> }
@@ -108,6 +116,39 @@ export class LocalAppHostBroker implements LocalAppSimulationHost {
   private version = 0
   private sequence = 0
   constructor(private readonly options: LocalAppHostBrokerOptions) {}
+  private now(): number {
+    try { const value = this.options.now?.() ?? Date.now(); if (Number.isFinite(value)) return Math.floor(value) } catch {}
+    return Date.now()
+  }
+  private diagnostic(session: Session, event: LocalAppDiagnosticEvent): void {
+    const helperPid = session.child.pid
+    try { this.options.onDiagnostic?.({
+      ...(Number.isSafeInteger(helperPid) && Number(helperPid) > 0 && Number(helperPid) <= 0xffffffff ? { helperPid } : {}),
+      elapsedMs: Math.min(604_800_000, Math.max(0, this.now() - session.startedAt)), ...event
+    }) } catch { /* Diagnostics never own the worker or its retirement. */ }
+  }
+  private noise(session: Session, bytes: number): boolean {
+    if (session.closed || session.closing) return false
+    const now = this.now()
+    // A wall-clock rollback starts a new bounded window, not a permanent stale budget.
+    if (now < session.noiseClock) { session.noise = 0; session.noiseSamples = []; session.noiseHead = 0 }
+    session.noiseClock = now
+    while (session.noiseHead < session.noiseSamples.length && session.noiseSamples[session.noiseHead]!.at <= now - 30_000) {
+      session.noise -= session.noiseSamples[session.noiseHead++]!.bytes
+    }
+    if (session.noiseHead >= 64 && session.noiseHead * 2 >= session.noiseSamples.length) {
+      session.noiseSamples = session.noiseSamples.slice(session.noiseHead); session.noiseHead = 0
+    }
+    const amount = Math.max(1, bytes)
+    const last = session.noiseSamples.at(-1)
+    if (last?.at === now) last.bytes += amount
+    else session.noiseSamples.push({ at: now, bytes: amount })
+    session.noise += amount
+    if (session.noise <= 128 * 1024) return true
+    this.diagnostic(session, { stage: 'noise-limit', code: 'LOCAL_APP_PROTOCOL_INVALID', noiseBytes: session.noise })
+    this.fault(session, failure('LOCAL_APP_PROTOCOL_INVALID'))
+    return false
+  }
   hasClientWork(): boolean { return this.starting || this.session !== null || this.retiring.size > 0 }
   onExit(listener: (error: DomainError) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   private notify(error: DomainError): void { for (const listener of this.listeners) { try { listener(error) } catch { /* Observers do not own cleanup. */ } } }
@@ -115,29 +156,44 @@ export class LocalAppHostBroker implements LocalAppSimulationHost {
     for (const pending of session.pending.values()) { clearTimeout(pending.timer); pending.reject(error) }
     session.pending.clear()
   }
-  private fault(session: Session, error: DomainError): void {
+  private fault(session: Session, error: DomainError, diagnosticCode = error.code): void {
     if (session.closing || session.closed) return
-    this.reject(session, error); this.retire(session); this.notify(error)
+    const current = this.session === session
+    session.failure = error
+    this.diagnostic(session, { stage: 'worker-error', code: diagnosticCode, reason: 'worker' })
+    this.reject(session, error); this.retire(session); if (current) this.notify(error)
   }
-  private closed(session: Session): void {
+  private closed(session: Session, code: number | null, signal: NodeJS.Signals | null): void {
     if (session.closed) return
+    const current = this.session === session
     session.closed = true
+    const exitCode = code === null || Number.isSafeInteger(code) && code >= -0x80000000 && code <= 0xffffffff ? code : undefined
+    this.diagnostic(session, { stage: 'worker-exited', ...(exitCode !== undefined ? { exitCode } : {}),
+      signal: signal === null || signal === 'SIGTERM' || signal === 'SIGKILL' || signal === 'SIGABRT' ? signal : 'unknown',
+      ok: exitCode === null || exitCode === undefined ? null : exitCode === 0 })
+    session.buffer = ''; session.noiseSamples = []; session.noiseHead = 0; session.noise = 0
     clearInterval(session.lease ?? undefined); clearTimeout(session.stopTimer)
-    this.reject(session, failure('LOCAL_APP_EXITED'))
+    if (!session.closing) session.failure ??= failure('LOCAL_APP_EXITED')
+    this.reject(session, session.failure ?? failure('LOCAL_APP_EXITED'))
     if (this.session === session) this.session = null
     if (session.retirement) { clearTimeout(session.retirement.timer); this.retiring.delete(session); session.retirement.resolve() }
-    if (!session.closing) this.notify(failure('LOCAL_APP_EXITED'))
+    if (!session.closing && current) this.notify(failure('LOCAL_APP_EXITED'))
   }
   private retire(session: Session): void {
     if (session.closing || session.closed) return
     session.closing = true
+    this.diagnostic(session, { stage: 'stop-requested', operation: 'stop' })
     if (this.session === session) this.session = null
+    session.buffer = ''; session.noiseSamples = []; session.noiseHead = 0; session.noise = 0
     clearInterval(session.lease ?? undefined)
     this.reject(session, failure('LOCAL_APP_CONTEXT_CHANGED'))
     let resolve!: () => void; let reject!: (error: DomainError) => void
     const promise = new Promise<void>((done, failed) => { resolve = done; reject = failed })
     void promise.catch(noop)
-    const timer = setTimeout(() => reject(failure('LOCAL_APP_STOP_FAILED')), this.options.retireTimeoutMs ?? 5000); timer.unref?.()
+    const timer = setTimeout(() => {
+      this.diagnostic(session, { stage: 'retire-timeout', code: 'LOCAL_APP_STOP_FAILED' })
+      reject(failure('LOCAL_APP_STOP_FAILED'))
+    }, this.options.retireTimeoutMs ?? 5000); timer.unref?.()
     session.retirement = { promise, resolve, reject, timer }; this.retiring.add(session)
     try { session.child.stdin.write(JSON.stringify({ v: 1, requestId: `stop_${++this.sequence}`, op: 'stop' }) + '\n') } catch { /* Graceful exit remains bounded below. */ }
     session.stopTimer = setTimeout(() => { if (!session.closed) { try { session.child.kill() } catch { /* A failed kill is not confirmed exit. */ } } }, this.options.stopTimeoutMs ?? 2500)
@@ -162,19 +218,27 @@ export class LocalAppHostBroker implements LocalAppSimulationHost {
       const lineBytes = Buffer.byteLength(line)
       if (lineBytes > contract.transport.catalogFrameBytes) { this.fault(session, failure('LOCAL_APP_PROTOCOL_INVALID')); return }
       if (session.closing) continue
-      if (!line.startsWith('{')) { session.noise += Buffer.byteLength(line); if (session.noise > 128 * 1024) this.fault(session, failure('LOCAL_APP_PROTOCOL_INVALID')); continue }
+      if (!line.startsWith('{')) { if (!this.noise(session, lineBytes)) return; continue }
       try {
         const message = JSON.parse(line) as Record<string, unknown>
         if (!object(message) || message.v !== 1 || typeof message.requestId !== 'string') throw new Error()
         if (message.op === 'lifecycle' && message.requestId === 'lifecycle') continue
         const pending = session.pending.get(message.requestId)
         if (lineBytes > contract.transport.ordinaryFrameBytes && pending?.op !== 'catalog') throw new Error()
+        if (message.requestId === 'invalid' && message.op === 'error') {
+          if (message.ok !== false || message.mayHaveWritten !== false || !Array.isArray(message.acceptedKeys) || message.acceptedKeys.length ||
+            typeof message.code !== 'string' || !workerCodes.has(message.code)) throw new Error()
+          const code: LocalAppSimulationErrorCode = Object.hasOwn(messages, message.code) ? message.code as LocalAppSimulationErrorCode
+            : message.code === 'LOCAL_APP_ARGUMENTS_INVALID' ? 'LOCAL_APP_INVALID_INPUT' : 'LOCAL_APP_WORKER_UNAVAILABLE'
+          this.diagnostic(session, { stage: 'worker-terminal', code: message.code, reason: 'worker' })
+          this.fault(session, failure(code), message.code); return
+        }
         if (!pending || typeof message.ok !== 'boolean' || typeof message.mayHaveWritten !== 'boolean' || !Array.isArray(message.acceptedKeys) || message.acceptedKeys.length > contract.presence.maxKeys || message.acceptedKeys.some(key => typeof key !== 'string' || !fieldValid(key)) || new Set(message.acceptedKeys).size !== message.acceptedKeys.length) throw new Error()
         if (!message.ok) {
           if (message.op !== pending.op && message.op !== 'error' || typeof message.code !== 'string' || !workerCodes.has(message.code) ||
             message.acceptedKeys.some(key => !pending.keys.includes(key)) || message.acceptedKeys.length > 0 && !message.mayHaveWritten || message.mayHaveWritten && pending.op !== 'applied') throw new Error()
           const code: LocalAppSimulationErrorCode = Object.hasOwn(messages, message.code) ? message.code as LocalAppSimulationErrorCode : message.code === 'LOCAL_APP_ARGUMENTS_INVALID' ? 'LOCAL_APP_INVALID_INPUT' : 'LOCAL_APP_WORKER_UNAVAILABLE'
-          this.fault(session, failure(code)); return
+          this.fault(session, failure(code), message.code); return
         }
         if (message.op !== pending.op) throw new Error()
         if (pending.op === 'ready' && (message.mayHaveWritten || message.identityMatch !== true || message.appMatch !== true || message.licensed !== true || !object(message.selectedInterfaces) || Object.keys(interfaces).some(key => message.selectedInterfaces && (message.selectedInterfaces as Record<string, unknown>)[key] !== interfaces[key as keyof typeof interfaces]) || message.acceptedKeys.length)) throw new Error()
@@ -187,7 +251,11 @@ export class LocalAppHostBroker implements LocalAppSimulationHost {
   private pending(session: Session, requestId: string, op: string, keys: string[] = []): Promise<Record<string, unknown>> {
     let resolve!: (value: Record<string, unknown>) => void; let reject!: (error: DomainError) => void
     const promise = new Promise<Record<string, unknown>>((done, failed) => { resolve = done; reject = failed })
-    const timer = setTimeout(() => this.fault(session, failure('LOCAL_APP_TIMEOUT')), this.options.requestTimeoutMs ?? 12000); timer.unref?.()
+    const timer = setTimeout(() => {
+      const operation = op === 'pong' ? 'ping' : op === 'applied' ? 'apply' : op === 'ready' || op === 'read' || op === 'catalog' ? op : undefined
+      this.diagnostic(session, { stage: 'request-timeout', code: 'LOCAL_APP_TIMEOUT', ...(operation ? { operation } : {}) })
+      this.fault(session, failure('LOCAL_APP_TIMEOUT'))
+    }, this.options.requestTimeoutMs ?? 12000); timer.unref?.()
     session.pending.set(requestId, { op, keys, promise, resolve, reject, timer })
     return promise
   }
@@ -205,7 +273,7 @@ export class LocalAppHostBroker implements LocalAppSimulationHost {
     try { session.child.stdin.write(frame + '\n') }
     catch { this.fault(session, failure('LOCAL_APP_EXITED')) }
     const message = await pending
-    if (this.session !== session || !permitted()) throw failure('LOCAL_APP_CONTEXT_CHANGED')
+    if (this.session !== session || !permitted()) throw session.failure ?? failure('LOCAL_APP_CONTEXT_CHANGED')
     return message
   }
   async begin(context: LocalAppSimulationContext, appId: number, permitted: () => boolean): Promise<LocalAppSimulationRead> {
@@ -220,17 +288,21 @@ export class LocalAppHostBroker implements LocalAppSimulationHost {
       if (!binding || !isAbsolute(binding.worker) || !isAbsolute(binding.clientDll) || !/^[a-f0-9]{64}$/.test(binding.clientSha256)) throw failure('LOCAL_APP_WORKER_UNAVAILABLE')
       const args = ['--client-dll', binding.clientDll, '--client-sha256', binding.clientSha256, '--app-id', String(appId), '--steam-id', context.steamId, '--owner-pid', String(context.ownerPid), '--owner-start', context.ownerStartTicks, '--steam-pid', String(context.steamPid), '--steam-start', context.steamStartTicks]
       const child = (this.options.spawn ?? ((worker, values) => spawn(worker, values, { windowsHide: true, stdio: 'pipe' })))(binding.worker, args)
-      const session: Session = { child, pending: new Map(), decoder: new StringDecoder('utf8'), buffer: '', noise: 0, closing: false, closed: false, ready: false, lease: null }
+      const startedAt = this.now()
+      const session: Session = { child, pending: new Map(), decoder: new StringDecoder('utf8'), buffer: '', noise: 0,
+        noiseSamples: [], noiseHead: 0, noiseClock: startedAt, startedAt, closing: false, closed: false, ready: false, lease: null }
       this.session = session
+      this.diagnostic(session, { stage: 'worker-started' })
       const ready = this.pending(session, 'startup', 'ready')
       child.stdout.on('data', chunk => this.receive(session, chunk))
-      child.stderr.on('data', chunk => { session.noise += Buffer.byteLength(chunk); if (session.noise > 128 * 1024) this.fault(session, failure('LOCAL_APP_PROTOCOL_INVALID')) })
+      child.stderr.on('data', chunk => { this.noise(session, Buffer.byteLength(chunk)) })
       child.on('error', () => this.fault(session, failure('LOCAL_APP_EXITED')))
-      child.on('close', () => this.closed(session))
+      child.on('close', (code: number | null, signal: NodeJS.Signals | null) => this.closed(session, code, signal ?? null))
       child.stdin.on('error', () => this.fault(session, failure('LOCAL_APP_EXITED')))
       await ready
-      if (this.session !== session || this.version !== version || !permitted()) { this.retire(session); throw failure('LOCAL_APP_CONTEXT_CHANGED') }
+      if (this.session !== session || this.version !== version || !permitted()) { this.retire(session); throw session.failure ?? failure('LOCAL_APP_CONTEXT_CHANGED') }
       session.ready = true
+      this.diagnostic(session, { stage: 'worker-ready' })
       session.lease = setInterval(() => {
         if (!session.pending.size && !session.closing) void this.request('ping', permitted).catch(error => this.fault(session, safeError(error)))
       }, 5000); session.lease.unref?.()
@@ -275,7 +347,10 @@ export interface LocalAppSimulationServiceOptions {
   readMetadata?(appId: number, language: 'schinese' | 'english', signal: AbortSignal): Promise<GameStatusAppInfo>
   host?: LocalAppSimulationHost
   pollIntervalMs?: number
+  monitorRetryLimit?: number
+  onDiagnostic?(event: LocalAppDiagnosticEvent): void
 }
+export const LOCAL_APP_MONITOR_RETRY_LIMIT = 2
 export class LocalAppSimulationService {
   private value: LocalAppSimulationSnapshot
   private host: LocalAppSimulationHost
@@ -291,12 +366,16 @@ export class LocalAppSimulationService {
   private shutdownFlight: Promise<void> | null = null
   private invalidations = 0
   private activityRevision = 0
+  private monitorFailures = 0
   constructor(private readonly options: LocalAppSimulationServiceOptions) {
     this.value = this.empty()
-    this.host = options.host ?? new LocalAppHostBroker({ getWorkerPath: options.getWorkerPath })
+    this.host = options.host ?? new LocalAppHostBroker({ getWorkerPath: options.getWorkerPath,
+      onDiagnostic: event => this.diagnostic(event) })
     this.host.onExit?.(error => {
       this.hostError = safeError(error)
       if (this.value.status !== 'running') return
+      this.diagnostic({ stage: 'worker-error', code: this.hostError.code, reason: 'worker' })
+      this.monitorFailures = 0
       this.generation++; this.operation = null; this.context = null; this.desired = {}; this.clearTimer()
       for (const controller of this.metadataAbort) controller.abort()
       const safe = safeError(error)
@@ -312,10 +391,14 @@ export class LocalAppSimulationService {
   hasClientWork(): boolean { return this.invalidations > 0 || this.host.hasClientWork?.() === true }
   state(): LocalAppSimulationSnapshot {
     const account = this.options.getActiveAccount()
-    if ((account?.id ?? null) !== this.value.accountId || (account?.steamId ?? null) !== this.value.steamId) void this.invalidate().catch(noop)
+    if ((account?.id ?? null) !== this.value.accountId || (account?.steamId ?? null) !== this.value.steamId) void this.invalidate('account-change').catch(noop)
     return this.snapshot()
   }
   private emit(): void { try { this.options.onChange?.(this.snapshot()) } catch { /* Renderer observers cannot change ownership. */ } }
+  private diagnostic(event: LocalAppDiagnosticEvent): void {
+    try { this.options.onDiagnostic?.({ generation: this.generation, ...event }) }
+    catch { /* Diagnostics cannot change simulation ownership or liveness. */ }
+  }
   private selected(input: LocalAppSimulationAction): { id: string; steamId: string } {
     const account = this.options.getActiveAccount()
     if (this.disposed || !account || !/^\d{17}$/.test(account.steamId) || !input || input.accountId !== account.id || input.sessionId !== this.value.sessionId || this.value.accountId !== account.id || this.value.steamId !== account.steamId) throw failure('LOCAL_APP_CONTEXT_CHANGED')
@@ -324,6 +407,10 @@ export class LocalAppSimulationService {
   private current(generation: number): boolean {
     const account = this.options.getActiveAccount()
     return !this.disposed && this.generation === generation && !!account && account.id === this.value.accountId && account.steamId === this.value.steamId
+  }
+  private accountChanged(): boolean {
+    const account = this.options.getActiveAccount()
+    return (account?.id ?? null) !== this.value.accountId || (account?.steamId ?? null) !== this.value.steamId
   }
   private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = null }
   private async checkedContext(steamId: string, targetAppId: number, ownAppId?: number): Promise<LocalAppSimulationContext> {
@@ -393,7 +480,8 @@ export class LocalAppSimulationService {
     }
     if (Object.keys(fields).length > contract.presence.maxKeys - (Object.hasOwn(fields, GROUP_SIZE_KEY) ? contract.presence.reservedGroupKeys - 1 : 0)) throw failure('LOCAL_APP_INVALID_INPUT')
     const generation = this.generation; const token = {}; const oldApp = this.value.status === 'running' ? this.value.appId : null
-    this.activityRevision++; this.operation = token; this.hostError = null; this.clearTimer(); this.value.status = 'starting'; this.value.busy = true; this.value.error = null; this.emit()
+    this.activityRevision++; this.operation = token; this.hostError = null; this.monitorFailures = 0; this.clearTimer(); this.value.status = 'starting'; this.value.busy = true; this.value.error = null; this.emit()
+    this.diagnostic({ stage: 'start-requested', operation: oldApp === input.appId ? 'apply' : 'ready' })
     const permitted = () => this.current(generation) && this.operation === token
     const owned = () => this.current(generation) && this.context !== null && (this.value.status === 'starting' || this.value.status === 'running')
     const assert = () => { this.selected(input); if (!permitted()) throw failure('LOCAL_APP_CONTEXT_CHANGED'); if (this.hostError) throw this.hostError }
@@ -429,9 +517,11 @@ export class LocalAppSimulationService {
         this.cache(catalog); this.value.appInfo = catalog
       }
       this.value.status = 'running'
+      this.diagnostic({ stage: 'running' })
       this.schedule(generation)
     } catch (error) {
       if (permitted()) {
+        this.diagnostic({ stage: 'stop-requested', reason: 'context-change', code: safeError(error).code })
         this.context = null; this.desired = {}; this.clearTimer(); this.host.stop()
         this.value.status = 'error'; this.value.fields = {}; this.value.localizedString = null; this.value.verificationSource = null; delete this.value.submissionMode
         throw this.setError(error, generation)
@@ -445,15 +535,34 @@ export class LocalAppSimulationService {
     this.timer = setTimeout(() => {
       this.timer = null
       if (!this.current(generation) || this.value.status !== 'running' || !this.context || !this.value.appId) {
-        if (!this.current(generation) && !this.disposed) void this.invalidate().catch(noop)
+        if (!this.disposed && this.accountChanged()) void this.invalidate('account-change').catch(noop)
         return
       }
       const revision = this.activityRevision
       void this.checkedContext(this.context.steamId, this.value.appId, this.value.appId).then(() => {
-        if (this.current(generation) && this.activityRevision === revision && this.value.status === 'running') this.schedule(generation)
+        if (this.current(generation) && this.activityRevision === revision && this.value.status === 'running') {
+          if (this.monitorFailures) this.diagnostic({ stage: 'monitor-recovered', reason: 'monitor', count: this.monitorFailures })
+          this.monitorFailures = 0
+          this.schedule(generation)
+        }
       }, error => {
-        if (!this.current(generation)) { void this.invalidate().catch(noop); return }
+        if (!this.current(generation)) {
+          if (!this.disposed && this.accountChanged()) void this.invalidate('account-change').catch(noop)
+          return
+        }
         if (this.value.status !== 'running' || this.activityRevision !== revision) return
+        const safe = safeError(error)
+        this.monitorFailures += 1
+        const configured = this.options.monitorRetryLimit ?? LOCAL_APP_MONITOR_RETRY_LIMIT
+        const retries = Number.isInteger(configured) && configured >= 0 && configured <= 5 ? configured : LOCAL_APP_MONITOR_RETRY_LIMIT
+        if (safe.code === 'LOCAL_APP_CONTEXT_UNAVAILABLE' && this.monitorFailures <= retries) {
+          // Only the external read is retried; the native host continues its strict identity guards.
+          this.diagnostic({ stage: 'monitor-retry', reason: 'monitor', code: safe.code, count: this.monitorFailures })
+          this.schedule(generation)
+          return
+        }
+        this.diagnostic({ stage: 'monitor-stop', reason: 'monitor', code: safe.code, count: this.monitorFailures })
+        this.monitorFailures = 0
         const stoppedGeneration = ++this.generation
         this.operation = null
         for (const controller of this.metadataAbort) controller.abort()
@@ -464,17 +573,21 @@ export class LocalAppSimulationService {
   }
   async stop(input: LocalAppSimulationAction): Promise<LocalAppSimulationSnapshot> {
     this.selected(input)
+    this.diagnostic({ stage: 'stop-requested', reason: 'user' })
+    this.monitorFailures = 0
     const generation = ++this.generation; this.operation = null; this.clearTimer()
     for (const controller of this.metadataAbort) controller.abort()
     this.context = null; this.desired = {}; this.value.status = 'stopping'; this.value.busy = true; this.emit()
-    try { await this.host.shutdown(); if (this.current(generation)) { this.value.status = 'idle'; this.value.appId = null; this.value.fields = {}; this.value.localizedString = null; this.value.verificationSource = null; this.value.error = null; delete this.value.submissionMode } }
+    try { await this.host.shutdown(); if (this.current(generation)) { this.value.status = 'idle'; this.value.appId = null; this.value.fields = {}; this.value.localizedString = null; this.value.verificationSource = null; this.value.error = null; delete this.value.submissionMode; this.diagnostic({ stage: 'stopped', reason: 'user', ok: true }) } }
     catch { if (this.current(generation)) { this.value.status = 'error'; this.setError(failure('LOCAL_APP_STOP_FAILED'), generation) } }
     finally { if (this.current(generation)) { this.value.busy = false; this.emit() } }
     return this.snapshot()
   }
-  async invalidate(): Promise<void> {
+  async invalidate(reason: LocalAppDiagnosticReason = 'context-change'): Promise<void> {
     this.invalidations++
     try {
+      if (this.context || this.value.status === 'starting' || this.value.status === 'running' || this.host.hasClientWork?.()) this.diagnostic({ stage: 'invalidated', reason })
+      this.monitorFailures = 0
       this.generation++; this.operation = null; this.clearTimer()
       for (const controller of this.metadataAbort) controller.abort()
       this.host.stop(); this.context = null; this.desired = {}; this.metadata.clear(); this.value = this.empty(); this.emit()
@@ -483,7 +596,7 @@ export class LocalAppSimulationService {
   }
   shutdown(): Promise<void> {
     if (this.shutdownFlight) return this.shutdownFlight
-    const draining = this.invalidate(); this.disposed = true; this.shutdownFlight = draining
+    const draining = this.invalidate('toolbox-exit'); this.disposed = true; this.shutdownFlight = draining
     return draining
   }
 }

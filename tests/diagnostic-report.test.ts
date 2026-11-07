@@ -40,6 +40,19 @@ const login = (fields: Record<string, unknown> = {}): Record<string, unknown> =>
   attempt: 1, mode: 'qr', stage: 'request', outcome: 'response', ...fields })
 
 describe('diagnostic event projection', () => {
+  it('projects local simulation events with reviewed stages and no native context or presence data', () => {
+    const safe = sanitizeDiagnosticRecord({ event: 'local-app', at, version: '0.16.15',
+      stage: 'worker-error', code: 'LOCAL_APP_CONTEXT_CHANGED', reason: 'native-state',
+      helperPid: 123, generation: 9, exitCode: 70, elapsedMs: 4500, count: 1,
+      appId: 4000, steamId: '76561198000000001', fields: { desc: canary }, requestId: canary,
+      sessionId: canary, stdout: canary, stderr: canary, path: canary, error: { message: canary } })
+    expect(safe).toEqual({ event: 'local-app', at, version: '0.16.15', stage: 'worker-error',
+      code: 'LOCAL_APP_CONTEXT_CHANGED', reason: 'native-state', helperPid: 123, generation: 9,
+      exitCode: 70, elapsedMs: 4500, count: 1 })
+    expect(JSON.stringify(safe)).not.toMatch(/PRIVATE|7656119|4000/)
+    expect(sanitizeDiagnosticRecord({ event: 'local-app', stage: canary, code: canary })).toBeNull()
+  })
+
   it('projects only reviewed Community request stages and bounded safe network metadata at export', () => {
     const source = { event: 'session', phase: 'community-request', outcome: 'request-failed', reason: 'response-read-error',
       method: 'POST', endpoint: 'profile-comment', requestStage: 'body', networkCode: 'ECONNRESET', httpStatus: 200, elapsedMs: 123,
@@ -122,6 +135,19 @@ describe('diagnostic event projection', () => {
 })
 
 describe('safe bounded diagnostic export', () => {
+  it('reprojects historical local simulation lines and discards private fields and unknown stages', async () => {
+    const { options, current, destination } = await fixture()
+    await writeFile(current, line({ event: 'local-app', at, version: '0.16.15', stage: 'monitor-stop',
+      code: 'LOCAL_APP_CONTEXT_UNAVAILABLE', reason: 'monitor', generation: 3, count: 3,
+      accountId: canary, appId: 4000, fields: { desc: canary }, stdout: canary, path: canary }) +
+      line({ event: 'local-app', at, version: '0.16.15', stage: canary, code: canary }))
+    expect(await writeDiagnosticReport(destination, options)).toMatchObject({ records: 1 })
+    const contents = await readFile(destination, 'utf8')
+    expect(contents).not.toMatch(/PRIVATE|4000/)
+    expect(JSON.parse(contents).records).toEqual([{ event: 'local-app', at, version: '0.16.15',
+      stage: 'monitor-stop', code: 'LOCAL_APP_CONTEXT_UNAVAILABLE', reason: 'monitor', generation: 3, count: 3 }])
+  })
+
   it('compares adjacent 64-bit file identifiers without number rounding', () => {
     const file = { dev: 3n, ino: 0x20000000000000n }
     const adjacent = { dev: 3n, ino: 0x20000000000001n }
