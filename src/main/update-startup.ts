@@ -38,6 +38,8 @@ interface HealthyReceipt {
 }
 
 interface PathEntry { path: string; stat: BigIntStats }
+interface InputEntry extends PathEntry { canonical: string; file: boolean }
+interface InputProof { path: string; entries: InputEntry[]; canonicalEntries: PathEntry[]; kind: 'file' | 'directory' }
 interface FileProof { path: string; handle: FileHandle; entries: PathEntry[]; hash: string; size: number; bytes?: Buffer }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const HASH = /^[a-f0-9]{64}$/
@@ -86,6 +88,38 @@ async function checkEntries(entries: PathEntry[], kind: 'file' | 'directory'): P
   const current = await inspectPath(entries.at(-1)!.path, kind)
   if (current.length !== entries.length || current.some((entry, index) =>
     !samePath(entry.path, entries[index]!.path) || !identityMatches(entry.stat, entries[index]!.stat, kind === 'file' && index === current.length - 1))) return invalid()
+}
+
+async function canonicalInput(value: string, kind: 'file' | 'directory'): Promise<InputProof> {
+  const path = fullPath(value), root = parse(path).root
+  const components = relative(root, path).split(sep).filter(Boolean)
+  let current = root
+  const entries: InputEntry[] = []
+  for (let index = -1; index < components.length; index++) {
+    if (index >= 0) current = join(current, components[index]!)
+    const file = kind === 'file' && index === components.length - 1
+    const stat = await lstat(current, { bigint: true })
+    if (stat.isSymbolicLink() || (file ? !stat.isFile() || stat.nlink !== 1n : !stat.isDirectory())) return invalid()
+    const canonical = fullPath(await realpath(current))
+    const actual = await lstat(canonical, { bigint: true })
+    if (!samePath(parse(canonical).root, root) || actual.isSymbolicLink()
+      || (file ? !actual.isFile() || actual.nlink !== 1n : !actual.isDirectory())
+      || !identityMatches(stat, actual, file) || !samePath(current, canonical) && stat.ino === 0n) return invalid()
+    entries.push({ path: current, canonical, file, stat })
+  }
+  const canonical = entries.at(-1)!.canonical
+  return { path: canonical, entries, canonicalEntries: await inspectPath(canonical, kind), kind }
+}
+
+async function checkInput(proof: InputProof): Promise<void> {
+  for (const entry of proof.entries) {
+    const stat = await lstat(entry.path, { bigint: true })
+    if (stat.isSymbolicLink() || (entry.file ? !stat.isFile() || stat.nlink !== 1n : !stat.isDirectory())
+      || !identityMatches(stat, entry.stat, entry.file) || !samePath(fullPath(await realpath(entry.path)), entry.canonical)) return invalid()
+    const canonical = await lstat(entry.canonical, { bigint: true })
+    if (canonical.isSymbolicLink() || !identityMatches(stat, canonical, entry.file)) return invalid()
+  }
+  await checkEntries(proof.canonicalEntries, proof.kind)
 }
 
 async function readProof(proof: FileProof, limit: number, collect: boolean): Promise<{ hash: string; size: number; bytes?: Buffer }> {
@@ -212,7 +246,9 @@ export async function confirmUpdateStartup(options: ConfirmUpdateStartupOptions)
     if (!options || !validateVersion(options.currentVersion) || !['portable', 'setup'].includes(options.packageKind)
       || options.packageKind === 'portable' && options.transactionId === undefined
       || options.transactionId !== undefined && (typeof options.transactionId !== 'string' || !UUID.test(options.transactionId))) return { confirmed: false }
-    const cache = fullPath(options.cacheDirectory), target = fullPath(options.currentExecutable)
+    const cacheInput = await canonicalInput(options.cacheDirectory, 'directory')
+    const targetInput = await canonicalInput(options.currentExecutable, 'file')
+    const cache = cacheInput.path, target = targetInput.path
     const installer = join(cache, 'installer')
     const cacheEntries = await inspectPath(cache, 'directory'), installerEntries = await inspectPath(installer, 'directory')
     if (samePath(target, installer) || contained(installer, target)) return { confirmed: false }
@@ -237,9 +273,11 @@ export async function confirmUpdateStartup(options: ConfirmUpdateStartupOptions)
       const current = await readProof(proof, proof === receipt ? RECORD_LIMIT : EXECUTABLE_LIMIT, false)
       if (current.hash !== proof.hash || current.size !== proof.size) return { confirmed: false }
     }
+    await checkInput(cacheInput); await checkInput(targetInput)
     await checkEntries(cacheEntries, 'directory'); await checkEntries(installerEntries, 'directory')
     try {
       const existing = await proveFile(acknowledgment, RECORD_LIMIT, proofs)
+      await checkInput(cacheInput); await checkInput(targetInput)
       return { confirmed: healthy(flatRecord(existing.bytes!, HEALTH_KEYS), ack) }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { confirmed: false }
@@ -254,6 +292,7 @@ export async function confirmUpdateStartup(options: ConfirmUpdateStartupOptions)
     if (temporaryProof.hash !== createHash('sha256').update(serialized).digest('hex')) return { confirmed: false }
     await checkEntries(cacheEntries, 'directory'); await checkEntries(installerEntries, 'directory')
     for (const proof of [receipt, sourceProof, targetProof]) await checkEntries(proof.entries, 'file')
+    await checkInput(cacheInput); await checkInput(targetInput)
     await temporary.close(); temporary = undefined
     await checkEntries(temporaryEntries, 'file')
     await checkEntries(temporaryProof.entries, 'file')
@@ -271,6 +310,7 @@ export async function confirmUpdateStartup(options: ConfirmUpdateStartupOptions)
       }
     }
     await checkEntries(cacheEntries, 'directory'); await checkEntries(installerEntries, 'directory')
+    await checkInput(cacheInput); await checkInput(targetInput)
     const currentTarget = await readProof(targetProof, EXECUTABLE_LIMIT, false)
     return { confirmed: currentTarget.hash === targetProof.hash && currentTarget.size === targetProof.size }
   } catch { return { confirmed: false } }

@@ -42,7 +42,7 @@ window.steamCommenter = {
 const valid = { accounts: [], activeAccountId: null, friends: [], friendRemovals: [], friendNameChanges: [],
   groups: [], emoticons: [], settings: null, batches: [], activeBatch: null, friendPolicies: [], commentScan: null,
   dataDirectory: 'synthetic', language: 'en', theme: 'dark', energySavingEnabled: false, energySavingActive: false,
-  updater: initialUpdateState('0.16.18', 'portable'), updatePreferences: DEFAULT_UPDATE_PREFERENCES,
+  updater: initialUpdateState('0.16.19', 'portable'), updatePreferences: DEFAULT_UPDATE_PREFERENCES,
   security: { secretStorageAvailable: true, secretStorageBackend: 'synthetic' } };
 window.exercise = async () => {
   const App = (await import('./src/renderer/src/App')).default;
@@ -105,4 +105,4 @@ app.whenReady().then(async()=>{
     if (dirname(directory) !== temporary || !basename(directory).startsWith('xiaolan-update-ui-test-') || await realpath(directory) !== directory) throw new Error('Unsafe startup fixture cleanup')
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
-})
+}, 30_000)

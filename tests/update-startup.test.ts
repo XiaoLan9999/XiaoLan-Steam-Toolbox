@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { renameSync, mkdirSync, writeFileSync } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
 import { link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, truncate, unlink, writeFile } from 'node:fs/promises'
@@ -13,16 +14,20 @@ const hooks = vi.hoisted(() => ({
   afterOpen: undefined as undefined | ((path: string) => void | Promise<void>),
   afterRename: undefined as undefined | ((from: string, to: string) => void | Promise<void>),
   opens: [] as Array<{ path: string; flags: string | number; handle: FileHandle }>,
-  renames: [] as Array<[string, string]>
+  renames: [] as Array<[string, string]>,
+  aliases: new Map<string, string>()
 }))
 vi.mock('node:fs/promises', async original => {
   const actual = await original<typeof import('node:fs/promises')>()
   return { ...actual,
     lstat: async (...args: any[]) => {
+      const requested = String(args[0])
+      if (hooks.aliases.has(requested)) args[0] = hooks.aliases.get(requested)
       const result = await (actual.lstat as (...values: any[]) => Promise<unknown>)(...args)
-      await hooks.afterLstat?.(String(args[0]))
+      await hooks.afterLstat?.(requested)
       return result
     },
+    realpath: (path: string) => actual.realpath(hooks.aliases.get(String(path)) ?? path),
     open: async (path: string, flags: string | number, mode?: number) => {
       await hooks.beforeOpen?.(String(path), flags)
       const handle = await actual.open(path, flags, mode)
@@ -50,9 +55,11 @@ const directories: string[] = []
 beforeEach(() => {
   hooks.afterLstat = undefined; hooks.beforeOpen = undefined; hooks.afterOpen = undefined; hooks.afterRename = undefined
   hooks.opens.length = 0; hooks.renames.length = 0
+  hooks.aliases.clear()
 })
 afterEach(async () => {
   hooks.afterLstat = undefined; hooks.beforeOpen = undefined; hooks.afterOpen = undefined; hooks.afterRename = undefined
+  hooks.aliases.clear()
   vi.restoreAllMocks()
   for (const directory of directories.splice(0)) {
     if (dirname(directory) !== await realpath(tmpdir()) || !basename(directory).startsWith('xiaolan-update-startup-test-') ||
@@ -90,6 +97,40 @@ async function unchanged(f: Awaited<ReturnType<typeof fixture>>): Promise<void> 
   expect(await readFile(f.source)).toEqual(f.sourceBytes)
   expect(await readFile(f.target)).toEqual(f.targetBytes)
   if (f.record.kind === 'portable') expect(await readFile(f.backup)).toEqual(f.oldBytes)
+}
+
+function nativeShortPaths(paths: string[]): Array<string | null> {
+  const encoded = Buffer.from(JSON.stringify(paths), 'utf8').toString('base64')
+  const script = `$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class OwnTempShortPath {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  private static extern uint GetShortPathNameW(string path, StringBuilder output, uint capacity);
+  public static string Read(string path) {
+    StringBuilder output=new StringBuilder(32768);
+    uint count=GetShortPathNameW(path,output,(uint)output.Capacity);
+    return count==0 || count>=output.Capacity ? null : output.ToString();
+  }
+}
+'@
+$paths=@(ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))))
+$result=@(foreach($path in $paths){[OwnTempShortPath]::Read([string]$path)})
+ConvertTo-Json -Compress -InputObject $result`
+  const powershell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const output = execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { windowsHide: true, encoding: 'utf8', timeout: 15000, maxBuffer: 64 * 1024 })
+  return JSON.parse(output.trim().replace(/^\uFEFF/, '')) as Array<string | null>
+}
+
+function fixtureAliases(f: Awaited<ReturnType<typeof fixture>>) {
+  const cache = join(f.directory, 'UPDATE~1'), installed = join(f.directory, 'INSTAL~1'), target = join(installed, 'RENAME~1.EXE')
+  hooks.aliases.set(cache, f.cache); hooks.aliases.set(installed, dirname(f.target)); hooks.aliases.set(target, f.target)
+  return { cache, target }
 }
 
 describe('healthy startup update acknowledgment without deleting or executing files', () => {
@@ -228,6 +269,69 @@ describe('healthy startup update acknowledgment without deleting or executing fi
     await unchanged(f)
   })
 
+  it.each(['cache', 'target', 'both'] as const)('supports verified non-symlink filesystem %s aliases using actual file identities', async kind => {
+    const f = await fixture()
+    const aliases = fixtureAliases(f)
+    expect(await f.confirm({ ...(kind !== 'target' ? { cacheDirectory: aliases.cache } : {}),
+      ...(kind !== 'cache' ? { currentExecutable: aliases.target } : {}) })).toEqual({ confirmed: true })
+    expect(JSON.parse(await readFile(f.acknowledgment, 'utf8')).target).toBe(f.record.target)
+    await unchanged(f)
+  })
+
+  it('revalidates an original input alias even when its previously canonical target remains unchanged', async () => {
+    const f = await fixture()
+    const aliases = fixtureAliases(f)
+    const other = join(dirname(f.target), 'other same bytes.exe')
+    await writeFile(other, f.targetBytes)
+    hooks.beforeOpen = (_path, flags) => { if (flags === 'wx') hooks.aliases.set(aliases.target, other) }
+    expect(await f.confirm({ currentExecutable: aliases.target })).toEqual({ confirmed: false })
+    await absent(f.acknowledgment); await unchanged(f)
+    expect(await readFile(other)).toEqual(f.targetBytes)
+  })
+
+  it('does not expand short aliases embedded in untrusted transaction paths', async () => {
+    const f = await fixture()
+    const aliases = fixtureAliases(f)
+    await f.save({ target: aliases.target })
+    expect(await f.confirm({ currentExecutable: aliases.target })).toEqual({ confirmed: false })
+    await absent(f.acknowledgment); await unchanged(f)
+  })
+
+  for (const kind of ['cache', 'target', 'both'] as const) {
+    it.skipIf(process.platform !== 'win32')(`confirms real Windows GetShortPathName ${kind} inputs without changing canonical transaction metadata`, async context => {
+      const f = await fixture()
+      const [shortCache, shortTarget] = nativeShortPaths([f.cache, f.target])
+      if (!shortCache || !shortTarget || kind !== 'target' && shortCache.toLowerCase() === f.cache.toLowerCase()
+        || kind !== 'cache' && shortTarget.toLowerCase() === f.target.toLowerCase()) { context.skip('The fixture volume does not provide a distinct 8.3 alias'); return }
+      expect(await f.confirm({ ...(kind !== 'target' ? { cacheDirectory: shortCache } : {}),
+        ...(kind !== 'cache' ? { currentExecutable: shortTarget } : {}) })).toEqual({ confirmed: true })
+      expect(JSON.parse(await readFile(f.acknowledgment, 'utf8')).target).toBe(f.record.target)
+      await unchanged(f)
+    })
+  }
+
+  it.skipIf(process.platform !== 'win32')('still rejects a junction used through a real Windows short input path', async context => {
+    const f = await fixture()
+    const junction = join(f.directory, 'junction alias to cache')
+    await symlink(f.cache, junction, 'junction')
+    const [short] = nativeShortPaths([junction])
+    if (!short || short.toLowerCase() === junction.toLowerCase()) { context.skip('The fixture volume does not provide a distinct 8.3 alias'); return }
+    expect(await f.confirm({ cacheDirectory: short })).toEqual({ confirmed: false })
+    await absent(f.acknowledgment); await unchanged(f)
+  })
+
+  it.skipIf(process.platform !== 'win32')('rejects a replaced real Windows short-path input object', async context => {
+    const f = await fixture()
+    const [short] = nativeShortPaths([f.target])
+    if (!short || short.toLowerCase() === f.target.toLowerCase()) { context.skip('The fixture volume does not provide a distinct 8.3 alias'); return }
+    hooks.beforeOpen = (_path, flags) => {
+      if (flags === 'wx') { renameSync(f.target, `${f.target}.retired.exe`); writeFileSync(f.target, f.targetBytes) }
+    }
+    expect(await f.confirm({ currentExecutable: short })).toEqual({ confirmed: false })
+    await absent(f.acknowledgment)
+    expect(await readFile(f.backup)).toEqual(f.oldBytes)
+  })
+
   it('refuses a current target in installer metadata and refuses source equal to target', async () => {
     const f = await fixture()
     const metadataTarget = join(f.installer, 'app.exe')
@@ -312,7 +416,7 @@ describe('healthy startup update acknowledgment without deleting or executing fi
     const f = await fixture()
     let targetReads = 0
     hooks.afterLstat = async path => {
-      if (path !== f.target || ++targetReads !== 2) return
+      if (path !== f.target || !hooks.opens.some(opened => opened.path === f.target) || ++targetReads !== 1) return
       if (name === 'source') writeFileSync(f.source, executable('tampered-source'))
       else writeFileSync(f.receipt, JSON.stringify({ ...f.record, expectedHash: '0'.repeat(64) }))
     }

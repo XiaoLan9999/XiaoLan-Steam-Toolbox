@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { link, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { link, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import { prepareWindowsUpdate, type InstallationPlan, type ReadyUpdate } from '../src/main/update-installer'
@@ -12,9 +12,11 @@ import { UPDATE_REPOSITORY } from '../src/shared/update-types'
 const run = promisify(execFile)
 const directories: string[] = []
 afterEach(async () => {
+  const temporaryRoot = await realpath(tmpdir())
   for (const directory of directories.splice(0)) {
-    const target = resolve(directory)
-    if (dirname(target) !== resolve(tmpdir()) || !basename(target).startsWith('xiaolan-installer-test-')) {
+    const target = await realpath(directory)
+    if (dirname(target).toLowerCase() !== temporaryRoot.toLowerCase() || target.toLowerCase() !== resolve(directory).toLowerCase()
+      || !basename(target).startsWith('xiaolan-installer-test-')) {
       throw new Error('Refusing to remove a path outside the installer fixture directory')
     }
     // started.txt is written before Windows releases the fixture EXE.
@@ -42,6 +44,42 @@ describe.skipIf(process.platform !== 'win32')('Windows update installation', () 
     expect(await readFile(target)).toEqual(newBytes)
     expect(await readFile(antiRollback, 'utf8')).toBe('synthetic anti-rollback marker')
     for (const removed of [source, receipt.backup!]) await expect(readFile(removed)).rejects.toThrow()
+  }, 60_000)
+
+  it('canonicalizes genuine Windows short-path inputs and accepts short-path startup proof before exact cleanup', async ({ skip }) => {
+    const { directory, cache } = await fixture()
+    const target = join(directory, 'short alias confirmed portable.exe'), source = join(cache, 'short alias confirmed new.exe')
+    await compile(target, 'old')
+    await compile(source, 'new')
+    const newBytes = await readFile(source)
+    const shortCache = await shortFixturePath(cache)
+    const shortSource = await shortFixturePath(source)
+    const shortTarget = await shortFixturePath(target)
+    if (shortCache.toLowerCase() === cache.toLowerCase() && shortTarget.toLowerCase() === target.toLowerCase()) {
+      skip('The fixture volume does not expose Windows 8.3 aliases')
+    }
+    expect(await realpath(shortCache)).toBe(cache)
+    expect(await realpath(shortSource)).toBe(source)
+    expect(await realpath(shortTarget)).toBe(target)
+    const plan = await prepareWindowsUpdate(await readyUpdate(shortSource, 'portable'), { packageKind: 'portable', cacheDirectory: shortCache,
+      portableTarget: shortTarget, currentVersion: '0.3.0', parentPid: 2147483647, healthTimeoutMs: 8000 })
+    const receipt = await transaction(plan)
+    expect(receipt.source).toBe(source)
+    expect(receipt.target).toBe(target)
+    expect(receipt.backup).toBe(join(directory, `short alias confirmed portable.previous-${receipt.id.replaceAll('-', '')}.exe`))
+    await plan.launch()
+    await until(async () => (await readFile(join(directory, 'started.txt'), 'utf8')).startsWith('new:--updated'))
+    const updatedShortTarget = await shortFixturePath(target)
+    expect(await realpath(updatedShortTarget)).toBe(target)
+    expect(shortCache.toLowerCase() !== cache.toLowerCase() || updatedShortTarget.toLowerCase() !== target.toLowerCase()).toBe(true)
+    // Pass the actual alias to production confirmation, not the canonical value asserted above.
+    expect(await confirmUpdateStartup({ cacheDirectory: shortCache, currentVersion: '0.4.0', packageKind: 'portable',
+      currentExecutable: updatedShortTarget, transactionId: receipt.id })).toEqual({ confirmed: true })
+    await until(async () => (await result(plan)).status === 'cleaned')
+    expect(await readFile(target)).toEqual(newBytes)
+    for (const removed of [source, receipt.backup!, receiptPath(plan), healthyPath(plan), plan.helperPath]) {
+      await expect(readFile(removed)).rejects.toMatchObject({ code: 'ENOENT' })
+    }
   }, 60_000)
 
   it('atomically replaces a verified portable program after its real parent exits, retaining the old backup and restarting', async () => {
@@ -238,11 +276,35 @@ describe.skipIf(process.platform !== 'win32')('Windows update installation', () 
 })
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), 'xiaolan-installer-test-'))
+  const directory = await realpath(await mkdtemp(join(await realpath(tmpdir()), 'xiaolan-installer-test-')))
   directories.push(directory)
   const cache = join(directory, 'cache')
   await mkdir(cache)
   return { directory, cache }
+}
+
+async function shortFixturePath(file: string): Promise<string> {
+  const canonical = await realpath(file)
+  if (!directories.some(directory => {
+    const part = relative(directory, canonical)
+    return !isAbsolute(part) && part !== '..' && !part.startsWith('..\\')
+  })) throw new Error('Short-path queries are restricted to owned installer fixtures')
+  const literal = `'${canonical.replaceAll("'", "''")}'`
+  const script = `$ErrorActionPreference='Stop';[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
+Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class InstallerFixtureShortPath {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern uint GetShortPathName(string path, StringBuilder buffer, uint capacity);
+  public static string Read(string path) { var buffer=new StringBuilder(32768); uint length=GetShortPathName(path,buffer,(uint)buffer.Capacity); if(length==0 || length>=buffer.Capacity) throw new InvalidOperationException("Fixture short path unavailable"); return buffer.ToString(); }
+}
+'@
+[InstallerFixtureShortPath]::Read(${literal})`
+  const { stdout } = await run(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { windowsHide: true, timeout: 10_000, maxBuffer: 16 * 1024, encoding: 'utf8' })
+  const result = stdout.trim().replace(/^\uFEFF/, '')
+  if (!isAbsolute(result) || (await realpath(result)).toLowerCase() !== canonical.toLowerCase()) throw new Error('Invalid fixture short path')
+  return result
 }
 
 async function compile(path: string, label: string, options: { healthCache?: string; installTarget?: string } = {}) {
@@ -305,8 +367,9 @@ async function until(condition: () => Promise<boolean>): Promise<void> {
     await new Promise(done => setTimeout(done, 100))
   }
   const diagnostics: unknown[] = []
+  const temporaryRoot = await realpath(tmpdir())
   for (const directory of directories) {
-    if (dirname(resolve(directory)) !== resolve(tmpdir()) || !basename(directory).startsWith('xiaolan-installer-test-')) continue
+    if (dirname(resolve(directory)).toLowerCase() !== temporaryRoot.toLowerCase() || !basename(directory).startsWith('xiaolan-installer-test-')) continue
     const installer = join(directory, 'cache', 'installer')
     for (const file of await readdir(installer).catch(() => [])) {
       if (file.endsWith('.result.json')) diagnostics.push(JSON.parse((await readFile(join(installer, file), 'utf8')).replace(/^\uFEFF/, '')))
