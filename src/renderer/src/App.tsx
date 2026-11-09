@@ -204,6 +204,15 @@ export default function App(): React.JSX.Element {
     setSelectedFriends(new Set())
   }, [snapshot?.activeAccountId])
 
+  const startupSnapshotReady = snapshot !== null
+  useEffect(() => {
+    if (!startupSnapshotReady) return
+    const timer = window.setTimeout(() => {
+      void window.steamCommenter.confirmUpdateStartup?.().catch(() => undefined)
+    }, 5000)
+    return () => window.clearTimeout(timer)
+  }, [startupSnapshotReady])
+
   const activeAccount = useMemo(
     () => snapshot?.accounts.find((account) => account.id === snapshot.activeAccountId) ?? null,
     [snapshot]

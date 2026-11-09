@@ -57,6 +57,7 @@ import { ScreenshotLocalImport } from './screenshot-local-import'
 import { hasScreenshotIdentityWork, readScreenshotActiveUser, shutdownScreenshotIdentityReads } from './screenshot-active-user'
 import type { ScreenshotPrepareInput } from '../shared/steam-screenshots'
 import { prepareWindowsUpdate } from './update-installer'
+import { confirmUpdateStartup } from './update-startup'
 import { UPDATE_REPOSITORY, type UpdatePreferences, type UpdatePackageKind } from '../shared/update-types'
 import {
   AppError,
@@ -80,6 +81,7 @@ let commentScans: CommentScanQueue
 let diagnostics: RuntimeDiagnostics | undefined
 let nativePresenceForQuit: NativePresenceBroker | undefined
 let recoveringRenderer = false
+let updateStartupConfirmation: Promise<unknown> | undefined
 let shuttingDown = false
 let exportInProgress = false
 let diagnosticExportInProgress = false
@@ -595,7 +597,9 @@ function registerIpcHandlers(): void {
     const ready = await updater.getReadyUpdate()
     const plan = await prepareWindowsUpdate(ready, {
       packageKind: updatePackageKind, cacheDirectory: join(app.getPath('userData'), 'updates'),
-      portableTarget: process.env.PORTABLE_EXECUTABLE_FILE
+      portableTarget: process.env.PORTABLE_EXECUTABLE_FILE,
+      setupTarget: updatePackageKind === 'setup' ? app.getPath('exe') : undefined,
+      currentVersion: app.getVersion()
     })
     ensureInstallationIdle()
     installInProgress = true
@@ -645,6 +649,18 @@ function registerIpcHandlers(): void {
     await requireArtworkBrowser().open(source === 'steam-design' ? 'design' : source)
   })
   handle('snapshot:get', () => getSnapshot())
+  handle('update:startupHealthy', async () => {
+    if (!app.isPackaged || process.platform !== 'win32' || !process.argv.includes('--updated')) return
+    const receiptArgument = process.argv.find(value => value.startsWith('--update-receipt='))
+    const transactionId = receiptArgument?.slice('--update-receipt='.length)
+    if (receiptArgument && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(transactionId ?? '')) return
+    updateStartupConfirmation ??= confirmUpdateStartup({
+      cacheDirectory: join(app.getPath('userData'), 'updates'), currentVersion: app.getVersion(),
+      packageKind: updatePackageKind, currentExecutable: process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe'),
+      transactionId
+    }).catch(() => ({ confirmed: false }))
+    await updateStartupConfirmation
+  })
   handle('gameStatus:state', () => gameStatus.snapshot())
   handle('gameStatus:connectLocal', async (input: GameStatusAction) => {
     if (input?.accountId !== store.getActiveAccountId() || input?.sessionId !== gameStatus.snapshot().sessionId) {

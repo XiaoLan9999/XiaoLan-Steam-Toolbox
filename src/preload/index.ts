@@ -85,6 +85,7 @@ const api: SteamFriendCommenterApi = {
   openArtworkPage: () => invoke<void>('artwork:openUpload'),
   openArtworkSource: (source) => invoke<void>('artwork:openSource', source),
   getSnapshot: () => invoke<AppSnapshot>('snapshot:get'),
+  confirmUpdateStartup: () => invoke<void>('update:startupHealthy'),
   activateAccount: (accountId) => invoke<AppSnapshot>('account:activate', accountId),
   refreshAccountStatus: (accountId) => invoke<AccountView>('account:refreshStatus', accountId),
   removeAccount: (accountId) => invoke<void>('account:remove', accountId),

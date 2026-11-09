@@ -397,6 +397,7 @@ export interface SteamFriendCommenterApi {
   openArtworkPage(): Promise<IpcResult<void>>
   openArtworkSource(source: ArtworkSource): Promise<IpcResult<void>>
   getSnapshot(): Promise<IpcResult<AppSnapshot>>
+  confirmUpdateStartup?(): Promise<IpcResult<void>>
   activateAccount(accountId: string): Promise<IpcResult<AppSnapshot>>
   refreshAccountStatus(accountId: string): Promise<IpcResult<AccountView>>
   removeAccount(accountId: string): Promise<IpcResult<void>>
