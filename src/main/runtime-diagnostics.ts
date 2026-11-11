@@ -129,6 +129,10 @@ export class RuntimeDiagnostics {
     if (diagnostic) this.write({ event: 'local-app', ...diagnostic })
   }
 
+  personaLockEvent(event: { stage: string; code: string | null; currentState: number | null; restored: boolean | null; nativeCode?: string | null }): void {
+    if (!this.stopped) this.write({ event: 'persona-lock', ...event })
+  }
+
   rendererEvent(event: RendererDiagnosticEvent): void {
     if (this.stopped) return
     const safe = sanitizeRendererDiagnostic(event)

@@ -5,6 +5,13 @@ import type { ArtworkBrowserState } from '../shared/artwork-browser'
 import type { GameStatusAppInfo, GameStatusDraft, GameStatusSnapshot } from '../shared/game-status'
 import type { LocalAppSimulationSnapshot } from '../shared/local-app-simulation'
 import type { StatusCopySnapshot } from '../shared/status-copy'
+import type { PersonaLockSnapshot } from '../shared/persona-lock'
+import type { WindowUiState } from '../shared/window-ui'
+import type { SteamCachedAccountsSnapshot, SteamCachedAccountActionResult } from '../shared/steam-cached-accounts'
+import type { SteamAuthenticatorSnapshot } from '../shared/steam-authenticator'
+import type { SteamAuthenticatorExportResult } from '../shared/steam-authenticator'
+import type { SteamAuthenticatorConfirmationSnapshot, SteamAuthenticatorConfirmationResult } from '../shared/steam-authenticator-confirmations'
+import type { SteamAuthenticatorEnrollmentSnapshot } from '../shared/steam-authenticator-enrollment'
 import type { ProfileBackgroundCatalog, ProfileBackgroundImage } from '../shared/profile-backgrounds'
 import {
   AppEvent,
@@ -25,6 +32,57 @@ const invoke = <T>(channel: string, ...args: unknown[]): Promise<IpcResult<T>> =
   ipcRenderer.invoke(channel, ...args) as Promise<IpcResult<T>>
 
 const api: SteamFriendCommenterApi = {
+  windowUi: {
+    state: () => invoke<WindowUiState>('windowUi:state'),
+    minimize: () => invoke<void>('windowUi:minimize'),
+    toggleMaximize: () => invoke<void>('windowUi:toggleMaximize'),
+    close: () => invoke<void>('windowUi:close'),
+    onState: callback => {
+      const listener = (_event: Electron.IpcRendererEvent, state: WindowUiState): void => callback(state)
+      ipcRenderer.on('windowUi:stateChanged', listener)
+      return () => ipcRenderer.removeListener('windowUi:stateChanged', listener)
+    }
+  },
+  authenticatorEnrollment: {
+    state: () => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:state'),
+    login: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:login', input),
+    submitGuard: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:guard', input),
+    refreshLogin: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:refreshLogin', input),
+    phone: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:phone', input),
+    add: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:add', input),
+    showRecoveryCode: input => invoke<{ shown: boolean }>('authenticatorEnrollment:showRecovery', input),
+    exportBackup: input => invoke<{ exported: boolean }>('authenticatorEnrollment:exportBackup', input),
+    acknowledgeRecoverySaved: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:acknowledge', input),
+    finalize: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:finalize', input),
+    resume: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:resume', input),
+    pause: input => invoke<SteamAuthenticatorEnrollmentSnapshot>('authenticatorEnrollment:pause', input)
+  },
+  setWindowCloseMode: mode => invoke<void>('settings:windowClose', mode),
+  cachedAccounts: {
+    action: input => invoke<SteamCachedAccountActionResult>('cachedAccounts:action', input),
+    avatar: input => invoke<string | null>('cachedAccounts:avatar', input),
+    restoreHidden: () => invoke<SteamCachedAccountsSnapshot>('cachedAccounts:restoreHidden'),
+    state: () => invoke<SteamCachedAccountsSnapshot>('cachedAccounts:state'),
+    switchAccount: input => invoke<SteamCachedAccountsSnapshot>('cachedAccounts:switch', input)
+  },
+  authenticator: {
+    showRecoveryCode: input => invoke<{ viewed: boolean }>('authenticator:showRecovery', input),
+    exportFile: input => invoke<SteamAuthenticatorExportResult>('authenticator:export', input),
+    state: () => invoke<SteamAuthenticatorSnapshot>('authenticator:state'),
+    importFile: () => invoke<SteamAuthenticatorSnapshot | null>('authenticator:import'),
+    remove: input => invoke<SteamAuthenticatorSnapshot>('authenticator:remove', input),
+    syncTime: () => invoke<SteamAuthenticatorSnapshot>('authenticator:syncTime'),
+    copyCode: input => invoke<void>('authenticator:copyCode', input)
+  },
+  authenticatorConfirmations: {
+    list: input => invoke<SteamAuthenticatorConfirmationSnapshot>('authenticatorConfirmations:list', input),
+    respond: input => invoke<SteamAuthenticatorConfirmationResult>('authenticatorConfirmations:respond', input)
+  },
+  personaLock: {
+    state: () => invoke<PersonaLockSnapshot>('personaLock:state'),
+    start: input => invoke<PersonaLockSnapshot>('personaLock:start', input),
+    stop: input => invoke<PersonaLockSnapshot>('personaLock:stop', input)
+  },
   statusCopy: {
     state: () => invoke<StatusCopySnapshot>('statusCopy:state'),
     save: input => invoke<StatusCopySnapshot>('statusCopy:save', input),

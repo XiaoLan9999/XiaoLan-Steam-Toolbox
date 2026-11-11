@@ -6,6 +6,13 @@ import type { ScreenshotCatalog, ScreenshotGame, ScreenshotImage, ScreenshotImpo
 import type { GameStatusApi, GameStatusSnapshot } from './game-status'
 import type { LocalAppSimulationApi, LocalAppSimulationSnapshot } from './local-app-simulation'
 import type { StatusCopyApi, StatusCopySnapshot } from './status-copy'
+import type { PersonaLockApi, PersonaLockSnapshot } from './persona-lock'
+import type { SteamCachedAccountsApi } from './steam-cached-accounts'
+import type { SteamAuthenticatorApi } from './steam-authenticator'
+import type { WindowCloseMode } from './window-lifecycle'
+import type { WindowUiApi } from './window-ui'
+import type { SteamAuthenticatorConfirmationsApi } from './steam-authenticator-confirmations'
+import type { SteamAuthenticatorEnrollmentApi } from './steam-authenticator-enrollment'
 import type { BatchFailurePolicy } from './batch-failure-policy'
 
 export type SessionState = 'offline' | 'restoring' | 'authenticated' | 'expired' | 'error'
@@ -293,6 +300,7 @@ export interface AppSnapshot {
   language: 'zh-CN' | 'en'
   theme?: 'light' | 'dark'
   energySavingEnabled?: boolean
+  windowCloseMode?: WindowCloseMode
   energySavingActive?: boolean
   updater: UpdateState
   updatePreferences: UpdatePreferences
@@ -336,6 +344,7 @@ export interface BatchStartInput {
 }
 
 export type AppEvent =
+  | { type: 'personaLockChanged'; state: PersonaLockSnapshot }
   | { type: 'gameStatusChanged'; state: GameStatusSnapshot }
   | { type: 'localAppSimulationChanged'; state: LocalAppSimulationSnapshot }
   | { type: 'statusCopyChanged'; state: StatusCopySnapshot }
@@ -364,6 +373,12 @@ export type StatusCopyIpcApi = {
 }
 
 export interface SteamFriendCommenterApi {
+  windowUi?: { [K in Exclude<keyof WindowUiApi, 'onState'>]: (...args: Parameters<WindowUiApi[K]>) => Promise<IpcResult<Awaited<ReturnType<WindowUiApi[K]>>>> } & Pick<WindowUiApi, 'onState'>
+  cachedAccounts?: { [K in keyof SteamCachedAccountsApi]: (...args: Parameters<NonNullable<SteamCachedAccountsApi[K]>>) => Promise<IpcResult<Awaited<ReturnType<NonNullable<SteamCachedAccountsApi[K]>>>>> }
+  authenticator?: { [K in keyof SteamAuthenticatorApi]: (...args: Parameters<SteamAuthenticatorApi[K]>) => Promise<IpcResult<Awaited<ReturnType<SteamAuthenticatorApi[K]>>>> }
+  authenticatorConfirmations?: { [K in keyof SteamAuthenticatorConfirmationsApi]: (...args: Parameters<SteamAuthenticatorConfirmationsApi[K]>) => Promise<IpcResult<Awaited<ReturnType<SteamAuthenticatorConfirmationsApi[K]>>>> }
+  authenticatorEnrollment?: { [K in keyof SteamAuthenticatorEnrollmentApi]: (...args: Parameters<SteamAuthenticatorEnrollmentApi[K]>) => Promise<IpcResult<Awaited<ReturnType<SteamAuthenticatorEnrollmentApi[K]>>>> }
+  personaLock?: { [K in Exclude<keyof PersonaLockApi, 'onChange'>]: (...args: Parameters<PersonaLockApi[K]>) => Promise<IpcResult<Awaited<ReturnType<PersonaLockApi[K]>>>> }
   gameStatus: GameStatusIpcApi
   localAppSimulation?: LocalAppSimulationIpcApi
   statusCopy?: StatusCopyIpcApi
@@ -419,6 +434,7 @@ export interface SteamFriendCommenterApi {
   setLanguage(language: 'zh-CN' | 'en'): Promise<IpcResult<void>>
   setTheme(theme: 'light' | 'dark'): Promise<IpcResult<void>>
   setEnergySaving(enabled: boolean): Promise<IpcResult<void>>
+  setWindowCloseMode?(mode: WindowCloseMode): Promise<IpcResult<void>>
   exportData(): Promise<IpcResult<{ path: string } | null>>
   importData(): Promise<IpcResult<{ backupPath: string; restartScheduled: true } | null>>
   createGroup(accountId: string, name: string, color: string): Promise<IpcResult<FriendGroup>>

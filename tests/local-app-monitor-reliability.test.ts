@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DomainError } from '../src/shared/domain'
 import type { LocalAppDiagnosticEvent } from '../src/shared/local-app-diagnostics'
-import { LocalAppSimulationService, type LocalAppSimulationHost } from '../src/main/local-app-simulation'
+import { LOCAL_APP_MONITOR_INTERVAL_MS, LocalAppSimulationService, type LocalAppSimulationHost, type LocalAppSimulationServiceOptions } from '../src/main/local-app-simulation'
 import type { LocalAppSimulationContext } from '../src/main/local-app-simulation-context'
 
 const account = { id: 'synthetic-local-account', steamId: '76561198000000001' }
@@ -11,7 +11,7 @@ const context: LocalAppSimulationContext = { appId: 0, steamId: account.steamId,
 const read = { fields: {}, localizedString: null, verificationSource: 'local-cache' as const }
 const cleanups: Array<() => Promise<void>> = []
 
-function fixture(observer?: (event: LocalAppDiagnosticEvent) => void) {
+function fixture(observer?: (event: LocalAppDiagnosticEvent) => void, monitorOptions: Pick<LocalAppSimulationServiceOptions, 'readMonitorContext' | 'pollIntervalMs'> = {}) {
   const events: LocalAppDiagnosticEvent[] = []
   let exit: (error: DomainError) => void = () => undefined
   const host: LocalAppSimulationHost = {
@@ -23,6 +23,7 @@ function fixture(observer?: (event: LocalAppDiagnosticEvent) => void) {
   const detector = vi.fn(async () => structuredClone(context))
   const service = new LocalAppSimulationService({ getActiveAccount: () => account,
     getWorkerPath: () => 'D:/SyntheticSteam/local-app-host.exe', host, readContext: detector,
+    pollIntervalMs: 3000, ...monitorOptions,
     onDiagnostic: event => { events.push(event); observer?.(event) } })
   cleanups.push(() => service.shutdown())
   const action = () => ({ accountId: account.id, sessionId: service.state().sessionId })
@@ -32,6 +33,48 @@ function fixture(observer?: (event: LocalAppDiagnosticEvent) => void) {
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); vi.useRealTimers() })
 
 describe('local simulation monitor reliability', () => {
+  it('uses a lightweight observation every fifteen seconds without repeating full activity scans or state writes', async () => {
+    vi.useFakeTimers()
+    const monitor = vi.fn(async () => ({ ...context, appId: 4000, activeAppIds: [] }))
+    const f = fixture(undefined, { readMonitorContext: monitor, pollIntervalMs: undefined })
+    await f.service.start({ ...f.action(), appId: 4000 })
+    expect(LOCAL_APP_MONITOR_INTERVAL_MS).toBe(15_000)
+    expect(f.detector).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(14_999)
+    expect(monitor).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(45_001)
+    expect(monitor).toHaveBeenCalledTimes(4)
+    expect(f.detector).toHaveBeenCalledTimes(2)
+    expect(f.host.begin).toHaveBeenCalledOnce()
+    expect(f.host.apply).not.toHaveBeenCalled()
+    expect(f.host.read).not.toHaveBeenCalled()
+    expect(f.service.state().status).toBe('running')
+  })
+
+  it('does not use a successful background observation to bypass the full validation before a new update', async () => {
+    vi.useFakeTimers()
+    const monitor = vi.fn(async () => structuredClone(context))
+    const f = fixture(undefined, { readMonitorContext: monitor, pollIntervalMs: undefined })
+    await f.service.start({ ...f.action(), appId: 4000 })
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(monitor).toHaveBeenCalledOnce()
+    f.detector.mockRejectedValueOnce(new Error('synthetic strict validation failure'))
+    await expect(f.service.start({ ...f.action(), appId: 4000, groupSize: 3 })).rejects.toMatchObject({ code: 'LOCAL_APP_CONTEXT_UNAVAILABLE' })
+    expect(f.host.apply).not.toHaveBeenCalled()
+    expect(monitor).toHaveBeenCalledOnce()
+  })
+
+  it('still stops a changed Steam identity observed through the lightweight reader', async () => {
+    vi.useFakeTimers()
+    const monitor = vi.fn(async () => ({ ...context, steamId: '76561198000000002' }))
+    const f = fixture(undefined, { readMonitorContext: monitor, pollIntervalMs: undefined })
+    await f.service.start({ ...f.action(), appId: 4000 })
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(f.service.state()).toMatchObject({ status: 'error', error: { code: 'LOCAL_APP_CONTEXT_CHANGED' } })
+    expect(f.host.stop).toHaveBeenCalledOnce()
+    expect(f.host.apply).not.toHaveBeenCalled()
+  })
+
   it('keeps the same host through one transient external read failure and records recovery', async () => {
     vi.useFakeTimers()
     const f = fixture()

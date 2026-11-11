@@ -56,6 +56,12 @@ describe('local app host build and static ABI safety', () => {
     expect(code).toContain('Marshal.ReadIntPtr(instance) != Address(expected.VtableRva)'); expect(code).toContain('SteamPublicProfile.Matches(module, Marshal.ReadIntPtr(instance), function, expected)')
     expect(code).toContain('SteamPublicProfile.TrySelect(binding.Hash, out profile)'); expect(code).toContain('SteamPublicProfile.IsSupported(Hash)')
     for (const method of ['SteamId', 'SetPresence', 'SubscribedApp', 'SendMethod']) expect(code).toContain(`SteamPublicMethod.${method}`)
+    const idleGuard = code.slice(code.indexOf('public void CheckLiveness()'), code.indexOf('public bool Set(string key, string value)'))
+    expect(idleGuard).toContain('binding.Check()')
+    for (const method of ['loggedOn(', 'steamId(', 'appId(', 'licensed(']) expect(idleGuard).not.toContain(method)
+    expect(code).toContain('api.CheckLiveness(); nextGuard = clock.ElapsedMilliseconds + 1000')
+    expect(code).toContain('input.Changed.WaitOne(wait)')
+    expect(code).not.toContain('Thread.Sleep(25)')
     const profiles = readFileSync(profileSource, 'utf8')
     expect(profiles).toContain('e9045710ec7ee47d7b7488d1c5dda2d933dec7e251e965967a5c48f4df68eb4e')
     expect(profiles).toContain('253e0a11a4415b38c78a42f7bdd6ecc426455f06c1ba6453a48090df3142dbbc')
@@ -102,6 +108,52 @@ describe.skipIf(process.platform !== 'win32' || !existsSync(compiler))('managed 
     const result = run('success', [rpc('1', 'ping'), rpc('2', 'stop')]); expect(result.status).toBe(0)
     expect(result.frames[0]).toEqual({ v: 1, requestId: 'startup', op: 'ready', ok: true, acceptedKeys: [], mayHaveWritten: false, identityMatch: true, appMatch: true, licensed: true, selectedInterfaces: { client: 'SteamClient021', user: 'SteamUser023', friends: 'SteamFriends018', utils: 'SteamUtils010', apps: 'STEAMAPPS_INTERFACE_VERSION008' } })
     expect(result.frames[1]).toMatchObject({ op: 'pong', requestId: '1' }); expect(result.frames[2]).toMatchObject({ op: 'stopped' })
+  })
+  it('keeps idle ownership checks separate from full command checks and never writes while idle', async () => {
+    const child = spawn(fixture, ['--test-fake', 'guard-budget'], { windowsHide: true, stdio: 'pipe' }); children.add(child)
+    const frames: Array<Record<string, any>> = []; let buffer = ''
+    child.stdout.setEncoding('utf8'); child.stdout.on('data', chunk => {
+      buffer += chunk
+      let newline: number
+      while ((newline = buffer.indexOf('\n')) >= 0) { frames.push(JSON.parse(buffer.slice(0, newline))); buffer = buffer.slice(newline + 1) }
+    })
+    const request = async (requestId: string, op: string, extra: Record<string, unknown> = {}) => {
+      child.stdin.write(rpc(requestId, op, extra) + '\n')
+      await vi.waitFor(() => expect(frames.find(frame => frame.requestId === requestId)).toBeDefined(), { interval: 10 })
+      return frames.find(frame => frame.requestId === requestId)!
+    }
+    await vi.waitFor(() => expect(frames.some(frame => frame.op === 'ready')).toBe(true), { interval: 10 })
+    await new Promise(resolve => setTimeout(resolve, 300))
+    const idle = await request('idle', 'read')
+    expect(idle.fields).toMatchObject({ fixture_full_checks: '2', fixture_idle_checks: '1', fixture_writes: '0' })
+    expect((await request('ping', 'ping')).op).toBe('pong')
+    expect((await request('after-ping', 'read')).fields.fixture_full_checks).toBe('5')
+    expect((await request('apply', 'apply', { changes: { desc: 'Explicit synthetic update' } })).op).toBe('applied')
+    const applied = await request('after-apply', 'read')
+    expect(applied.fields).toMatchObject({ fixture_full_checks: '10', fixture_writes: '1', desc: 'Explicit synthetic update' })
+    const closed = new Promise(resolve => child.once('close', resolve))
+    await request('stop', 'stop'); await closed; children.delete(child)
+  })
+  it('still fails closed for idle ownership drift and checks a fresh command before writing', () => {
+    const idle = run('idle-context', [rpc('apply', 'apply', { changes: { desc: 'Must not be written' } })])
+    expect(idle.status).not.toBe(0)
+    expect(idle.frames.find(frame => frame.op === 'error')).toMatchObject({ code: 'LOCAL_APP_CONTEXT_CHANGED', acceptedKeys: [], mayHaveWritten: false })
+    const fresh = run('full-after-start', [rpc('apply', 'apply', { changes: { desc: 'Must not be written' } })])
+    expect(fresh.status).not.toBe(0)
+    expect(fresh.frames.find(frame => frame.op === 'error')).toMatchObject({ requestId: 'apply', code: 'LOCAL_APP_IDENTITY_MISMATCH', acceptedKeys: [], mayHaveWritten: false })
+  })
+  it.each(['stop', 'eof'] as const)('wakes idle input on %s without waiting for lease expiry', async mode => {
+    const child = spawn(fixture, ['--test-fake', 'success'], { windowsHide: true, stdio: 'pipe' }); children.add(child)
+    let output = ''; child.stdout.setEncoding('utf8'); child.stdout.on('data', value => { output += value })
+    await vi.waitFor(() => expect(output).toContain('"op":"ready"'), { interval: 10 })
+    const exited = new Promise<number | null>(resolve => child.once('close', resolve))
+    const started = performance.now()
+    if (mode === 'stop') child.stdin.write(rpc('stop', 'stop') + '\n'); else child.stdin.end()
+    expect(await exited).toBe(0)
+    expect(performance.now() - started).toBeLessThan(650)
+    expect(output).not.toContain('LOCAL_APP_TIMEOUT')
+    if (mode === 'stop') expect(output).toContain('"op":"stopped"')
+    children.delete(child)
   })
   it('submits all safe parameters before steam_display and reads only public local-cache data', () => {
     const result = run('success', [rpc('1', 'apply', { changes: { steam_display: '#Fixture', desc: '王座之间 四人东', status: 'Ready' } }), rpc('2', 'read'), rpc('3', 'stop')])

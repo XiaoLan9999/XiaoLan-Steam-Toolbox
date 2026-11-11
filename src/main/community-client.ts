@@ -575,6 +575,30 @@ export class SteamCommunityClient {
     })
   }
 
+  async requestAuthenticatorConfirmation(kind: 'list' | 'respond', expectedSteamId: string, params: URLSearchParams, assertCurrent: () => void, signal?: AbortSignal): Promise<unknown> {
+    const allowed = new Set(['p', 'a', 'k', 't', 'm', 'tag', ...(kind === 'respond' ? ['op', 'cid[]', 'ck[]'] : [])])
+    const keys = [...params.keys()]
+    if (params.toString().length > 8192 || keys.some(key => !allowed.has(key) || params.getAll(key).length !== 1) ||
+      params.get('a') !== expectedSteamId || !/^\d{17}$/.test(expectedSteamId) ||
+      !/^android:[a-fA-F0-9-]{32,36}$/.test(params.get('p') ?? '') || !/^[A-Za-z0-9+/]{27}=$/.test(params.get('k') ?? '') ||
+      !/^[1-9]\d{0,12}$/.test(params.get('t') ?? '') || params.get('m') !== 'react' ||
+      kind === 'list' && (keys.length !== 6 || params.get('tag') !== 'list') ||
+      kind === 'respond' && (keys.length !== 9 || !['allow', 'cancel'].includes(params.get('op') ?? '') ||
+        params.get('tag') !== (params.get('op') === 'allow' ? 'accept' : 'reject') ||
+        !/^[1-9]\d{0,19}$/.test(params.get('cid[]') ?? '') || !/^\d{1,20}$/.test(params.get('ck[]') ?? ''))) {
+      throw new DomainError('AUTH_CONFIRMATION_INVALID', 'AUTH_CONFIRMATION_INVALID')
+    }
+    assertCurrent()
+    // A single-item POST avoids treating the state-changing legacy ajaxop GET as a replayable read.
+    const text = await this.requestText(kind === 'list' ? `/mobileconf/getlist?${params}` : '/mobileconf/multiajaxop',
+      kind === 'list' ? { signal, headers: { 'User-Agent': 'okhttp/4.9.2' } } : {
+        signal, method: 'POST', body: params.toString(), headers: { 'User-Agent': 'okhttp/4.9.2', 'Content-Type': 'application/x-www-form-urlencoded' }
+      }, 0, assertCurrent)
+    assertCurrent()
+    if (Buffer.byteLength(text) > 2 * 1024 * 1024) throw new DomainError('AUTH_CONFIRMATION_UNAVAILABLE', 'AUTH_CONFIRMATION_UNAVAILABLE')
+    try { return JSON.parse(text) as unknown } catch { throw new DomainError('AUTH_CONFIRMATION_UNAVAILABLE', 'AUTH_CONFIRMATION_UNAVAILABLE') }
+  }
+
   private async requestJson<T>(path: string, init?: RequestInit, onResponse?: (metadata: CommunityResponseMetadata) => void): Promise<T> {
     const startedAt = performance.now()
     let httpStatus: number | undefined

@@ -280,7 +280,7 @@ export class UpdateService {
     if (this.availableRoutes.length === 0) throw new UpdateError('update.routeUnavailable')
     const { manifest } = this.candidate
     const asset = this.assetFor(manifest)
-    this.setState({ phase: 'downloading', error: null, downloadedBytes: 0, percent: 0, totalBytes: asset.size })
+    this.setState({ phase: 'downloading', error: null, sourceRouteId: null, downloadedBytes: 0, percent: 0, totalBytes: asset.size, speedBytesPerSecond: 0 })
     await Promise.all(this.availableRoutes.map((route) => this.probe(route, asset, signal)))
     throwIfAborted(signal)
     const routes = [...this.availableRoutes].sort((left, right) => {

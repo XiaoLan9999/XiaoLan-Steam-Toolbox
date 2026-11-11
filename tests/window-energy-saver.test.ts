@@ -5,9 +5,11 @@ import { createWindowEnergySaver, WINDOW_ENERGY_COMPACT_DELAY_MS } from '../src/
 
 const resources: Array<ReturnType<typeof createWindowEnergySaver>> = []
 
-function fixture(options: { visible?: boolean; minimized?: boolean; enabled?: boolean } = {}) {
+function fixture(options: { visible?: boolean; minimized?: boolean; enabled?: boolean; focused?: boolean } = {}) {
   const window = Object.assign(new EventEmitter(), {
     visible: options.visible ?? true, minimized: options.minimized ?? false, destroyed: false,
+    focused: options.focused ?? true,
+    isFocused() { return this.focused },
     isVisible() { return this.visible }, isMinimized() { return this.minimized }, isDestroyed() { return this.destroyed },
     webContents: { isDestroyed: () => false, setBackgroundThrottling: vi.fn() }
   })
@@ -26,14 +28,16 @@ function fixture(options: { visible?: boolean; minimized?: boolean; enabled?: bo
 afterEach(() => { for (const saver of resources.splice(0)) saver.shutdown(); vi.useRealTimers() })
 
 describe('main-window background energy saving', () => {
-  it('uses normal background throttling without treating blur as hidden', async () => {
+  it('saves resources while unfocused even if the GUI remains visible, and restores on focus', async () => {
     vi.useFakeTimers()
     const f = fixture()
     expect(f.window.webContents.setBackgroundThrottling).toHaveBeenCalledExactlyOnceWith(true)
-    f.window.emit('blur')
+    f.window.focused = false; f.window.emit('blur')
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(f.onChange).not.toHaveBeenCalled()
-    expect(f.compact).not.toHaveBeenCalled()
+    expect(f.onChange).toHaveBeenCalledExactlyOnceWith(true)
+    expect(f.compact).toHaveBeenCalledOnce()
+    f.window.focused = true; f.window.emit('focus')
+    expect(f.onChange).toHaveBeenLastCalledWith(false)
   })
 
   it.each(['hide', 'minimize'] as const)('enters on %s and compacts only after 30 background seconds', async action => {

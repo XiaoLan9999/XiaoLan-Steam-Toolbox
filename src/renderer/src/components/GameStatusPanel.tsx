@@ -12,9 +12,11 @@ import { StatusCopyPanel } from './StatusCopyPanel'
 import { GameStatusTemplateDiagnostics } from './GameStatusTemplateDiagnostics'
 import { richPresenceContract } from '../../../shared/rich-presence-contract'
 import './game-status.css'
+import type { PersonaLockApi } from '../../../shared/persona-lock'
+import { PersonaLockPanel } from './PersonaLockPanel'
 
-export interface GameStatusPanelProps { activeAccount: AccountView | null; api: GameStatusApi; localSimulationApi?: LocalAppSimulationApi; statusCopyApi?: StatusCopyApi }
-type Tab = 'simulate' | 'live' | 'copy' | 'draft'
+export interface GameStatusPanelProps { activeAccount: AccountView | null; api: GameStatusApi; localSimulationApi?: LocalAppSimulationApi; statusCopyApi?: StatusCopyApi; personaLockApi?: PersonaLockApi }
+type Tab = 'simulate' | 'live' | 'copy' | 'draft' | 'persona'
 type Notice = { kind: 'success' | 'error' | 'info'; text: string } | null
 const EMPTY_DRAFT: GameStatusDraft = { displayKind: 'app', gameName: '', details: '' }
 
@@ -181,7 +183,7 @@ export function isGameStatusFieldEditable(live: GameStatusLiveSnapshot, key: str
   return Object.hasOwn(live.fields, key) && key.toLowerCase() !== 'steam_display' && live.editableKeys.includes(key) && !live.readOnlyKeys.includes(key)
 }
 
-export function GameStatusPanel({ activeAccount, api, localSimulationApi, statusCopyApi }: GameStatusPanelProps): React.JSX.Element {
+export function GameStatusPanel({ activeAccount, api, localSimulationApi, statusCopyApi, personaLockApi }: GameStatusPanelProps): React.JSX.Element {
   const { language, t } = useI18n()
   const languageRef = useRef(language)
   languageRef.current = language
@@ -367,6 +369,7 @@ export function GameStatusPanel({ activeAccount, api, localSimulationApi, status
     { id: 'simulate', label: localSimulationApi ? t('本机 AppID 模拟', 'Local AppID simulation') : t('自定义模拟', 'Simulated display') },
     { id: 'live', label: t('真实游戏状态', 'Live game status') },
     ...(statusCopyApi ? [{ id: 'copy' as const, label: t('复制／跟随状态', 'Copy / follow status') }] : []),
+    ...(personaLockApi ? [{ id: 'persona' as const, label: t('在线状态锁定', 'Online status lock') }] : []),
     { id: 'draft', label: t('本机草稿', 'Local draft') }
   ]
 
@@ -389,6 +392,7 @@ export function GameStatusPanel({ activeAccount, api, localSimulationApi, status
 
       <div className="game-status-tabs" role="tablist" aria-label={t('游戏状态功能', 'Game status features')}>{tabs.map(item => <button key={item.id} id={`${baseId}-${item.id}-tab`} type="button" role="tab" aria-selected={tab === item.id} aria-controls={`${baseId}-${item.id}`} className={tab === item.id ? 'selected' : ''} onClick={() => setTab(item.id)}>{item.label}{item.id === 'draft' && draftDirty && <i aria-label={t('未保存', 'Unsaved')} />}</button>)}</div>
       {tab === 'copy' && statusCopyApi && <section role="tabpanel" id={`${baseId}-copy`} aria-labelledby={`${baseId}-copy-tab`}><StatusCopyPanel account={activeAccount} api={statusCopyApi} /></section>}
+      {tab === 'persona' && personaLockApi && <section role="tabpanel" id={`${baseId}-persona`} aria-labelledby={`${baseId}-persona-tab`}><PersonaLockPanel account={activeAccount} api={personaLockApi} /></section>}
       {notice && <div className={`game-status-notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.text}</div>}
 
       {tab === 'simulate' && localSimulationApi && <LocalAppSimulationPanel account={activeAccount} api={localSimulationApi}

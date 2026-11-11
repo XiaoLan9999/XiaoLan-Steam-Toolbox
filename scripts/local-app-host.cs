@@ -305,6 +305,7 @@ internal static class LocalAppHost
     private interface IPresence : IDisposable
     {
         void Check();
+        void CheckLiveness();
         void Preflight(SortedDictionary<string, string> changes);
         bool Set(string key, string value);
         SortedDictionary<string, string> Read(out int keyCount, out string localizedString);
@@ -429,6 +430,7 @@ internal static class LocalAppHost
             binding.Check(); if (!licensed(apps, binding.AppId)) throw Error("NOT_LICENSED");
             binding.Check();
         }
+        public void CheckLiveness() { binding.Check(); }
         public bool Set(string key, string value)
         {
             if (key == GroupSizeKey) return group.Set(value);
@@ -770,6 +772,7 @@ internal static class LocalAppHost
     private sealed class Input
     {
         internal readonly Queue<string> Lines = new Queue<string>(); internal volatile bool Closed, Invalid, StopQueued;
+        internal readonly AutoResetEvent Changed = new AutoResetEvent(false);
         internal void Run()
         {
             try
@@ -786,6 +789,7 @@ internal static class LocalAppHost
                             string value = line.ToString(); if (Utf8.GetByteCount(value) > MaximumLine) { Invalid = true; break; }
                             lock (Lines) { if (Lines.Count >= 32) { Invalid = true; break; } Lines.Enqueue(value); }
                             try { if (Request.Parse(value).Op == "stop") StopQueued = true; } catch { }
+                            Changed.Set();
                             line.Length = 0;
                         }
                         else { line.Append((char)next); if (line.Length > MaximumLine) { Invalid = true; break; } }
@@ -793,7 +797,7 @@ internal static class LocalAppHost
                 }
             }
             catch { Invalid = true; }
-            finally { Closed = true; }
+            finally { Closed = true; Changed.Set(); }
         }
     }
 
@@ -809,9 +813,17 @@ internal static class LocalAppHost
             try
             {
                 if (input.Invalid) throw Error("PROTOCOL_INVALID");
-                if (clock.ElapsedMilliseconds >= nextGuard) { api.Check(); nextGuard = clock.ElapsedMilliseconds + 250; }
+                // Idle ownership checks must not keep querying Steam's public interfaces.
+                if (clock.ElapsedMilliseconds >= nextGuard) { api.CheckLiveness(); nextGuard = clock.ElapsedMilliseconds + 1000; }
                 string line = null; lock (input.Lines) if (input.Lines.Count > 0) line = input.Lines.Dequeue();
-                if (line == null) { if (input.Closed) return 0; if (clock.ElapsedMilliseconds - lastActivity >= heartbeatMs) throw Error("TIMEOUT"); Thread.Sleep(25); continue; }
+                if (line == null)
+                {
+                    if (input.Closed) return 0;
+                    long remaining = heartbeatMs - (clock.ElapsedMilliseconds - lastActivity);
+                    if (remaining <= 0) throw Error("TIMEOUT");
+                    int wait = (int)Math.Max(1L, Math.Min(remaining, nextGuard - clock.ElapsedMilliseconds));
+                    input.Changed.WaitOne(wait); continue;
+                }
                 Request request = Request.Parse(line); requestId = request.RequestId;
                 if (!recent.Add(requestId)) throw Error("PROTOCOL_INVALID"); recentOrder.Enqueue(requestId); if (recentOrder.Count > 256) recent.Remove(recentOrder.Dequeue());
                 if (request.Op == "stop") { Reply(requestId, "stopped", true, null, accepted, false, null, 0); return 0; }
@@ -870,7 +882,7 @@ internal static class LocalAppHost
 #if LOCAL_APP_HOST_TEST
     private sealed class FakePresence : IPresence
     {
-        private readonly string mode; private readonly NativePresence cleanup; private int writes; private bool disposed;
+        private readonly string mode; private readonly NativePresence cleanup; private int writes, fullChecks, idleChecks; private bool disposed;
         private readonly OwnedGroup group;
         private bool contextEnded;
         private int groupWrites, sizeWrites;
@@ -895,9 +907,16 @@ internal static class LocalAppHost
         }
         public void Check()
         {
+            fullChecks++;
             if (contextEnded) throw Error("CONTEXT_CHANGED");
+            if (mode == "full-after-start" && fullChecks > 1) throw Error("IDENTITY_MISMATCH");
             if (mode == "identity") throw Error("IDENTITY_MISMATCH"); if (mode == "app") throw Error("APP_MISMATCH"); if (mode == "license") throw Error("NOT_LICENSED");
             if (mode == "context-after-write" && writes > 0) throw Error("CONTEXT_CHANGED");
+        }
+        public void CheckLiveness()
+        {
+            idleChecks++;
+            if (contextEnded || mode == "idle-context") throw Error("CONTEXT_CHANGED");
         }
         public bool Set(string key, string value)
         {
@@ -915,6 +934,12 @@ internal static class LocalAppHost
         }
         public SortedDictionary<string, string> Read(out int count, out string localizedString)
         {
+            if (mode == "guard-budget")
+            {
+                values["fixture_full_checks"] = fullChecks.ToString(CultureInfo.InvariantCulture);
+                values["fixture_idle_checks"] = idleChecks.ToString(CultureInfo.InvariantCulture);
+                values["fixture_writes"] = writes.ToString(CultureInfo.InvariantCulture);
+            }
             if (mode == "read-failed") throw Error("READ_FAILED"); count = values.Count + 1;
             if (mode == "read-frame-boundary") count = values.Count;
             if (mode == "group-conflict-after-read" && values.ContainsKey(GroupSizeKey)) values[GroupIdKey] = "FAKE_EXTERNAL_GROUP_NEVER_OUTPUT";

@@ -62,6 +62,23 @@ function fixture() {
   }
   return { directory, put, audit, env }
 }
+
+describe('authenticator export publication safeguards', () => {
+  it('rejects an authenticator seed even when a private export has a generic JSON filename', () => {
+    const f = fixture()
+    f.put('backup.json', JSON.stringify({ shared_secret: Buffer.alloc(20, 7).toString('base64') }))
+    const result = f.audit()
+    expect(result.status).not.toBe(0); expect(result.output).toContain('literal Steam authenticator secret')
+    expect(result.output).not.toContain(Buffer.alloc(20, 7).toString('base64'))
+  })
+  it('rejects a recovery code without printing its value', () => {
+    const f = fixture(), privateCode = 'R' + '765432'
+    f.put('backup.json', JSON.stringify({ revocation_code: privateCode }))
+    const result = f.audit()
+    expect(result.status).not.toBe(0); expect(result.output).toContain('literal authenticator recovery code')
+    expect(result.output).not.toContain(privateCode)
+  })
+})
 afterEach(() => {
   for (const directory of fixtures.splice(0)) {
     if (dirname(resolve(directory)) !== resolve(tmpdir()) || !basename(directory).startsWith('sfc-source-audit-')) throw new Error('Unexpected audit fixture path')

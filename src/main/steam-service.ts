@@ -672,6 +672,27 @@ export class SteamService {
     return [...cookies]
   }
 
+  async getAuthenticatorConfirmationSession(expectedSteamId: string, signal?: AbortSignal): Promise<{
+    steamId: string; contextId: string; assertCurrent(): void
+    list(params: URLSearchParams): Promise<unknown>; respond(params: URLSearchParams): Promise<unknown>
+  }> {
+    const accountId = this.store.getActiveAccountId(), account = accountId ? this.store.getAccount(accountId) : null
+    if (!accountId || !account || account.steamId !== expectedSteamId) throw new DomainError('AUTH_CONFIRMATION_IDENTITY', 'AUTH_CONFIRMATION_IDENTITY')
+    this.requireActiveCommunity(accountId)
+    await this.ensureSessionFresh(accountId)
+    const runtime = this.runtime!, community = runtime.community
+    const assertCurrent = (): void => {
+      if (signal?.aborted) throw new DomainError('AUTH_CONFIRMATION_CHANGED', 'AUTH_CONFIRMATION_CHANGED')
+      if (this.disposed || this.runtime !== runtime || runtime.community !== community || this.store.getActiveAccountId() !== accountId || !this.isAuthenticated(accountId)) {
+        throw new DomainError('AUTH_CONFIRMATION_CHANGED', 'AUTH_CONFIRMATION_CHANGED')
+      }
+    }
+    assertCurrent()
+    return { steamId: expectedSteamId, contextId: randomUUID(), assertCurrent,
+      list: params => community.requestAuthenticatorConfirmation('list', expectedSteamId, params, assertCurrent, signal),
+      respond: params => community.requestAuthenticatorConfirmation('respond', expectedSteamId, params, assertCurrent, signal) }
+  }
+
   async getGameStatusLogin(accountId: string): Promise<{ steamId: string; accountName: string; webLogonToken: string }> {
     this.requireActiveCommunity(accountId)
     const runtime = this.runtime!

@@ -28,3 +28,12 @@ integrations/asf-status-copy/**/obj/
 integrations/asf-status-copy/plugin/
 *.pem
 *.key
+maFiles/
+*.[mM][aA][fF][iI][lL][eE]
+steam-authenticators.vault.json
+steam-account-switch.recovery.json
+steam-authenticator-setup.pending.json
+steam-authenticator-confirmations.safety.json
+.authenticator-*.tmp
+*.rescue.json
+.xiaolan-shortcut-*.lnk

@@ -22,7 +22,7 @@ export function createWindowEnergySaver(options: WindowEnergySaverOptions): Wind
   const window = options.window
 
   const background = (): boolean => !window.isDestroyed() && options.enabled() &&
-    (window.isMinimized() || !window.isVisible())
+    (window.isMinimized() || !window.isVisible() || typeof window.isFocused === 'function' && !window.isFocused())
 
   const clearCompaction = (): void => {
     clearTimeout(compactTimer)
@@ -64,6 +64,8 @@ export function createWindowEnergySaver(options: WindowEnergySaverOptions): Wind
     window.removeListener('hide', refresh)
     window.removeListener('show', refresh)
     window.removeListener('restore', refresh)
+    window.removeListener('blur', refresh)
+    window.removeListener('focus', refresh)
     window.removeListener('closed', shutdown)
   }
 
@@ -71,6 +73,8 @@ export function createWindowEnergySaver(options: WindowEnergySaverOptions): Wind
   window.on('hide', refresh)
   window.on('show', refresh)
   window.on('restore', refresh)
+  window.on('blur', refresh)
+  window.on('focus', refresh)
   window.on('closed', shutdown)
   refresh()
   return { refresh, shutdown }

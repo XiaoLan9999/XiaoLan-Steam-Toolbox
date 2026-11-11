@@ -46,3 +46,48 @@ $running=@(foreach($key in $keys){$item=Get-ItemProperty -LiteralPath $key.PSPat
   if (!validLocalAppContext(value) || value.ownerPid !== process.pid) throw new Error('Local app context unavailable')
   return { ...value, steamExe: await realpath(value.steamExe) }
 }
+
+interface LocalAppSimulationMonitorDependencies {
+  platform?: NodeJS.Platform
+  ownerPid?: number
+  windowsDirectory?: string
+  execute?: (executable: string, args: string[], options: {
+    windowsHide: true; timeout: number; maxBuffer: number; encoding: 'utf8'
+  }) => Promise<{ stdout: string }>
+  realpath?: (path: string) => Promise<string>
+}
+
+export function buildLocalAppSimulationMonitorScript(ownerPid: number): string {
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0 || ownerPid > 0xffffffff) throw new Error('Invalid local app monitor owner')
+  return `$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
+$config=Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Valve\\Steam'
+$active=Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Valve\\Steam\\ActiveProcess'
+$steam=Get-Process -Id ([int]$active.pid)
+$owner=Get-Process -Id ${ownerPid}
+if($steam.ProcessName -ine 'steam' -or $null -eq $config.RunningAppID){throw 'Steam unavailable'}
+$image=[string]$steam.Path
+if(!$image -or !$config.SteamExe -or ![IO.Path]::GetFullPath($image).Equals([IO.Path]::GetFullPath([string]$config.SteamExe),[StringComparison]::OrdinalIgnoreCase)){throw 'Steam identity unavailable'}
+$account=[long]$active.ActiveUser
+if($account -lt 0){$account+=4294967296}
+if($account -le 0 -or $account -gt [uint32]::MaxValue){throw 'Steam user unavailable'}
+@{appId=[int]$config.RunningAppID;steamId=([uint64]0x0110000100000000+[uint64]$account).ToString();steamPid=$steam.Id;steamStartTicks=$steam.StartTime.ToUniversalTime().Ticks.ToString();steamExe=$image;activeAppIds=@();ownerPid=$owner.Id;ownerStartTicks=$owner.StartTime.ToUniversalTime().Ticks.ToString()}|ConvertTo-Json -Compress -Depth 4`
+}
+
+// Monitoring validates the live Steam identity, but must not scan installed/running app registry entries.
+export async function readLocalAppSimulationMonitorContext(dependencies: LocalAppSimulationMonitorDependencies = {}): Promise<LocalAppSimulationContext> {
+  if ((dependencies.platform ?? process.platform) !== 'win32') throw new Error('Local app simulation requires Windows')
+  const ownerPid = dependencies.ownerPid ?? process.pid
+  const script = buildLocalAppSimulationMonitorScript(ownerPid)
+  const executable = join(dependencies.windowsDirectory ?? process.env.SystemRoot ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const { stdout } = await (dependencies.execute ?? execute)(executable,
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { windowsHide: true, timeout: 10000, maxBuffer: 64 * 1024, encoding: 'utf8' })
+  if (typeof stdout !== 'string' || Buffer.byteLength(stdout, 'utf8') > 64 * 1024) throw new Error('Local app context unavailable')
+  const value = JSON.parse(stdout.trim().replace(/^\uFEFF/, '')) as LocalAppSimulationContext
+  if (!validLocalAppContext(value) || value.ownerPid !== ownerPid || value.activeAppIds.length !== 0) throw new Error('Local app context unavailable')
+  const steamExe = await (dependencies.realpath ?? realpath)(value.steamExe)
+  if (typeof steamExe !== 'string' || !validLocalAppContext({ ...value, steamExe })) throw new Error('Local app context unavailable')
+  return { ...value, steamExe }
+}

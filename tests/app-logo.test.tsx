@@ -20,10 +20,14 @@ describe('bundled application logo', () => {
     expect(html).not.toMatch(/src="https?:/)
   })
 
-  it('replaces the letter placeholders in both sidebar and loading screen without changing attribution', () => {
+  it('keeps the loading logo and attribution while removing duplicate sidebar branding', () => {
     const source = readFileSync(fileURLToPath(new URL('../src/renderer/src/App.tsx', import.meta.url)), 'utf8')
     expect(source).toContain('<AppLogo className="steam-mark" size={56} />')
-    expect(source).toContain('<AppLogo className="brand-mark" size={38} />')
+    expect(source).not.toContain('className="brand"')
+    expect(source).not.toContain('<AppLogo className="brand-mark" size={38} />')
+    expect(source).not.toContain('好友管理 · 艺术作品 · 截图工具')
+    expect(source).toContain("{t('欢迎', 'Welcome')}")
+    expect(source).not.toContain("{t('欢迎首页', 'Welcome home')}")
     expect(source).not.toContain('className="steam-mark">S')
     expect(source).not.toContain('className="brand-mark">S')
     expect(source).toContain('href={AUTHOR_WEBSITE_URL}')

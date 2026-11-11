@@ -12,7 +12,7 @@ import { validateExperimentalPresence } from '../shared/local-app-experimental'
 import { readGameStatusAppInfo } from './game-status-apps'
 import type { LocalAppSimulationAction, LocalAppSimulationErrorCode, LocalAppSimulationInspectInput, LocalAppSimulationSnapshot, LocalAppSimulationStartInput } from '../shared/local-app-simulation'
 import { readLocalAppMetadata } from './local-app-simulation-metadata'
-import { readLocalAppSimulationContext, sameLocalAppSteam, validLocalAppContext, type LocalAppSimulationContext } from './local-app-simulation-context'
+import { readLocalAppSimulationContext, readLocalAppSimulationMonitorContext, sameLocalAppSteam, validLocalAppContext, type LocalAppSimulationContext } from './local-app-simulation-context'
 import type { LocalAppDiagnosticEvent, LocalAppDiagnosticReason } from '../shared/local-app-diagnostics'
 
 const messages: Record<LocalAppSimulationErrorCode, string> = {
@@ -344,6 +344,7 @@ export interface LocalAppSimulationServiceOptions {
   onChange?(snapshot: LocalAppSimulationSnapshot): void
   beforeStart?(): void | Promise<void>
   readContext?(): Promise<LocalAppSimulationContext>
+  readMonitorContext?(): Promise<LocalAppSimulationContext>
   readMetadata?(appId: number, language: 'schinese' | 'english', signal: AbortSignal): Promise<GameStatusAppInfo>
   host?: LocalAppSimulationHost
   pollIntervalMs?: number
@@ -351,6 +352,7 @@ export interface LocalAppSimulationServiceOptions {
   onDiagnostic?(event: LocalAppDiagnosticEvent): void
 }
 export const LOCAL_APP_MONITOR_RETRY_LIMIT = 2
+export const LOCAL_APP_MONITOR_INTERVAL_MS = 15_000
 export class LocalAppSimulationService {
   private value: LocalAppSimulationSnapshot
   private host: LocalAppSimulationHost
@@ -413,9 +415,11 @@ export class LocalAppSimulationService {
     return (account?.id ?? null) !== this.value.accountId || (account?.steamId ?? null) !== this.value.steamId
   }
   private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = null }
-  private async checkedContext(steamId: string, targetAppId: number, ownAppId?: number): Promise<LocalAppSimulationContext> {
+  private async checkedContext(steamId: string, targetAppId: number, ownAppId?: number, monitor = false): Promise<LocalAppSimulationContext> {
     let context: LocalAppSimulationContext
-    try { context = await (this.options.readContext ?? readLocalAppSimulationContext)() } catch { throw failure('LOCAL_APP_CONTEXT_UNAVAILABLE') }
+    const read = monitor ? this.options.readMonitorContext ?? this.options.readContext ?? readLocalAppSimulationMonitorContext
+      : this.options.readContext ?? readLocalAppSimulationContext
+    try { context = await read() } catch { throw failure('LOCAL_APP_CONTEXT_UNAVAILABLE') }
     if (!validLocalAppContext(context)) throw failure('LOCAL_APP_CONTEXT_UNAVAILABLE')
     if (context.steamId !== steamId) throw failure('LOCAL_APP_CONTEXT_CHANGED')
     if (targetAppId !== ownAppId && (context.appId === targetAppId || context.activeAppIds.includes(targetAppId))) throw failure('LOCAL_APP_GAME_ACTIVE')
@@ -539,7 +543,7 @@ export class LocalAppSimulationService {
         return
       }
       const revision = this.activityRevision
-      void this.checkedContext(this.context.steamId, this.value.appId, this.value.appId).then(() => {
+      void this.checkedContext(this.context.steamId, this.value.appId, this.value.appId, true).then(() => {
         if (this.current(generation) && this.activityRevision === revision && this.value.status === 'running') {
           if (this.monitorFailures) this.diagnostic({ stage: 'monitor-recovered', reason: 'monitor', count: this.monitorFailures })
           this.monitorFailures = 0
@@ -569,7 +573,7 @@ export class LocalAppSimulationService {
         this.host.stop(); this.context = null; this.desired = {}; this.value.status = 'error'; this.value.busy = false
         this.value.fields = {}; this.value.localizedString = null; this.value.verificationSource = null; delete this.value.submissionMode; this.setError(error, stoppedGeneration)
       })
-    }, this.options.pollIntervalMs ?? 3000); this.timer.unref?.()
+    }, this.options.pollIntervalMs ?? LOCAL_APP_MONITOR_INTERVAL_MS); this.timer.unref?.()
   }
   async stop(input: LocalAppSimulationAction): Promise<LocalAppSimulationSnapshot> {
     this.selected(input)

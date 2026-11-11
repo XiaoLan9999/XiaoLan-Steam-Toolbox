@@ -34,7 +34,7 @@ function fixture() {
   const host = new Host(); let account: typeof ACCOUNT | null = ACCOUNT; let context = structuredClone(CONTEXT)
   const before = vi.fn(async () => {}); const metadata = vi.fn(async (appId: number) => ({ ...INFO, appId }))
   const detector = vi.fn(async () => structuredClone(context))
-  const service = new LocalAppSimulationService({ getActiveAccount: () => account, getWorkerPath: () => 'D:/fixture/local-app-host-x64.exe', host, beforeStart: before, readContext: detector, readMetadata: metadata })
+  const service = new LocalAppSimulationService({ getActiveAccount: () => account, getWorkerPath: () => 'D:/fixture/local-app-host-x64.exe', host, beforeStart: before, readContext: detector, readMetadata: metadata, pollIntervalMs: 3000 })
   cleanups.push(() => { host.gate?.resolve(); return service.shutdown() })
   return { service, host, before, metadata, detector, action: () => ({ accountId: ACCOUNT.id, sessionId: service.state().sessionId }), setAccount(value: typeof account) { account = value }, setContext(value: Partial<LocalAppSimulationContext>) { context = { ...context, ...value } } }
 }

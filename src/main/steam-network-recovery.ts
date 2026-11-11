@@ -64,7 +64,7 @@ export function abortableSteamNetwork<T>(operation: Promise<T>, signal: AbortSig
 }
 
 function mayReplay(url: URL, method: string, init?: RequestInit, original?: Request | null): boolean {
-  if (method === 'GET') return !init?.body && !original?.body
+  if (method === 'GET') return !/^\/mobileconf\/(?:ajaxop|multiajaxop)(?:\/|$)/i.test(url.pathname) && !init?.body && !original?.body
   if (method !== 'POST' || original?.body && init?.body === undefined) return false
   const path = url.pathname.replace(/\/$/, '')
   if (url.hostname === 'api.steampowered.com') return path === '/IAuthenticationService/PollAuthSessionStatus/v1'

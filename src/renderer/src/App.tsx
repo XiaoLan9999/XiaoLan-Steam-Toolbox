@@ -18,6 +18,13 @@ import { SessionRecoveryNotice } from './components/SessionRecoveryNotice'
 import type { GameStatusApi } from '../../shared/game-status'
 import type { LocalAppSimulationApi } from '../../shared/local-app-simulation'
 import type { StatusCopyApi } from '../../shared/status-copy'
+import type { PersonaLockApi } from '../../shared/persona-lock'
+import type { SteamCachedAccountsApi } from '../../shared/steam-cached-accounts'
+import type { SteamAuthenticatorApi } from '../../shared/steam-authenticator'
+import type { SteamAuthenticatorConfirmationsApi } from '../../shared/steam-authenticator-confirmations'
+import type { SteamAuthenticatorEnrollmentApi } from '../../shared/steam-authenticator-enrollment'
+import { SteamCachedAccountsPanel } from './components/SteamCachedAccountsPanel'
+import { SteamAuthenticatorPanel } from './components/SteamAuthenticatorPanel'
 import { I18nProvider, type Translate } from './i18n'
 import { avatarFallback, unwrap } from './ui'
 import { applyBatchProgress, applyProgressUpdates, createSnapshotRefresh, type BatchProgressUpdate } from './snapshot-refresh'
@@ -30,7 +37,49 @@ import './energy-saving.css'
 
 restoreCachedTheme()
 
-type Tab = 'home' | 'friends' | 'compose' | 'history' | 'tools' | 'screenshots' | 'game-status'
+type Tab = 'home' | 'friends' | 'compose' | 'history' | 'tools' | 'screenshots' | 'game-status' | 'steam-accounts' | 'authenticator'
+
+const cachedAccountsApi: SteamCachedAccountsApi | undefined = window.steamCommenter.cachedAccounts ? {
+  action: async input => unwrap(await window.steamCommenter.cachedAccounts!.action!(input)),
+  avatar: async input => unwrap(await window.steamCommenter.cachedAccounts!.avatar!(input)),
+  restoreHidden: async () => unwrap(await window.steamCommenter.cachedAccounts!.restoreHidden!()),
+  state: async () => unwrap(await window.steamCommenter.cachedAccounts!.state()),
+  switchAccount: async input => unwrap(await window.steamCommenter.cachedAccounts!.switchAccount(input))
+} : undefined
+const authenticatorApi: SteamAuthenticatorApi | undefined = window.steamCommenter.authenticator ? {
+  showRecoveryCode: async input => unwrap(await window.steamCommenter.authenticator!.showRecoveryCode(input)),
+  exportFile: async input => unwrap(await window.steamCommenter.authenticator!.exportFile(input)),
+  state: async () => unwrap(await window.steamCommenter.authenticator!.state()),
+  importFile: async () => unwrap(await window.steamCommenter.authenticator!.importFile()),
+  remove: async input => unwrap(await window.steamCommenter.authenticator!.remove(input)),
+  syncTime: async () => unwrap(await window.steamCommenter.authenticator!.syncTime()),
+  copyCode: async input => unwrap(await window.steamCommenter.authenticator!.copyCode(input))
+} : undefined
+const authenticatorConfirmationsApi: SteamAuthenticatorConfirmationsApi | undefined = window.steamCommenter.authenticatorConfirmations ? {
+  list: async input => unwrap(await window.steamCommenter.authenticatorConfirmations!.list(input)),
+  respond: async input => unwrap(await window.steamCommenter.authenticatorConfirmations!.respond(input))
+} : undefined
+const authenticatorEnrollmentApi: SteamAuthenticatorEnrollmentApi | undefined = window.steamCommenter.authenticatorEnrollment ? {
+  state: async () => unwrap(await window.steamCommenter.authenticatorEnrollment!.state()),
+  login: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.login(input)),
+  submitGuard: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.submitGuard(input)),
+  refreshLogin: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.refreshLogin(input)),
+  phone: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.phone(input)),
+  add: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.add(input)),
+  showRecoveryCode: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.showRecoveryCode(input)),
+  exportBackup: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.exportBackup(input)),
+  acknowledgeRecoverySaved: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.acknowledgeRecoverySaved(input)),
+  finalize: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.finalize(input)),
+  resume: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.resume(input)),
+  pause: async input => unwrap(await window.steamCommenter.authenticatorEnrollment!.pause(input))
+} : undefined
+
+const personaLockApi: PersonaLockApi | undefined = window.steamCommenter.personaLock ? {
+  state: async () => unwrap(await window.steamCommenter.personaLock!.state()),
+  start: async input => unwrap(await window.steamCommenter.personaLock!.start(input)),
+  stop: async input => unwrap(await window.steamCommenter.personaLock!.stop(input)),
+  onChange: callback => window.steamCommenter.onEvent(event => { if (event.type === 'personaLockChanged') callback(event.state) })
+} : undefined
 
 const gameStatusApi: GameStatusApi = {
   state: async () => unwrap(await window.steamCommenter.gameStatus.state()),
@@ -268,16 +317,8 @@ export default function App(): React.JSX.Element {
   return (
     <I18nProvider language={language}><div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
-          <AppLogo className="brand-mark" size={38} />
-          <div>
-            <strong>{t(APP_NAME_ZH, APP_NAME_EN)}</strong>
-            <span>{t('好友管理 · 艺术作品 · 截图工具', 'Friends · Artwork · Screenshots')}</span>
-          </div>
-        </div>
-
         <button className={`sidebar-tools-button ${tab === 'home' ? 'active' : ''}`} onClick={() => setTab('home')}>
-          {t('欢迎首页', 'Welcome home')}
+          {t('欢迎', 'Welcome')}
         </button>
         <button className={`sidebar-tools-button ${['friends', 'compose', 'history'].includes(tab) ? 'active' : ''}`} onClick={() => setTab('friends')}>
           {t('好友留言板', 'Friend comments')}
@@ -290,6 +331,12 @@ export default function App(): React.JSX.Element {
         </button>
         <button className={`sidebar-tools-button ${tab === 'game-status' ? 'active' : ''}`} onClick={() => setTab('game-status')}>
           {t('游戏状态与自定义', 'Game status & presence')}
+        </button>
+        <button className={`sidebar-tools-button ${tab === 'steam-accounts' ? 'active' : ''}`} onClick={() => setTab('steam-accounts')}>
+          {t('Steam 账号切换', 'Steam account switcher')}
+        </button>
+        <button className={`sidebar-tools-button ${tab === 'authenticator' ? 'active' : ''}`} onClick={() => setTab('authenticator')}>
+          {t('本地手机令牌', 'Local authenticators')}
         </button>
 
         <div className="sidebar-heading">
@@ -365,13 +412,24 @@ export default function App(): React.JSX.Element {
         {tab === 'home' ? <WelcomePanel snapshot={snapshot} onNavigate={setTab} onLogin={() => setLoginOpen(true)} onSettings={() => setSettingsOpen(true)}
           connectionNotice={activeAccount && <SessionRecoveryNotice account={activeAccount} busy={Boolean(busy)}
             onRetry={() => void runAction(t('正在重新连接保存的账号', 'Reconnecting the saved account'), async () => unwrap(await window.steamCommenter.refreshAccountStatus(activeAccount.id)))}
-            onSignIn={() => setLoginOpen(true)} />} /> : tab === 'game-status' ? (
+            onSignIn={() => setLoginOpen(true)} />} /> : tab === 'steam-accounts' || tab === 'authenticator' ? (
+          <>
+            <header className="topbar tools-topbar">
+              <div><h1>{tab === 'steam-accounts' ? t('Steam 账号切换', 'Steam account switcher') : t('本地手机令牌', 'Local authenticators')}</h1>
+                <p>{tab === 'steam-accounts' ? t('选择客户端已缓存账号 · 正常退出并重开 Steam', 'Choose a cached client account · Exit and reopen Steam normally') : t('导入已有 maFile · 本机加密保存 · 显示 Steam Guard 验证码', 'Import an existing maFile · Encrypted local storage · Steam Guard codes')}</p></div>
+              <button className="ghost" onClick={() => setTab('home')}>{t('返回首页', 'Back home')}</button>
+            </header>
+            <section className="content">{tab === 'steam-accounts' && cachedAccountsApi ? <SteamCachedAccountsPanel api={cachedAccountsApi} visible={!settingsOpen && !loginOpen} />
+              : tab === 'authenticator' && authenticatorApi ? <SteamAuthenticatorPanel api={authenticatorApi} confirmationsApi={authenticatorConfirmationsApi} enrollmentApi={authenticatorEnrollmentApi} selectedSteamId={activeAccount?.steamId ?? null} visible={!settingsOpen && !loginOpen} />
+              : <p>{t('组件暂不可用，请重新打开完整的新版本', 'This component is unavailable; reopen the complete new version')}</p>}</section>
+          </>
+        ) : tab === 'game-status' ? (
           <>
             <header className="topbar tools-topbar">
               <div><h1>{t('游戏状态与自定义', 'Game status & presence')}</h1><p>{t('自定义游戏显示 · 实际游玩参数实验性修改', 'Custom game presence · Experimental live-game status editing')}</p></div>
               <button className="ghost" onClick={() => setTab('home')}>{t('返回首页', 'Back home')}</button>
             </header>
-            <section className="content"><GameStatusPanel activeAccount={activeAccount} api={gameStatusApi} localSimulationApi={localAppSimulationApi} statusCopyApi={statusCopyApi} /></section>
+            <section className="content"><GameStatusPanel activeAccount={activeAccount} api={gameStatusApi} localSimulationApi={localAppSimulationApi} statusCopyApi={statusCopyApi} personaLockApi={personaLockApi} /></section>
           </>
         ) : tab === 'screenshots' ? (
           <>

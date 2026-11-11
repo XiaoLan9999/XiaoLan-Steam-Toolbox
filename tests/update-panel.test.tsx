@@ -65,6 +65,18 @@ describe('update settings', () => {
     expect(html).not.toContain('Confirm update and restart</button>')
   })
 
+  it.each(['zh-CN', 'en'] as const)('starts route and download speed details collapsed with automatic selection in %s', language => {
+    const html = renderUpdate({ phase: 'downloading', latestVersion: '0.3.2', routes: [
+      { id: 'official', label: 'GitHub', domain: 'github.com', status: 'available', latencyMs: 125, speedBytesPerSecond: 1048576, error: null }
+    ] }, language)
+    expect(html).toContain('<details class="update-diagnostics update-route-details">')
+    expect(html).toContain('<details class="update-diagnostics update-speed-details">')
+    expect(html).not.toMatch(/<details[^>]*\sopen(?:\s|=|>)/)
+    expect(html).toContain('<option value="" selected="">')
+    expect(html).toContain(language === 'en' ? 'Automatically choose the fastest valid route' : '自动选择最快有效线路')
+    expect(html).toContain(language === 'en' ? 'Testing and choosing the fastest route…' : '正在测速并选择最快线路…')
+  })
+
   it('requires an explicit ready-state restart action and explains each package kind', () => {
     const installed = renderUpdate({ phase: 'ready', packageKind: 'setup' }, 'en')
     const portable = renderUpdate({ phase: 'ready', packageKind: 'portable' }, 'en')

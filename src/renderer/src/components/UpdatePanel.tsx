@@ -137,7 +137,9 @@ export function UpdatePanel({ state, preferences, runAction }: {
     checking: t('正在检测更新及可用线路…', 'Checking updates and available routes…'),
     upToDate: t('当前已是最新版本', 'You are using the latest version'),
     available: t('发现新版本', 'A newer version is available'),
-    downloading: t('正在下载更新…', 'Downloading the update…'),
+    downloading: state.sourceRouteId ? t('正在下载更新…', 'Downloading the update…')
+      : routeId ? t('正在检测下载线路…', 'Testing the download routes…')
+        : t('正在测速并选择最快线路…', 'Testing and choosing the fastest route…'),
     ready: t('更新已下载并通过校验', 'Update downloaded and verified'),
     error: t('更新操作未完成', 'The update could not be completed')
   }
@@ -169,9 +171,6 @@ export function UpdatePanel({ state, preferences, runAction }: {
     <label className="update-checkbox"><input type="checkbox" checked={preferences.useMirrors} disabled={disabledPreferences}
       onChange={event => void savePreferences({ ...preferences, useMirrors: event.target.checked })} />
       {t('启用代理线路（内置及自定义）', 'Enable proxy routes (built-in and custom)')}</label>
-    <p className="update-mirror-note">{t('启用后会访问这些公共代理检测及下载更新：', 'When enabled, these public proxies are used to check and download updates: ')}
-      <span>{BUILTIN_UPDATE_ROUTES.filter(route => route.prefix).map(route => route.label).join(' · ')}</span>
-      {t('。每次检查实测线路，连接质量可能变化。关闭后仅连接 GitHub', '. Routes are tested on each check; connection quality can change. When disabled, only GitHub is used')}</p>
     <details className="update-advanced">
       <summary>{t('高级：自定义更新代理', 'Advanced: custom update proxies')}</summary>
       <label htmlFor={customInputId}>{t('HTTPS 代理前缀，每行一个', 'HTTPS proxy prefixes, one per line')}</label>
@@ -181,7 +180,16 @@ export function UpdatePanel({ state, preferences, runAction }: {
       {customError && <p className="update-error" role="alert">{customError}</p>}
       <button disabled={disabledPreferences || customMirrors === storedCustomMirrors} onClick={() => void saveCustomMirrors()}>{t('保存自定义线路', 'Save custom routes')}</button>
     </details>
-    {state.routes.length > 0 && <div className="update-route-list" aria-label={t('更新线路检测结果', 'Update route results')}>
+    <details className="update-diagnostics update-route-details">
+      <summary>{t('线路测速详情', 'Route speed test details')}
+        {state.routes.length > 0 && <span className="update-diagnostics-count">{state.routes.filter(route => route.status === 'available').length} / {state.routes.length} {t('可用', 'available')}</span>}
+      </summary>
+      <p className="update-mirror-note">{t('启用后会访问这些公共代理检测及下载更新：', 'When enabled, these public proxies are used to check and download updates: ')}
+        <span>{BUILTIN_UPDATE_ROUTES.filter(route => route.prefix).map(route => route.label).join(' · ')}</span>
+        {t('。每次检查实测线路，连接质量可能变化。关闭后仅连接 GitHub', '. Routes are tested on each check; connection quality can change. When disabled, only GitHub is used')}</p>
+      <p className="update-mirror-note">{t('开始下载时会试读可用线路，自动模式优先使用实测下载最快的有效线路，失败后尝试其它线路',
+        'When downloading starts, valid routes are sampled. Automatic mode tries the fastest measured download route first, then falls back to other routes if needed')}</p>
+      {state.routes.length > 0 && <div className="update-route-list" aria-label={t('更新线路检测结果', 'Update route results')}>
       <div className="update-route-headers"><span>{t('线路 / 域名', 'Route / domain')}</span><span>{t('延迟 / 试读速度', 'Latency / sample speed')}</span></div>
       {state.routes.map(route => <div className={`update-route update-route-${route.status}`} key={route.id}>
         <div className="update-route-name"><strong>{route.label}</strong><small>{route.domain}</small></div>
@@ -191,7 +199,8 @@ export function UpdatePanel({ state, preferences, runAction }: {
         </div>
         {route.error && <details className="update-route-error"><summary>{describeUpdateError(route.error, t)}</summary><code>{route.error}</code></details>}
       </div>)}
-    </div>}
+      </div>}
+    </details>
     {(state.phase === 'available' || state.phase === 'downloading' || state.phase === 'ready') && <p className="update-verified">{t('更新清单已验证；下载完成后再次校验文件', 'The update manifest is verified. The downloaded file is verified again before installation')}</p>}
     {(state.phase === 'available' || state.phase === 'downloading') && <div className="update-download-controls">
       <label>{t('下载线路', 'Download route')}<select value={routeId} disabled={updateBusy} onChange={event => setRouteId(event.target.value)}>
@@ -202,10 +211,14 @@ export function UpdatePanel({ state, preferences, runAction }: {
         onClick={() => void perform('download', () => window.steamCommenter.downloadUpdate(routeId || undefined))}>{t('下载更新', 'Download update')}</button>}
     </div>}
     {downloading && <div className="update-progress" aria-live="polite">
-      {sourceRoute && <p>{t('当前下载线路：', 'Current download route: ')}{sourceRoute.label} · {sourceRoute.domain}</p>}
       <progress max={100} value={percent} aria-label={t('更新下载进度', 'Update download progress')} />
-      <div><strong>{percent.toFixed(1)}%</strong><span>{formatBytes(state.downloadedBytes)} / {formatBytes(state.totalBytes)}</span><span>{formatBytes(state.speedBytesPerSecond)}/s</span></div>
+      <div className="update-progress-summary"><strong>{percent.toFixed(1)}%</strong><span>{formatBytes(state.downloadedBytes)} / {formatBytes(state.totalBytes)}</span></div>
       <button disabled={cancelling} onClick={() => void cancel()}>{cancelling ? t('正在取消…', 'Cancelling…') : t('取消下载', 'Cancel download')}</button>
+      <details className="update-diagnostics update-speed-details">
+        <summary>{t('下载测速与线路详情', 'Download speed and route details')}</summary>
+        {sourceRoute && <p>{t('当前下载线路：', 'Current download route: ')}{sourceRoute.label} · {sourceRoute.domain}</p>}
+        <p>{t('当前下载速度：', 'Current download speed: ')}<strong>{formatBytes(state.speedBytesPerSecond)}/s</strong></p>
+      </details>
     </div>}
     {state.phase === 'ready' && <div className="update-ready">
       <p>{state.packageKind === 'portable'

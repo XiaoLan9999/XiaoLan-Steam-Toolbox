@@ -148,7 +148,7 @@ window.exercise = async () => {
       define: { 'process.env.NODE_ENV': '"development"' }, logLevel: 'silent' })
     await writeFile(join(directory, 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="renderer.css"></head><body><div id="root"></div><script src="renderer.js"></script></body></html>', 'utf8')
     await build({ entryPoints: [resolve('src/renderer/src/main.tsx')], outfile: join(directory, 'bootstrap.js'),
-      bundle: true, platform: 'browser', format: 'esm', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"development"' }, logLevel: 'silent',
+      bundle: true, platform: 'browser', format: 'esm', jsx: 'automatic', loader: { '.png': 'dataurl' }, define: { 'process.env.NODE_ENV': '"development"' }, logLevel: 'silent',
       plugins: [{ name: 'offline-bootstrap-app', setup(builder) {
         builder.onResolve({ filter: /^\.\/App$/ }, args => args.importer.endsWith('main.tsx')
           ? { path: 'offline-app', namespace: 'fixture' } : null)

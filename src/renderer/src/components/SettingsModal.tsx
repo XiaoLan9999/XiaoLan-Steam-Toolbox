@@ -5,6 +5,7 @@ import { unwrap } from '../ui'
 import { applyTheme, normalizeTheme, type Theme } from '../theme'
 import { UpdatePanel } from './UpdatePanel'
 import type { RunAction } from './types'
+import type { WindowCloseMode } from '../../../shared/window-lifecycle'
 
 export function SettingsModal({ snapshot, onClose, runAction }: {
   snapshot: AppSnapshot; onClose(): void; runAction: RunAction
@@ -17,6 +18,8 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
   const [changingTheme, setChangingTheme] = useState(false)
   const [energySaving, setEnergySaving] = useState(snapshot.energySavingEnabled !== false)
   const [changingEnergySaving, setChangingEnergySaving] = useState(false)
+  const [closeMode, setCloseMode] = useState<WindowCloseMode>(snapshot.windowCloseMode ?? 'ask')
+  const [changingCloseMode, setChangingCloseMode] = useState(false)
   const [diagnosticOperation, setDiagnosticOperation] = useState<'export' | 'open' | null>(null)
   const [diagnosticExport, setDiagnosticExport] = useState<{ path: string; records: number } | null>(null)
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null)
@@ -101,9 +104,15 @@ export function SettingsModal({ snapshot, onClose, runAction }: {
           </select>
         </label>
       </div>
+      {typeof window !== 'undefined' && window.steamCommenter.setWindowCloseMode && <label>{t('关闭窗口时', 'When closing the window')}<select value={closeMode} disabled={busy || changingCloseMode} onChange={event => {
+        const next = event.target.value as WindowCloseMode, previous = closeMode
+        setCloseMode(next); setChangingCloseMode(true)
+        void runAction(t('保存关闭方式', 'Saving close behavior'), async () => unwrap(await window.steamCommenter.setWindowCloseMode!(next)))
+          .then(result => { if (result === null) setCloseMode(previous) }).finally(() => setChangingCloseMode(false))
+      }}><option value="ask">{t('每次询问', 'Ask every time')}</option><option value="tray">{t('最小化到系统托盘', 'Minimize to system tray')}</option><option value="quit">{t('退出程序', 'Exit program')}</option></select></label>}
       <h3>{t('后台节能', 'Background energy saving')}</h3>
       <label className="update-checkbox"><input type="checkbox" checked={energySaving} disabled={busy || changingEnergySaving}
-        onChange={event => void changeEnergySaving(event.target.checked)} />{t('最小化或隐藏窗口时自动节能', 'Save resources when the window is minimized or hidden')}</label>
+        onChange={event => void changeEnergySaving(event.target.checked)} />{t('失去焦点、最小化或托盘隐藏时自动节能', 'Save resources when unfocused, minimized or hidden in the tray')}</label>
       <p>{t('默认开启：暂停不可见界面的动画、媒体预览与显示倒计时，合并后台界面刷新，并回收闲置的截图转换窗口。恢复窗口后继续显示；留言任务、进度保存、登录保活和更新检查照常运行',
         'Enabled by default: pause hidden animations, media previews and display timers, coalesce background interface refreshes, and release idle screenshot conversion windows. Display resumes with the window; tasks, saved progress, sign-in keepalive and update checks keep running')}</p>
       <small>{t('不会结束 Steam、游戏或主界面进程，也不强制清空缓存。实际内存节省取决于已打开的工具和图片',

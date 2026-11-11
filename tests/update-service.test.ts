@@ -149,6 +149,66 @@ describe('UpdateService manifest routing', () => {
 })
 
 describe('UpdateService streaming download', () => {
+  it.each([false, true])('automatically prioritizes measured download throughput over manifest latency, with transfer fallback=%s', async failFastestTransfer => {
+    const latest = fixture('0.4.0')
+    const manifestStarted = deferred(), delayedManifest = deferred()
+    const probesStarted = deferred(), delayedProbe = deferred()
+    const transfers: string[] = []
+    let now = 0
+    const service = await createService(fakeFetch(async (url, init) => {
+      const official = url.startsWith('https://github.com/')
+      const fastDownload = url.startsWith('https://ghfast.top/')
+      if (url.endsWith('update-manifest.json')) {
+        if (fastDownload) { manifestStarted.resolve(); await delayedManifest.promise }
+        return official || fastDownload ? json(latest.envelope) : new Response(null, { status: 503 })
+      }
+      if (new Headers(init?.headers).get('range')?.startsWith('bytes=0-')) {
+        if (official) { probesStarted.resolve(); await delayedProbe.promise }
+        return binary(body.subarray(0, UPDATE_PROBE_BYTES))
+      }
+      transfers.push(official ? 'github' : 'ghfast')
+      return failFastestTransfer && fastDownload ? new Response(null, { status: 503 }) : binary(body)
+    }))
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    let active: Promise<UpdateState> | undefined
+    const waitForState = async (predicate: (state: UpdateState) => boolean): Promise<void> => {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        if (predicate(service.getState())) return
+        await Promise.resolve()
+      }
+      throw new Error('Mock update route did not reach the expected state')
+    }
+    try {
+      active = service.checkForUpdates()
+      await manifestStarted.promise
+      await waitForState(state => state.routes.some(route => route.id === 'github' && route.status === 'available'))
+      now = 100
+      delayedManifest.resolve()
+      const checked = await active
+      expect(checked.routes.find(route => route.id === 'github')?.latencyMs).toBe(0)
+      expect(checked.routes.find(route => route.id === 'ghfast')?.latencyMs).toBe(100)
+
+      active = service.downloadUpdate()
+      await probesStarted.promise
+      await waitForState(state => state.routes.some(route => route.id === 'ghfast' && (route.speedBytesPerSecond ?? 0) > 0))
+      now = 200
+      delayedProbe.resolve()
+      const downloaded = await active
+      expect(downloaded.phase).toBe('ready')
+      expect(downloaded.sourceRouteId).toBe(failFastestTransfer ? 'github' : 'ghfast')
+      expect(transfers).toEqual(failFastestTransfer ? ['ghfast', 'github'] : ['ghfast'])
+      const fastSpeed = downloaded.routes.find(route => route.id === 'ghfast')?.speedBytesPerSecond ?? 0
+      const officialSpeed = downloaded.routes.find(route => route.id === 'github')?.speedBytesPerSecond ?? 0
+      expect(fastSpeed).toBeGreaterThan(officialSpeed)
+      expect(await readFile((await service.getReadyUpdate()).path)).toEqual(body)
+    } finally {
+      service.shutdown()
+      delayedManifest.resolve(); delayedProbe.resolve()
+      await active?.catch(() => undefined)
+      clock.mockRestore()
+    }
+  })
+
   it('downloads the selected package, verifies hash and size, and rechecks it before installation', async () => {
     const latest = fixture('0.4.0')
     const fetchImpl = standardFetch(latest)
@@ -351,11 +411,16 @@ describe('UpdateService streaming download', () => {
   it('cancels a partial stream without ever becoming ready and keeps the safe partial for resumption', async () => {
     const latest = fixture('0.4.0')
     const wrote = deferred()
+    const retryProbeStarted = deferred(), releaseRetryProbe = deferred()
+    let probes = 0
     let resumed = false
     const service = await createService(fakeFetch(async (url, init) => {
       if (url.endsWith('update-manifest.json')) return json(latest.envelope)
       const range = new Headers(init?.headers).get('range')
-      if (range?.startsWith('bytes=0-')) return binary(body.subarray(0, UPDATE_PROBE_BYTES))
+      if (range?.startsWith('bytes=0-')) {
+        if (++probes === 2) { retryProbeStarted.resolve(); await releaseRetryProbe.promise }
+        return binary(body.subarray(0, UPDATE_PROBE_BYTES))
+      }
       if (range === 'bytes=32768-') { resumed = true; return binary(body.subarray(32768), 206, `bytes 32768-${body.length - 1}/${body.length}`) }
       let delivered = false
       return new Response(new ReadableStream<Uint8Array>({
@@ -371,7 +436,13 @@ describe('UpdateService streaming download', () => {
     service.cancel()
     expect((await downloading).phase).toBe('available')
     expect(service.getState().error).toBe('update.cancelled')
-    expect((await service.downloadUpdate()).phase).toBe('ready')
+    expect(service.getState().sourceRouteId).toBe('github')
+    const retry = service.downloadUpdate()
+    await retryProbeStarted.promise
+    const probing = service.getState()
+    releaseRetryProbe.resolve()
+    expect((await retry).phase).toBe('ready')
+    expect(probing).toMatchObject({ phase: 'downloading', sourceRouteId: null, speedBytesPerSecond: 0, downloadedBytes: 0, percent: 0 })
     expect(resumed).toBe(true)
   })
 

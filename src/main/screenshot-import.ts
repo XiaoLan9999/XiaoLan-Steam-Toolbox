@@ -5,7 +5,7 @@ import type { ScreenshotSteamClient, ScreenshotSteamRuntime } from './steam-scre
 
 export function screenshotImportBlocksChannel(channel: string): boolean {
   if (channel.startsWith('screenshots:')) return !['screenshots:catalog', 'screenshots:images'].includes(channel)
-  return ['gameStatus:', 'localAppSimulation:', 'statusCopy:'].some(prefix => channel.startsWith(prefix)) && !channel.endsWith(':state')
+  return ['gameStatus:', 'localAppSimulation:', 'statusCopy:', 'personaLock:'].some(prefix => channel.startsWith(prefix)) && !channel.endsWith(':state')
 }
 
 export class ScreenshotImport {

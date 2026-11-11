@@ -2,6 +2,7 @@ import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, realpathSync, unl
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { backup, DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
+import { validSteamCachePreference, type SteamCacheProfilePreference } from '../shared/steam-cache-preferences'
 import {
   AccountRecord,
   AccountSettings,
@@ -296,6 +297,32 @@ export class SqliteStore {
   setEnergySavingEnabled(enabled: boolean): void {
     if (typeof enabled !== 'boolean') throw new DomainError('INVALID_ENERGY_SAVING', '不支持的后台节能设置')
     this.setMetaInTransaction('background_energy_saving', String(enabled))
+  }
+
+  getWindowCloseMode(): 'ask' | 'tray' | 'quit' {
+    const row = this.db.prepare("SELECT value FROM app_meta WHERE key = 'window_close_mode'").get() as { value: string } | undefined
+    return row?.value === 'tray' || row?.value === 'quit' ? row.value : 'ask'
+  }
+
+  setWindowCloseMode(mode: 'ask' | 'tray' | 'quit'): void {
+    if (!['ask', 'tray', 'quit'].includes(mode)) throw new DomainError('INVALID_CLOSE_MODE', 'INVALID_CLOSE_MODE')
+    this.setMetaInTransaction('window_close_mode', mode)
+  }
+
+  getSteamCacheProfilePreferences(): Record<string, SteamCacheProfilePreference> {
+    const output: Record<string, SteamCacheProfilePreference> = Object.create(null)
+    const rows = this.db.prepare("SELECT key,value FROM app_meta WHERE key LIKE 'steam-cache-profile:%' LIMIT 2048").all() as { key: string; value: string }[]
+    for (const row of rows) {
+      const id = row.key.slice('steam-cache-profile:'.length)
+      if (!/^\d{17}$/.test(id)) continue
+      try { const value: unknown = JSON.parse(row.value); if (validSteamCachePreference(value)) output[id] = value } catch { /* Ignore an invalid optional local label, not the account itself. */ }
+    }
+    return output
+  }
+
+  setSteamCacheProfilePreference(id: string, value: SteamCacheProfilePreference): void {
+    if (!/^\d{17}$/.test(id) || !validSteamCachePreference(value)) throw new DomainError('STEAM_CACHE_INVALID', 'STEAM_CACHE_INVALID')
+    this.setMetaInTransaction(`steam-cache-profile:${id}`, JSON.stringify(value))
   }
 
   static createImportedDatabase(sourcePath: string, destinationPath: string): DataImportSummary {
@@ -2151,7 +2178,11 @@ function checkedImportValue(value: unknown, column: ImportColumn): string | numb
 }
 
 function reviewedImportMeta(key: unknown, value: unknown): boolean {
+  if (key === 'window_close_mode') return value === 'ask' || value === 'tray' || value === 'quit'
   if (typeof key !== 'string' || typeof value !== 'string') throw dataImportInvalid()
+  if (/^steam-cache-profile:\d{17}$/.test(key)) {
+    try { return value.length <= 1024 && validSteamCachePreference(JSON.parse(value)) } catch { return false }
+  }
   if (key === 'background_energy_saving') return value === 'true' || value === 'false'
   return ['active_account_id', 'ui_language', 'ui_theme', 'update_preferences'].includes(key) ||
     /^comment-post-safety:[A-Za-z0-9_-]{1,128}$/.test(key) && value === 'reconciliation-v1'

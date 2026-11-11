@@ -37,11 +37,15 @@ describe('toolbox welcome home', () => {
     expect(actions.onNavigate).not.toHaveBeenCalled()
   })
 
-  it.each(['zh-CN', 'en'] as const)('offers four separate tools without starting work in %s', language => {
+  it.each(['zh-CN', 'en'] as const)('offers six separate tools without starting work in %s', language => {
     const { html, actions } = render(snapshot(), language)
-    expect(html).toContain(language === 'en' ? 'Your Steam tools, in one place' : '你的 Steam 工具，都在这里')
+    expect(html).not.toContain(language === 'en' ? 'Your Steam tools, in one place' : '你的 Steam 工具，都在这里')
+    expect(html).not.toContain(language === 'en' ? 'Choose a tool to get started' : '从一项工具开始')
+    expect(html).not.toContain('<h1')
     expect(html).toContain('LOCAL PROJECT')
-    expect((html.match(/class="toolbox-home-card"/g) ?? [])).toHaveLength(4)
+    expect((html.match(/class="toolbox-home-card"/g) ?? [])).toHaveLength(6)
+    expect(html).toContain(language === 'en' ? 'Open account switcher' : '打开账号切换')
+    expect(html).toContain(language === 'en' ? 'Open authenticators' : '打开手机令牌')
     expect(html).toContain(language === 'en' ? 'Open comments' : '打开留言板')
     expect(html).toContain(language === 'en' ? 'Open game status' : '打开游戏状态')
     expect(html).not.toContain(language === 'en' ? 'Opening home does not start sending' : '打开首页不会启动发送')
@@ -92,18 +96,19 @@ describe('toolbox welcome home', () => {
     expect(html).not.toContain('<img')
   })
 
-  it('removes only fixed sentence terminators while preserving internal punctuation and user names', () => {
+  it('removes the hero copy while preserving account context, user punctuation and tool descriptions', () => {
     const state = snapshot()
     state.accounts[0]!.displayName = 'User.'
     const { html } = render(state)
-    expect(html).toContain('你的 Steam 工具，都在这里</h1>')
-    expect(html).not.toContain('你的 Steam 工具，都在这里。')
-    expect(html).toContain('从一项工具开始。账号与数据保存在本机，各项操作由你决定</p>')
+    expect(html).not.toContain('你的 Steam 工具，都在这里')
+    expect(html).not.toContain('从一项工具开始')
+    expect(html).toContain('好友与分组、批量留言、黑名单和持久任务，在独立模块里处理')
     expect(html).toContain('当前账号：User.</span>')
     expect(html).not.toContain('打开首页不会启动发送')
     const english = render(state, 'en').html
-    expect(english).toContain('Your Steam tools, in one place</h1>')
-    expect(english).toContain('Choose a tool to get started. Accounts and data stay local; you decide what runs</p>')
+    expect(english).not.toContain('Your Steam tools, in one place')
+    expect(english).not.toContain('Choose a tool to get started')
+    expect(english).toContain('Manage friends, groups, comments, blacklist and durable tasks in one dedicated module')
     expect(english).toContain('Selected: User.</span>')
   })
 })

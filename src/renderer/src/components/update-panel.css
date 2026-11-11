@@ -32,6 +32,11 @@
 .update-advanced label { display: block; margin-bottom: 8px; }
 .update-advanced textarea { display: block; width: 100%; resize: vertical; min-height: 76px; border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.6; }
 .update-advanced > small { display: block; margin-top: 8px; }
+.update-diagnostics { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.update-diagnostics > summary { cursor: pointer; color: var(--blue); overflow-wrap: anywhere; }
+.update-diagnostics > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; border-radius: 2px; }
+.update-diagnostics-count { margin-left: 10px; color: var(--muted); font-size: 11px; }
+.update-diagnostics > p { overflow-wrap: anywhere; }
 .update-route-list { margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .update-route-headers, .update-route { display: grid; grid-template-columns: minmax(0, 1fr) minmax(145px, 0.8fr); gap: 8px; padding: 10px 12px; }
 .update-route-headers { background: var(--panel-2); color: var(--muted); font-size: 11px; }
@@ -52,7 +57,7 @@
 .update-progress progress { display: block; width: 100%; height: 9px; overflow: hidden; border: 0; border-radius: 5px; background: var(--panel-3); accent-color: var(--blue-2); }
 .update-progress progress::-webkit-progress-bar { background: var(--panel-3); }
 .update-progress progress::-webkit-progress-value { background: var(--blue-2); }
-.update-progress > div { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.update-progress-summary { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 11px; }
 .update-progress strong { color: var(--text); }
 .update-ready { margin-top: 12px; }
 .update-error { margin-top: 14px; color: var(--red); font-size: 12px; line-height: 1.6; }

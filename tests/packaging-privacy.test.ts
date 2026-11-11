@@ -80,13 +80,20 @@ describe('packaging privacy boundary', () => {
     'dumps/steam-fixture.dmp',
     'steam-friend-commenter.sqlite3',
     'accounts.json',
+    'maFiles/fixture.maFile',
+    'steam-authenticators.vault.json',
+    'steam-account-switch.recovery.json',
     '.env'
   ])('does not select private diagnostics or runtime data %s', path => {
     expect(selected(path, config.files)).toBe(false)
   })
 
-  it('copies only the reviewed logo and four production workers, never whole resource directories', () => {
+  it('copies only the reviewed logo and five production workers, never whole resource directories', () => {
     expect(config.extraResources).toEqual([{
+      from: 'resources/persona-lock',
+      to: 'persona-lock',
+      filter: ['persona-lock-host-x64.exe']
+    }, {
       from: 'resources/screenshot-import',
       to: 'screenshot-import',
       filter: ['screenshot-import-host-x64.exe']
@@ -111,6 +118,9 @@ describe('packaging privacy boundary', () => {
     const screenshots = config.extraResources.find(resource => resource.to === 'screenshot-import')!.filter!
     expect(selected('screenshot-import-host-x64.exe', screenshots)).toBe(true)
     for (const file of ['screenshot-live-probe.exe', 'screenshot-import-host-test.exe', 'ledger.json', '0.jpg', 'profile.json', 'state.sqlite3', '.env']) expect(selected(file, screenshots)).toBe(false)
+    const persona = config.extraResources.find(resource => resource.to === 'persona-lock')!.filter!
+    expect(selected('persona-lock-host-x64.exe', persona)).toBe(true)
+    for (const file of ['persona-lock-host-test.exe', 'persona-native-rtti-static.json', 'state.sqlite3', 'Cookies', '.env']) expect(selected(file, persona)).toBe(false)
     expect((config.win as { icon: string }).icon).toBe('build/icon.ico')
     expect((config.nsis as { installerIcon: string; uninstallerIcon: string }).installerIcon).toBe('build/icon.ico')
     expect((config.nsis as { installerIcon: string; uninstallerIcon: string }).uninstallerIcon).toBe('build/icon.ico')

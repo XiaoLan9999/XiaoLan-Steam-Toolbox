@@ -136,6 +136,11 @@ function auditText(file, content) {
       const fixture = file.startsWith('tests/') && /^(?:test-|synthetic-|fixture-|export-must-not-contain-)/.test(literalSecret[1])
       if (!fixture) report(file, index + 1, 'literal credential assignment')
     }
+    if (/["']?(?:shared[_-]?secret|identity[_-]?secret|secret_1)["']?\s*[:=]\s*["'][A-Za-z0-9+/]{27}=["']/i.test(line)) {
+      report(file, index + 1, 'literal Steam authenticator secret')
+    }
+    const recovery = line.match(/["']?(?:revocation[_-]?code|recovery[_-]?code)["']?\s*[:=]\s*["'](R[A-Z0-9]{5,31})["']/)
+    if (recovery && !(file.startsWith('tests/') && ['R12345', 'R123456'].includes(recovery[1]))) report(file, index + 1, 'literal authenticator recovery code')
 
     for (const match of line.matchAll(/\b7656119\d{10}\b/g)) {
       // This range is used only by the manually generated test fixtures.
@@ -159,7 +164,8 @@ function auditFile(file, mode) {
       /(?:^|\/)\.env(?:\..*)?$/i.test(file) && !file.endsWith('.env.example') ||
       /\.(?:sqlite3?|db)(?:[-.].*)?$/i.test(file) ||
       /\.(?:log|bak|dmp|exe|dll|asar|zip|7z|tar|gz|pfx|p12|pem|key|tsbuildinfo)$/i.test(file) ||
-      /(?:^|\/)(?:cookies?|credentials?|secrets?|tokens?)\.json$/i.test(file)) {
+      /(?:^|\/)(?:cookies?|credentials?|secrets?|tokens?)\.json$/i.test(file) ||
+      /(?:^|\/)maFiles(?:\/|$)|\.mafile$|\.rescue\.json$|(?:^|\/)\.authenticator-.*\.tmp$|(?:^|\/)(?:steam-authenticators\.vault|steam-account-switch\.recovery|steam-authenticator-setup\.pending|steam-authenticator-confirmations\.safety)\.json$/i.test(file)) {
     report(file, 0, 'runtime data, archive, build output, or secret file')
     return
   }

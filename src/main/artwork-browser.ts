@@ -58,6 +58,7 @@ export class ArtworkBrowser {
   private bounds: ArtworkBounds | null = null
   private generation = 0
   private stopped = false
+  private energySaving = false
   private readonly cleanup = new Set<Promise<void>>()
   private readonly onResize = (): void => { this.bounds = null; if (this.record) this.applyBounds(this.record) }
   private readonly onParentClosed = (): void => this.shutdown()
@@ -79,6 +80,11 @@ export class ArtworkBrowser {
       zoomFactor: record.zoomFactor, autoFit: record.zoomPreference === null,
       ...(record.tool === 'design' ? { dynamicPreview: record.dynamicPreview } : {})
     } : {}) }
+  }
+
+  setEnergySaving(active: boolean): void {
+    this.energySaving = active
+    if (this.record) this.applyMotion(this.record, !!this.bounds)
   }
 
   async open(tool: ArtworkTool, accountId?: string, options?: { reload?: boolean }): Promise<ArtworkBrowserState> {
@@ -503,7 +509,7 @@ export class ArtworkBrowser {
   private applyMotion(record: BrowserRecord, visible: boolean): void {
     if (record.tool !== 'design' || record.contents.isDestroyed() || !record.prepared ||
         !isAllowedArtworkNavigation('design', record.contents.getURL())) return
-    visible = visible && this.options.parent.isVisible() && !this.options.parent.isMinimized()
+    visible = visible && !this.energySaving && this.options.parent.isVisible() && !this.options.parent.isMinimized()
     const key = `${record.dynamicPreview}:${visible}`
     if (record.motionKey === key) return
     record.motionKey = key

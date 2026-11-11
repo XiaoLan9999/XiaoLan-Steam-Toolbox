@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { useI18n } from '../i18n'
 import './welcome-panel.css'
 
-export type WelcomeDestination = 'friends' | 'history' | 'tools' | 'screenshots' | 'game-status'
+export type WelcomeDestination = 'friends' | 'history' | 'tools' | 'screenshots' | 'game-status' | 'steam-accounts' | 'authenticator'
 
 export function WelcomePanel({ snapshot, onNavigate, onLogin, onSettings, connectionNotice }: {
   snapshot: AppSnapshot
@@ -27,13 +27,17 @@ export function WelcomePanel({ snapshot, onNavigate, onLogin, onSettings, connec
       label: t('打开艺术作品工具', 'Open artwork tools') },
     { destination: 'screenshots', mark: '04', title: t('Steam 截图工具', 'Steam screenshots'),
       description: t('选择用户与游戏，准备本地图片，再从 Steam 客户端上传', 'Choose a user and game, prepare local images, then upload through the Steam client'),
-      label: t('打开截图工具', 'Open screenshots') }
+      label: t('打开截图工具', 'Open screenshots') },
+    { destination: 'steam-accounts', mark: '05', title: t('Steam 账号切换', 'Steam account switcher'),
+      description: t('选择 Steam 客户端已记住的账号，确认后正常退出并重新打开，不切换工具箱账号', 'Choose an account remembered by Steam and confirm a normal restart, independently of the toolbox account'),
+      label: t('打开账号切换', 'Open account switcher') },
+    { destination: 'authenticator', mark: '06', title: t('本地手机令牌', 'Local authenticators'),
+      description: t('手动导入已有 maFile，在本机加密保存并查看小号 Steam Guard 验证码', 'Import existing maFiles and view Steam Guard codes for your other accounts with encrypted local storage'),
+      label: t('打开手机令牌', 'Open authenticators') }
   ]
-  return <section className="toolbox-home" aria-label={t('工具箱欢迎首页', 'Toolbox welcome home')}>
+  return <section className="toolbox-home" aria-label={t('工具箱欢迎', 'Toolbox welcome')}>
     <header className="toolbox-home-hero">
       <div className="toolbox-home-kicker">LOCAL PROJECT <span>/</span> XIAOLAN STEAM TOOLBOX</div>
-      <h1>{t('你的 Steam 工具，都在这里', 'Your Steam tools, in one place')}</h1>
-      <p>{t('从一项工具开始。账号与数据保存在本机，各项操作由你决定', 'Choose a tool to get started. Accounts and data stay local; you decide what runs')}</p>
       <div className="toolbox-home-context">
         <span>{t(`${snapshot.accounts.length} 个已保存账号`, `${snapshot.accounts.length} saved accounts`)}</span>
         <span>{account ? t(`当前账号：${account.displayName}`, `Selected: ${account.displayName}`) : t('尚未选择账号', 'No account selected')}</span>

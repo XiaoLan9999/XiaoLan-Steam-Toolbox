@@ -33,6 +33,11 @@ function fixture(options: Partial<Omit<SteamNetworkRecoveryOptions, 'createRoute
 afterEach(() => { for (const resource of resources.splice(0)) resource.dispose(); vi.useRealTimers() })
 
 describe('bounded Steam network route recovery', () => {
+  it.each(['ajaxop', 'multiajaxop'])('does not replay a state-changing mobile confirmation GET %s', async endpoint => {
+    const f = fixture(); f.route('system').fetch.mockRejectedValue(reset())
+    await expect(f.recovery.fetch(`https://steamcommunity.com/mobileconf/${endpoint}?op=allow`)).rejects.toMatchObject({ code: 'ECONNRESET' })
+    expect(f.kinds).toEqual(['system']); expect(f.route('system').fetch).toHaveBeenCalledOnce()
+  })
   it('keeps healthy routes sticky per host instead of letting a successful API call reset Community', async () => {
     const f = fixture()
     f.route('system').fetch.mockImplementation(async input => {

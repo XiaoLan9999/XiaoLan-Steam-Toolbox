@@ -10,6 +10,10 @@ files:
   - package.json
 asar: true
 extraResources:
+  - from: resources/persona-lock
+    to: persona-lock
+    filter:
+      - persona-lock-host-x64.exe
   - from: resources/screenshot-import
     to: screenshot-import
     filter:

@@ -133,13 +133,6 @@ code {
   box-shadow: 3px 0 18px var(--tone-shadow-5e4e3d06, rgba(94, 78, 61, 0.025));
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 0 8px 24px;
-}
-
 .brand-mark,
 .steam-mark {
   display: block;
@@ -154,22 +147,6 @@ code {
 .app-logo {
   object-fit: cover;
   aspect-ratio: 1;
-}
-
-.brand strong,
-.brand span {
-  display: block;
-}
-
-.brand strong {
-  font-size: 14px;
-  letter-spacing: 0.01em;
-}
-
-.brand span {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 11px;
 }
 
 .sidebar-heading {

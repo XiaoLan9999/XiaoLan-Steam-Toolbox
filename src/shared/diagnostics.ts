@@ -2,6 +2,7 @@ import { sanitizeLocalAppDiagnostic } from './local-app-diagnostics'
 import { sanitizeRendererDiagnostic } from './renderer-diagnostics'
 import { sanitizeSteamNetworkDiagnostic } from './steam-network-diagnostics'
 import { NATIVE_GAME_STATUS_FAILURE_CODES } from './game-status-errors'
+import { PERSONA_NATIVE_FAILURE_CODES } from './persona-lock'
 
 export const LOGIN_NETWORK_CODES = [
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
@@ -37,7 +38,7 @@ export interface LoginDiagnosticEvent {
 }
 
 export interface DiagnosticRecord {
-  event: 'start' | 'memory' | 'stop' | 'process-gone' | 'session' | 'native-presence' | 'game-status' | 'login' | 'local-app' | 'renderer-ui' | 'steam-network'
+  event: 'start' | 'memory' | 'stop' | 'process-gone' | 'session' | 'native-presence' | 'game-status' | 'login' | 'local-app' | 'renderer-ui' | 'steam-network' | 'persona-lock'
   at?: string
   version?: string
   [key: string]: unknown
@@ -108,7 +109,7 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
     const value = object(input)
     if (!value) return null
     const event = value.event
-    if (!member(event, ['start', 'memory', 'stop', 'process-gone', 'session', 'native-presence', 'game-status', 'login', 'local-app', 'renderer-ui', 'steam-network'])) return null
+    if (!member(event, ['start', 'memory', 'stop', 'process-gone', 'session', 'native-presence', 'game-status', 'login', 'local-app', 'renderer-ui', 'steam-network', 'persona-lock'])) return null
     const output: DiagnosticRecord = { event: event as DiagnosticRecord['event'] }
     const at = timestamp(value.at)
     const version = sanitizeDiagnosticVersion(value.version)
@@ -185,6 +186,13 @@ export function sanitizeDiagnosticRecord(input: unknown): DiagnosticRecord | nul
         optionalEnum(output, value, 'connectionKind', ['local', 'cm'])
         optionalInteger(output, value, 'generation', 0, 0xffffffff)
         optionalEnum(output, value, 'nativeCode', NATIVE_GAME_STATUS_FAILURE_CODES)
+        break
+      case 'persona-lock':
+        optionalEnum(output, value, 'stage', ['idle', 'checking', 'locked', 'error'])
+        optionalEnum(output, value, 'code', ['PERSONA_UNAVAILABLE', 'PERSONA_CONTEXT_CHANGED', 'PERSONA_PRIVATE_STATE', 'PERSONA_UNCONFIRMED', 'PERSONA_BUSY'])
+        optionalInteger(output, value, 'currentState', 0, 7)
+        optionalEnum(output, value, 'nativeCode', PERSONA_NATIVE_FAILURE_CODES)
+        if (typeof value.restored === 'boolean') output.restored = value.restored
         break
       case 'local-app': {
         const diagnostic = sanitizeLocalAppDiagnostic(value)
